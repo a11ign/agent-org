@@ -25,15 +25,17 @@ export function stop(ctx: PoolContext, key: string): void {
 
 /**
  * A person pressed Respond to review (A11-154): a round that answers the run's open pull requests, or the ones the code host holds for its ticket when its record holds none (A11-240), is queued, whatever its outcome ended on. A run whose workspace
- * is still open (parked) has it closed first, because a second workspace would take the same herdr name. Throws, naming why, when Respond cannot act, and
+ * is still open (parked) has it closed first, because a second workspace would take the same herdr name. Rejects, naming why, when Respond cannot act, and
  * nothing is closed then: the refusal is asked of the queue as if the workspace were closed already. A workspace herdr will not close leaves the run parked.
  */
-export function respond(ctx: PoolContext, key: string): void {
+export async function respond(ctx: PoolContext, key: string): Promise<void> {
   const { now, store } = ctx;
+  const looked = store.get().entries.find((e) => e.ticket.key === key);
+  // A finished run whose record holds no open pull request may still have one on the code host, which the crash that emptied the record did not close (A11-240).
+  const found = looked?.phase === "finished" && openPulls(looked).length === 0 ? await openPullsFound(ctx, looked) : [];
+  // The run is read again once the code host has answered: the board went on meanwhile, and a run closed or started in that time is not parked, or refused, as it was.
   const entry = store.get().entries.find((e) => e.ticket.key === key);
   const parked = entry !== undefined && isParked(entry);
-  // A finished run whose record holds no open pull request may still have one on the code host, which the crash that emptied the record did not close (A11-240).
-  const found = entry?.phase === "finished" && openPulls(entry).length === 0 ? openPullsFound(ctx, entry) : [];
   respondQueued(parked ? unpark(store.get(), key) : store.get(), key, now(), found);
   if (parked) close(ctx, key);
   update(ctx, (queue) => respondQueued(queue, key, now(), found));

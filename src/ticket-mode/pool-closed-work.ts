@@ -77,7 +77,7 @@ async function post(ctx: PoolContext, held: Held, record: ClosedWorkRecord): Pro
 /** Read what a closed pull request held, keep it, and post it. A read the code host cannot make writes nothing. */
 async function keepClosedWork(ctx: PoolContext, held: Held): Promise<void> {
   const { key, url } = held;
-  const work = readWork(ctx, key, url);
+  const work = await readWork(ctx, key, url);
   if (work === null) return;
   const made = recordOf(work);
   writeRecord(ctx, held, made);
@@ -90,11 +90,11 @@ async function keepClosedWork(ctx: PoolContext, held: Held): Promise<void> {
 const unreadable = new WeakMap<PoolContext, Set<string>>();
 
 /** What the code host reads of a closed pull request, or null for "could not ask": said once for each pull request, and asked again at the next refresh. */
-function readWork(ctx: PoolContext, key: string, url: string): ClosedWork | null {
+async function readWork(ctx: PoolContext, key: string, url: string): Promise<ClosedWork | null> {
   let work: ClosedWork | null = null;
   let why = "the code host did not answer";
   try {
-    work = ctx.codeHost.readClosedWork!(url);
+    work = await ctx.codeHost.readClosedWork!(url);
   } catch (err) {
     why = messageOf(err);
   }

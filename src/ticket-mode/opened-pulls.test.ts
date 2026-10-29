@@ -108,7 +108,7 @@ test("Respond on a crashed run with nothing on record, whose ticket has an open 
   const open = host.seedPull(repo, 140, { body: "Refs NBF-1" });
   host.seedPull(repo, 139, { state: "merged", body: "Refs NBF-1" });
   await crashedWithNothingOnRecord(made);
-  made.restart({ codeHost: host }).respond("NBF-1");
+  await made.restart({ codeHost: host }).respond("NBF-1");
   const round: Entry = made.entry("NBF-1");
   assert.deepEqual([round.phase, round.asked], ["queued", true]);
   assert.deepEqual(round.review, [{ repo, url: open.url }], "the round answers the open pull request, and not the merged one");
@@ -120,8 +120,8 @@ test("Respond on a crashed run with nothing on record and nothing open on the co
   host.seedPull(repo, 139, { state: "merged", body: "Refs NBF-1" });
   host.seedPull(repo, 150, { body: "mentions NBF-1 only" });
   await crashedWithNothingOnRecord(made);
-  assert.throws(() => made.restart({ codeHost: host }).respond("NBF-1"), /NBF-1 has no pull request open, so there is no feedback to answer/);
-  assert.throws(() => made.pool.respond("NBF-1"), /has no pull request open/, "and a host that cannot be asked refuses as it did");
+  await assert.rejects(() => made.restart({ codeHost: host }).respond("NBF-1"), /NBF-1 has no pull request open, so there is no feedback to answer/);
+  await assert.rejects(() => made.pool.respond("NBF-1"), /has no pull request open/, "and a host that cannot be asked refuses as it did");
   assert.equal(made.entry("NBF-1").phase, "finished", "nothing was queued");
 });
 
@@ -133,7 +133,7 @@ test("Respond on a run with a pull request on record answers the record's, and d
   const recorded = { repo: "nbl-ui-netbox", url: "https://github.com/x/nbl-ui-netbox/pull/1" };
   made.store.set(finish(made.store.get(), "NBF-1", { kind: "ready-pr", prs: [recorded] }, 50));
   host.calls.length = 0;
-  made.restart({ codeHost: host }).respond("NBF-1");
+  await made.restart({ codeHost: host }).respond("NBF-1");
   assert.deepEqual(made.entry("NBF-1").review, [recorded]);
   assert.deepEqual(host.calls.filter((call) => call.startsWith("pullsNaming")), []);
 });
@@ -144,7 +144,7 @@ test("Respond on a run that ended on drafts with none open on record is refused 
   await made.pool.tick();
   made.store.set(finish(made.store.get(), "NBF-1", { kind: "draft-pr", prs: [{ repo: "nbl-ui-netbox", url: "https://github.com/x/nbl-ui-netbox/pull/1" }] }, 50));
   made.store.set(replace(made.store.get(), "NBF-1", (entry) => ({ ...entry, pullStates: { "https://github.com/x/nbl-ui-netbox/pull/1": "merged" } })));
-  assert.throws(() => made.restart({ codeHost: host }).respond("NBF-1"), /NBF-1 has no pull request open, so there is no feedback to answer/);
+  await assert.rejects(() => made.restart({ codeHost: host }).respond("NBF-1"), /NBF-1 has no pull request open, so there is no feedback to answer/);
   assert.equal(made.entry("NBF-1").phase, "finished");
 });
 

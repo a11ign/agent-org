@@ -77,28 +77,28 @@ const removedNote = (count: number, jobs: readonly string[], trouble?: string): 
 // ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 
 /** What the code host answers a hold or a release of a pull request: whether the label is now as asked. */
-type HoldCall = (holdFromQueue: NonNullable<PoolContext["codeHost"]["holdFromQueue"]>) => boolean;
+type HoldCall = (holdFromQueue: NonNullable<PoolContext["codeHost"]["holdFromQueue"]>) => Promise<boolean>;
 
 /** Ask the code host to change the pull request's hold. Returns why it could not, or null once the label is as asked: a refusal is the board's to say, never a throw. */
-function refusalOf(ctx: PoolContext, call: HoldCall, stillSo: string): string | null {
+async function refusalOf(ctx: PoolContext, call: HoldCall, stillSo: string): Promise<string | null> {
   const { holdFromQueue } = ctx.codeHost;
   if (holdFromQueue === undefined) return "the code host cannot hold a pull request";
   try {
-    return call(holdFromQueue) ? null : stillSo;
+    return (await call(holdFromQueue)) ? null : stillSo;
   } catch (err) {
     return messageOf(err);
   }
 }
 
 /** Why the pull request could not be held from the arm bot, or null once it is. */
-const holdRefusal = (ctx: PoolContext, url: string): string | null => refusalOf(ctx, (holdFromQueue) => holdFromQueue(url, true), "the label is still off");
+const holdRefusal = (ctx: PoolContext, url: string): Promise<string | null> => refusalOf(ctx, (holdFromQueue) => holdFromQueue(url, true), "the label is still off");
 
 /** Why the pull request's hold could not be lifted, or null once it is. */
-const releaseRefusal = (ctx: PoolContext, url: string): string | null => refusalOf(ctx, (holdFromQueue) => holdFromQueue(url, false), "the label is still on");
+const releaseRefusal = (ctx: PoolContext, url: string): Promise<string | null> => refusalOf(ctx, (holdFromQueue) => holdFromQueue(url, false), "the label is still on");
 
 /** The record of a pull request removed `count` times: the hold put on, or the card saying why it could not be. */
-function holdRecord(ctx: PoolContext, entry: Entry, url: string, record: QueueHead, count: number): QueueHead {
-  const why = holdRefusal(ctx, url);
+async function holdRecord(ctx: PoolContext, entry: Entry, url: string, record: QueueHead, count: number): Promise<QueueHead> {
+  const why = await holdRefusal(ctx, url);
   const jobs = record.jobs ?? [];
   if (why !== null) log(`${entry.ticket.key}: ${url} was removed from the merge queue ${count} times with no push between, and could not be held from the arm bot (${why}); the next watch asks again`);
   else if (record.held !== true) log(`${entry.ticket.key}: ${url} was removed from the merge queue ${count} times with no push between: held from the arm bot until its head changes`);
@@ -109,9 +109,9 @@ function holdRecord(ctx: PoolContext, entry: Entry, url: string, record: QueueHe
  * Release the hold of a pull request whose head has moved off the one it was held at. Null once it is released, or when it was never on; the record again, with the card saying why, when the code host would not, so the
  * next watch asks again (the label is the arm bot's stop, and it must not stay on a head nobody removed from the queue).
  */
-function released(ctx: PoolContext, entry: Entry, url: string, record: QueueHead): QueueHead | null {
+async function released(ctx: PoolContext, entry: Entry, url: string, record: QueueHead): Promise<QueueHead | null> {
   if (record.held !== true) return null;
-  const why = releaseRefusal(ctx, url);
+  const why = await releaseRefusal(ctx, url);
   if (why === null) {
     log(`${entry.ticket.key}: ${url} has a new head, so the hold from the merge queue is lifted`);
     return null;
@@ -141,11 +141,11 @@ function noRearmBecause(ctx: PoolContext, { read }: Pull, record: QueueHead): st
 }
 
 /** Ask the arm bot to arm the pull request. Returns why it could not be asked, or null once it was: a refusal is the board's to say, never a throw. */
-function armBotRefusal(ctx: PoolContext, url: string): string | null {
+async function armBotRefusal(ctx: PoolContext, url: string): Promise<string | null> {
   try {
     const request = stackMergeRequestOf(url);
     if (request === null) return "it is not a GitHub pull request address";
-    ctx.codeHost.requestStackMerge?.(request);
+    await ctx.codeHost.requestStackMerge?.(request);
     return null;
   } catch (err) {
     return messageOf(err);
@@ -160,7 +160,7 @@ const startedRound = (record: QueueHead): boolean => record.roundStarted === tru
  * nobody. What is NOT asked is said, in the log and on the card, with why: the pull request is held from the arm bot, not approved at this head, conflicts, was armed {@link MAX_REARMS} times at this head already, or the code host cannot ask. A refused ask is kept (`refused`)
  * and made again by the next watch. For a record of a head a round was started at, this is also the end of that round (`roundEnded`): the log says why the pull request is not in the queue, whether it was armed again or not.
  */
-function rearm(ctx: PoolContext, entry: Entry, pull: Pull, record: QueueHead, because: string): QueueHead {
+async function rearm(ctx: PoolContext, entry: Entry, pull: Pull, record: QueueHead, because: string): Promise<QueueHead> {
   const { url } = pull;
   const ended = startedRound(record) ? { roundEnded: true } : {};
   const { refused: earlier, ...rest } = record;
@@ -173,7 +173,7 @@ function rearm(ctx: PoolContext, entry: Entry, pull: Pull, record: QueueHead, be
     const note = said(`removed from the merge queue: ${because}; not armed again: ${blocked}`);
     return { ...rest, step: record.step === "held" ? "held" : "named", ...ended, note: record.step === "held" && record.note !== undefined ? record.note : note };
   }
-  const refused = armBotRefusal(ctx, url);
+  const refused = await armBotRefusal(ctx, url);
   if (refused !== null) {
     const note = `removed from the merge queue: ${because}; the arm bot could not be asked to arm it again (${refused}), asked again next watch`;
     return { ...rest, step: "rearmed", refused, note: earlier === refused ? note : said(note) };
@@ -187,10 +187,10 @@ function rearm(ctx: PoolContext, entry: Entry, pull: Pull, record: QueueHead, be
 // ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 
 /** The failing `merge_group` run behind a removal, or null when the code host cannot say. */
-function readFailure(ctx: PoolContext, url: string, removal: QueueRemoval): QueueFailure | null {
+async function readFailure(ctx: PoolContext, url: string, removal: QueueRemoval): Promise<QueueFailure | null> {
   if (removal.groupCommit === null || ctx.codeHost.readQueueFailure === undefined) return null;
   try {
-    return ctx.codeHost.readQueueFailure(url, removal.groupCommit);
+    return await ctx.codeHost.readQueueFailure(url, removal.groupCommit);
   } catch (err) {
     log(`the merge_group run behind the removal of ${url} could not be read: ${messageOf(err)}`);
     return null;
@@ -213,9 +213,9 @@ const queueCause = (log: string): string | null => infrastructureCause(log) ?? r
  * One failing job of the merge group with its log read, and its cause: a job that failed while the runner was set up never ran the code, whatever its log says. A code host that cannot ask the arm bot has nothing to do for such a removal that a round
  * would not do better, so it keeps the causes it knew before A11-295 (a lost runner, a rate limit, a server error, a network error) and a registry error or a failed setup is the code's, as it was.
  */
-function readJob(ctx: PoolContext, job: QueueFailureJob): ReadJob {
+async function readJob(ctx: PoolContext, job: QueueFailureJob): Promise<ReadJob> {
   const widened = canAskArmBot(ctx);
-  const check = readCheck(ctx, { name: job.name, detailsUrl: job.detailsUrl }, widened ? queueCause : infrastructureCause);
+  const check = await readCheck(ctx, { name: job.name, detailsUrl: job.detailsUrl }, widened ? queueCause : infrastructureCause);
   return { job, check: widened && check.infrastructure === null && job.step === SET_UP_JOB ? { ...check, infrastructure: "the runner could not set the job up" } : check };
 }
 
@@ -275,11 +275,12 @@ const reasonsOf = (jobs: readonly ReadJob[]): string => [...new Set(jobs.map(({ 
  * started with the jobs' error lines, even when the run or a log could not be read (it then says so): the third removal at a head is that round, whatever failed. A code host that cannot ask the arm bot names the removal for a person, as before, and nothing is rerun,
  * because a rerun does not put the pull request back in the queue.
  */
-function answerFailed(ctx: PoolContext, entry: Entry, pull: Pull, removal: QueueRemoval, count: number, prior?: QueueHead): PullAnswer {
+async function answerFailed(ctx: PoolContext, entry: Entry, pull: Pull, removal: QueueRemoval, count: number, prior?: QueueHead): Promise<PullAnswer> {
   const { url, read } = pull;
-  const failure = readFailure(ctx, url, removal);
+  const failure = await readFailure(ctx, url, removal);
   const jobs = failure === null ? [] : jobsToAnswer(failure);
-  const readJobs: ReadJob[] = jobs.map((job) => readJob(ctx, job));
+  const readJobs: ReadJob[] = [];
+  for (const job of jobs) readJobs.push(await readJob(ctx, job));
   const own = readJobs.filter(({ check }) => check.infrastructure === null);
   const infrastructure = readJobs.filter(({ check }) => check.infrastructure !== null);
   const names = jobs.map(({ name }) => name);
@@ -291,18 +292,18 @@ function answerFailed(ctx: PoolContext, entry: Entry, pull: Pull, removal: Queue
     if (!canAskArmBot(ctx)) {
       const note = `removed from the merge queue: ${because}`;
       log(`${entry.ticket.key}: ${note} (${url})`);
-      return { record: withHold(ctx, entry, url, { head, step: "named", removals: count, jobs: names, note }, count) };
+      return { record: await withHold(ctx, entry, url, { head, step: "named", removals: count, jobs: names, note }, count) };
     }
-    if (count < HOLD_AFTER && rearms < MAX_REARMS) return { record: rearm(ctx, entry, pull, { head, step: "rearmed", removals: count, jobs: names, ...carried }, because) };
+    if (count < HOLD_AFTER && rearms < MAX_REARMS) return { record: await rearm(ctx, entry, pull, { head, step: "rearmed", removals: count, jobs: names, ...carried }, because) };
   }
   if (own.length > 0 && prior?.retried !== true) {
-    const retrying = retryBeforeRound(ctx, entry, pull, { failure, jobs: readJobs, names, count, carried });
+    const retrying = await retryBeforeRound(ctx, entry, pull, { failure, jobs: readJobs, names, count, carried });
     if (retrying !== null) return { record: retrying };
   }
   // A removal the board already reran the jobs of is on the card as sent to the run, so a pull request that is approved and out of the queue is never shown as idle (A11-371).
   const sent = prior?.retried === true ? { note: `${ejectedNote(names)}, sent to the run` } : {};
   const record: QueueHead = { head, step: "round", removals: count, jobs: names, roundStarted: true, ...carried, ...sent };
-  return { feedback: failedBrief(pull, removal, failure, { own, infrastructure }, { rearms, willRearm: canAskArmBot(ctx) && count < HOLD_AFTER, earlier: prior }), record: withHold(ctx, entry, url, record, count) };
+  return { feedback: failedBrief(pull, removal, failure, { own, infrastructure }, { rearms, willRearm: canAskArmBot(ctx) && count < HOLD_AFTER, earlier: prior }), record: await withHold(ctx, entry, url, record, count) };
 }
 
 // ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
@@ -328,7 +329,7 @@ const canReadRuns = (ctx: PoolContext): boolean => ctx.codeHost.readCiRun !== un
  * THE RERUN OF A MERGE GROUP'S FAILED JOBS, made once for a head before any worker is asked (A11-371). Returns the record that says so (`retrying`, with the tests that failed, for the flake log), or null when the jobs are not rerun and the round starts as it did before: the code host
  * cannot read a run's conclusion, so a rerun could not be judged; the run behind the removal could not be read; the arm bot would not be asked once the jobs pass (the pull request is not approved at its head, conflicts, is held or has used its re-arms); or the host refused the rerun, which is said.
  */
-function retryBeforeRound(ctx: PoolContext, entry: Entry, { url, read }: Pull, { failure, jobs, names, count, carried }: Readonly<{ failure: QueueFailure | null; jobs: readonly ReadJob[]; names: readonly string[]; count: number; carried: Pick<QueueHead, "rearms"> }>): QueueHead | null {
+async function retryBeforeRound(ctx: PoolContext, entry: Entry, { url, read }: Pull, { failure, jobs, names, count, carried }: Readonly<{ failure: QueueFailure | null; jobs: readonly ReadJob[]; names: readonly string[]; count: number; carried: Pick<QueueHead, "rearms"> }>): Promise<QueueHead | null> {
   if (!hasFailedJobs(failure) || !canReadRuns(ctx) || count >= HOLD_AFTER) return null;
   const head = read.head!;
   const blocked = noRearmBecause(ctx, { url, read }, { head, step: "rearmed", removals: count, ...carried });
@@ -339,7 +340,7 @@ function retryBeforeRound(ctx: PoolContext, entry: Entry, { url, read }: Pull, {
   const addresses = failure.jobs.map(({ detailsUrl }) => detailsUrl);
   const runIds = addresses.map(runIdOf).filter((id): id is number => id !== null);
   if (runIds.length !== addresses.length) return null;
-  const refused = ctx.codeHost.rerunFailedChecks(addresses);
+  const refused = await ctx.codeHost.rerunFailedChecks(addresses);
   if (refused !== null) {
     log(`${entry.ticket.key}: the failed jobs of the merge group behind ${url} could not be rerun (${refused}): a round is started`);
     return null;
@@ -352,9 +353,9 @@ function retryBeforeRound(ctx: PoolContext, entry: Entry, { url, read }: Pull, {
 }
 
 /** One read of a run, or null when the host would not say: a throw is a refusal, never an answer. */
-function readRun(ctx: PoolContext, repo: string, id: number): CiRun | null {
+async function readRun(ctx: PoolContext, repo: string, id: number): Promise<CiRun | null> {
   try {
-    return ctx.codeHost.readCiRun?.(repo, id) ?? null;
+    return (await ctx.codeHost.readCiRun?.(repo, id)) ?? null;
   } catch (err) {
     log(`the run ${id} of ${repo} could not be read: ${messageOf(err)}`);
     return null;
@@ -365,10 +366,11 @@ function readRun(ctx: PoolContext, repo: string, id: number): CiRun | null {
  * What the rerun of a merge group's jobs came to: `passed` when every run rerun has concluded green (a green read can only be the rerun's, since the runs were red); `failed` when one concluded otherwise, believed only once {@link RETRY_SETTLE_MS} have passed since the rerun, because a read
  * just after it can still show the failure that was rerun; else `waiting`, which is also what a run the host would not say anything of is. PURE apart from the reads.
  */
-function rerunVerdict(ctx: PoolContext, url: string, retry: QueueRetry): "passed" | "failed" | "waiting" {
+async function rerunVerdict(ctx: PoolContext, url: string, retry: QueueRetry): Promise<"passed" | "failed" | "waiting"> {
   const repo = stackMergeRequestOf(url)?.repo;
   if (repo === undefined) return "waiting";
-  const runs = retry.runs.map((id) => readRun(ctx, repo, id));
+  const runs: (CiRun | null)[] = [];
+  for (const id of retry.runs) runs.push(await readRun(ctx, repo, id));
   if (runs.some((run) => run === null || run.status !== "completed")) return "waiting";
   if (runs.every((run) => run?.conclusion === "success")) return "passed";
   return ctx.now() - retry.at >= RETRY_SETTLE_MS ? "failed" : "waiting";
@@ -384,13 +386,13 @@ const spentOn = (answer: PullAnswer): PullAnswer => (answer.record === undefined
  * THE END OF THE RERUN (A11-371), asked at every watch while the record says `retrying`. Passed: each failed test is written to the flake log (a log that cannot be written is said and does not keep the pull request out of the queue), and the arm bot is asked to arm the pull request
  * again ({@link rearm}), once for the head. Failed, or still not concluded {@link RETRY_WAIT_MS} after the rerun: the round starts, with the failing test quoted. Removed again meanwhile (someone armed it by hand): the same round. Still running: the record stays.
  */
-function answerRetry(ctx: PoolContext, entry: Entry, pull: Pull, known: QueueHead, queue: PullQueue): PullAnswer {
+async function answerRetry(ctx: PoolContext, entry: Entry, pull: Pull, known: QueueHead, queue: PullQueue): Promise<PullAnswer> {
   const newest = queue.removals.at(-1)!;
   const count = queue.removals.filter(isFailedChecks).length;
   const names = known.jobs ?? [];
-  const toTheRun = (): PullAnswer => (isFailedChecks(newest) ? answerFailed(ctx, entry, pull, newest, count, known) : spentOn(answerOther(ctx, entry, pull, newest, count)));
+  const toTheRun = async (): Promise<PullAnswer> => (isFailedChecks(newest) ? answerFailed(ctx, entry, pull, newest, count, known) : spentOn(await answerOther(ctx, entry, pull, newest, count)));
   if (known.retry === undefined || count > known.removals || !isFailedChecks(newest)) return toTheRun();
-  const verdict = rerunVerdict(ctx, pull.url, known.retry);
+  const verdict = await rerunVerdict(ctx, pull.url, known.retry);
   if (verdict === "failed") {
     log(`${entry.ticket.key}: ${ejectedNote(names)}: the rerun did not pass (${pull.url})`);
     return toTheRun();
@@ -406,11 +408,11 @@ function answerRetry(ctx: PoolContext, entry: Entry, pull: Pull, known: QueueHea
   } catch (err) {
     log(`${entry.ticket.key}: the flakes of ${pull.url} could not be recorded: ${messageOf(err)}`);
   }
-  return { record: rearm(ctx, entry, pull, { ...rest, step: "rearmed", rerunPassed: true }, `${names.join(", ")} passed on rerun`) };
+  return { record: await rearm(ctx, entry, pull, { ...rest, step: "rearmed", rerunPassed: true }, `${names.join(", ")} passed on rerun`) };
 }
 
 /** `record` as it is below the limit, and held from the arm bot at it. */
-const withHold = (ctx: PoolContext, entry: Entry, url: string, record: QueueHead, count: number): QueueHead => (count < HOLD_AFTER ? record : holdRecord(ctx, entry, url, record, count));
+const withHold = async (ctx: PoolContext, entry: Entry, url: string, record: QueueHead, count: number): Promise<QueueHead> => (count < HOLD_AFTER ? record : holdRecord(ctx, entry, url, record, count));
 
 // ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 // The other removals
@@ -429,12 +431,12 @@ function namedNote({ reason, actor }: QueueRemoval): string {
 }
 
 /** The answer to the newest removal of a pull request when it is not one for failed checks: a conflict starts a round, any other reason is named on the card and starts none. */
-function answerOther(ctx: PoolContext, entry: Entry, pull: Pull, removal: QueueRemoval, count: number): PullAnswer {
+async function answerOther(ctx: PoolContext, entry: Entry, pull: Pull, removal: QueueRemoval, count: number): Promise<PullAnswer> {
   const head = pull.read.head!;
-  if (CONFLICT.test(removal.reason)) return { conflict: conflictBrief(pull, removal), record: withHold(ctx, entry, pull.url, { head, step: "round", removals: count }, count) };
+  if (CONFLICT.test(removal.reason)) return { conflict: conflictBrief(pull, removal), record: await withHold(ctx, entry, pull.url, { head, step: "round", removals: count }, count) };
   const note = namedNote(removal);
   log(`${entry.ticket.key}: ${note} (${pull.url})`);
-  return { record: withHold(ctx, entry, pull.url, { head, step: "named", removals: count, note }, count) };
+  return { record: await withHold(ctx, entry, pull.url, { head, step: "named", removals: count, note }, count) };
 }
 
 // ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
@@ -442,19 +444,19 @@ function answerOther(ctx: PoolContext, entry: Entry, pull: Pull, removal: QueueR
 // ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 
 /** The names of the jobs that failed in the `merge_group` run behind a removal, or the ones already known when the code host cannot say. */
-function jobsBehind(ctx: PoolContext, url: string, removal: QueueRemoval, known: readonly string[] | undefined): readonly string[] {
-  const failure = isFailedChecks(removal) ? readFailure(ctx, url, removal) : null;
+async function jobsBehind(ctx: PoolContext, url: string, removal: QueueRemoval, known: readonly string[] | undefined): Promise<readonly string[]> {
+  const failure = isFailedChecks(removal) ? await readFailure(ctx, url, removal) : null;
   return failure === null ? known ?? [] : jobsToAnswer(failure).map(({ name }) => name);
 }
 
 /**
  * The record of a head the board already answered, counted (A11-154's rule for red checks): the third removal for failed checks with no push between holds the pull request from the arm bot, and a hold the code host refused is asked for again.
  */
-function counted(ctx: PoolContext, entry: Entry, pull: Pull, known: QueueHead, queue: PullQueue): QueueHead {
+async function counted(ctx: PoolContext, entry: Entry, pull: Pull, known: QueueHead, queue: PullQueue): Promise<QueueHead> {
   const count = queue.removals.filter(isFailedChecks).length;
   if (count < HOLD_AFTER) return known.removals === count ? known : { ...known, removals: count };
   if (known.held === true && known.removals === count) return known;
-  const jobs = known.removals === count ? known.jobs : jobsBehind(ctx, pull.url, queue.removals.at(-1)!, known.jobs);
+  const jobs = known.removals === count ? known.jobs : await jobsBehind(ctx, pull.url, queue.removals.at(-1)!, known.jobs);
   return holdRecord(ctx, entry, pull.url, { ...known, ...(jobs === undefined ? {} : { jobs }) }, count);
 }
 
@@ -466,21 +468,21 @@ const STILL_OUT = "it is still out of the merge queue";
  * is, a re-arm until {@link MAX_REARMS} are spent and then the round. Where a round was started, the pull request goes back in the queue when the round ends (the head unmoved, the pull request out of the queue), and again after each removal that follows, until the
  * re-arms are spent or the hold stops them. Returns the answer: the record the entry should hold, and the round when one is due.
  */
-function repeated(ctx: PoolContext, entry: Entry, pull: Pull, known: QueueHead, queue: PullQueue): PullAnswer {
+async function repeated(ctx: PoolContext, entry: Entry, pull: Pull, known: QueueHead, queue: PullQueue): Promise<PullAnswer> {
   const newest = queue.removals.at(-1)!;
   const failed = isFailedChecks(newest);
   const count = queue.removals.filter(isFailedChecks).length;
   if (known.step === "rearmed" && !startedRound(known)) {
     if (!failed) return { record: known };
     if (count > known.removals) return answerFailed(ctx, entry, pull, newest, count, known);
-    return { record: known.refused === undefined ? known : rearm(ctx, entry, pull, known, STILL_OUT) };
+    return { record: known.refused === undefined ? known : await rearm(ctx, entry, pull, known, STILL_OUT) };
   }
-  const record = counted(ctx, entry, pull, known, queue);
+  const record = await counted(ctx, entry, pull, known, queue);
   if (!failed || !startedRound(known) || !roundIsOver(entry)) return { record };
   const marked: QueueHead = { ...record, roundStarted: true };
-  if (record.roundEnded !== true) return { record: rearm(ctx, entry, pull, marked, "its round ended with no push and it is still out of the queue") };
+  if (record.roundEnded !== true) return { record: await rearm(ctx, entry, pull, marked, "its round ended with no push and it is still out of the queue") };
   const again = count > known.removals || record.refused !== undefined;
-  return { record: again ? rearm(ctx, entry, pull, marked, count > known.removals ? "it was removed again after its round" : STILL_OUT) : record };
+  return { record: again ? await rearm(ctx, entry, pull, marked, count > known.removals ? "it was removed again after its round" : STILL_OUT) : record };
 }
 
 /**
@@ -499,13 +501,13 @@ function withoutNote(record: QueueHead): QueueHead {
 }
 
 /** The answer for one open pull request, given the record the entry holds for it. */
-function answerPull(ctx: PoolContext, entry: Entry, pull: Pull, known: QueueHead | undefined): PullAnswer {
+async function answerPull(ctx: PoolContext, entry: Entry, pull: Pull, known: QueueHead | undefined): Promise<PullAnswer> {
   const { url, read } = pull;
   // A host that does not say (a plugin before contract 1.21, or an answer with no timeline) is not one that says there are no removals: what the entry holds stays.
   if (read.head === null || read.queue === undefined) return { record: known };
   let current = known;
   if (current !== undefined && current.head !== read.head) {
-    const stuck = released(ctx, entry, url, current);
+    const stuck = await released(ctx, entry, url, current);
     if (stuck !== null) return { record: stuck };
     current = undefined;
   }
@@ -527,13 +529,13 @@ function answerPull(ctx: PoolContext, entry: Entry, pull: Pull, known: QueueHead
  * lines from the `merge_group` run; a conflict is briefed as a conflict; any other reason is named on the card. The pull requests that are no longer open, and the heads a pull request has moved off, are dropped from the record, and the hold from the arm bot is lifted for a head that moved.
  * The effects are the reads of the run and the logs, and the label; the record is returned, for the caller to write with the round it queues.
  */
-export function answerQueue(ctx: PoolContext, entry: Entry, open: readonly Pull[]): QueueAnswer {
+export async function answerQueue(ctx: PoolContext, entry: Entry, open: readonly Pull[]): Promise<QueueAnswer> {
   const feedback: string[] = [];
   const conflict: string[] = [];
   let heads: Record<string, QueueHead> = {};
   let withoutRound: Record<string, QueueHead> = {};
   for (const pull of open) {
-    const answer = answerPull(ctx, entry, pull, entry.queueHeads?.[pull.url]);
+    const answer = await answerPull(ctx, entry, pull, entry.queueHeads?.[pull.url]);
     if (answer.feedback !== undefined) feedback.push(answer.feedback);
     if (answer.conflict !== undefined) conflict.push(answer.conflict);
     const asRecord = answer.record === undefined ? {} : { [pull.url]: answer.record };

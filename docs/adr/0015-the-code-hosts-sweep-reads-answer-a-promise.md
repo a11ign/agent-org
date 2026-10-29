@@ -12,7 +12,7 @@ The plugin reads a repository's open pull requests with one `gh pr list` and sha
 
 ## Considered options
 
-- **Every contract method a Promise at once** (ADR 0014's option): about 110 call sites in the pool, the ticket port and row mode, in one change. The reads above are the ones the board makes on every pass and were in the log; the writes and the reads done on an event stay synchronous and are the next step, each listed with why in the guard test.
+- **Every contract method a Promise at once** (ADR 0014's option): about 110 call sites in the pool, the ticket port and row mode, in one change. The reads above are the ones the board makes on every pass and were in the log; the writes and the reads done on an event stay synchronous and are the next step, each listed with why in the guard test (done in ADR 0017).
 - **Answers from a cache the plugin keeps warm, with the contract unchanged**: a sweep would read what the last sweep asked for, and a cold read would answer `null`. It leaves the board reading state a sweep old, which is what the ticket's cards already showed.
 - **A worker thread for the plugin's reads**: it moves the hold off the board thread, but a sync answer still has to come back across the thread, so the caller waits as before.
 

@@ -2464,7 +2464,7 @@ function ghFor(pulls: Record<number, unknown>): World {
   const codeHost: CodeHost = {
     ...host,
     // A pull request that reads conflicting is one GitHub refuses to merge the base into here, so its conflict goes straight to a round, as it did before A11-286 (`pool-base-merge.test.ts` has the host that merges, and the one that finds the conflict real).
-    updateBranch: (url, expectedHead) => (described(url)?.mergeable === "CONFLICTING" || described(url)?.mergeStateStatus === "DIRTY" ? { kind: "refused", reason: "this world's host does not merge into a conflicting pull request" } : host.updateBranch!(url, expectedHead)),
+    updateBranch: async (url, expectedHead) => (described(url)?.mergeable === "CONFLICTING" || described(url)?.mergeStateStatus === "DIRTY" ? { kind: "refused", reason: "this world's host does not merge into a conflicting pull request" } : host.updateBranch!(url, expectedHead)),
     readPullFeedback: async (url, self, ignored = []) => {
       const pull = described(url);
       if (pull === undefined || !hold(url, feedbackOfDescribed(pull, self, ignored))) {
@@ -4888,7 +4888,7 @@ test("A11-106: the sweep asks the code host about the open pull requests of a ru
   const world = ghFor({ 1: feedbackPull() });
   const asked: { urls: readonly string[]; stacked: string[] }[] = [];
   const notes: Record<string, string> = {};
-  const codeHost: CodeHost = { ...world.codeHost, sweepRetargets: ({ urls, stacked }) => { asked.push({ urls, stacked: [...stacked] }); return { ...notes }; } };
+  const codeHost: CodeHost = { ...world.codeHost, sweepRetargets: async ({ urls, stacked }) => { asked.push({ urls, stacked: [...stacked] }); return { ...notes }; } };
   const ctx = await readyPrRun({ ...world, codeHost });
   withBlockerOn(ctx.store, "NBF-1", "nbf-1-fit");
   await ctx.pool.retargetStacked();
@@ -4914,7 +4914,7 @@ function withBlockerOn(store: { get: () => Queue; set: (next: Queue) => void }, 
 test("A11-106: a run that has not finished is not swept, so its pull requests are not asked and its queue is not written", async () => {
   const world = ghFor({ 1: feedbackPull() });
   const asked: unknown[] = [];
-  const ctx = await readyPrRun({ ...world, codeHost: { ...world.codeHost, sweepRetargets: (sweep) => { asked.push(sweep); return {}; } } });
+  const ctx = await readyPrRun({ ...world, codeHost: { ...world.codeHost, sweepRetargets: async (sweep) => { asked.push(sweep); return {}; } } });
   withBlockerOn(ctx.store, "NBF-1", "nbf-1-fit");
   const finished = ctx.store.get();
   ctx.store.set({ ...finished, entries: finished.entries.map((entry) => ({ ...entry, phase: "running" })) });
@@ -5550,7 +5550,7 @@ test("A11-154: at the round cap a red check hands any run to a person, who reads
     const handed = run.handedBack;
     await watchRound(ctx.pool);
     assert.equal(ctx.entry("NBF-1").handedBack, handed, "the head was answered with the hand-back: it is not said again");
-    ctx.pool.respond("NBF-1");
+    await ctx.pool.respond("NBF-1");
     assert.deepEqual([ctx.entry("NBF-1").phase, ctx.entry("NBF-1").asked, ctx.entry("NBF-1").handedBack, ctx.entry("NBF-1").rounds], ["queued", true, undefined, undefined], "Respond starts the count again");
   }
 });
@@ -5786,7 +5786,7 @@ test("A11-154: a conflict and a rerun in one watch queue the conflict round and 
 
 test("A11-154: Respond to review on a run that ended needs-human queues a round that resumes its worker, whatever the run ended on", async () => {
   const ctx = await needsHumanRun(ghFor({ 1: feedbackPull({ head: HEAD_1 }) }));
-  ctx.pool.respond("NBF-1");
+  await ctx.pool.respond("NBF-1");
   assert.deepEqual([ctx.entry("NBF-1").phase, ctx.entry("NBF-1").asked, ctx.entry("NBF-1").review, ctx.entry("NBF-1").session], ["queued", true, [approvedPr], "session-t-nbf-1"]);
   await ctx.pool.tick();
   assert.equal(ctx.entry("NBF-1").phase, "running", "and the round starts");
@@ -5797,14 +5797,14 @@ test("A11-154: Respond to review on a run that ended needs-human queues a round 
 test("A11-154: Respond to review on a parked run closes its workspace first, once, and then queues the round; a workspace herdr will not close leaves it parked and says why", async () => {
   const ctx = await parkedOnQuestion(ghFor({ 1: feedbackPull({ head: HEAD_1 }) }));
   ctx.h.refused.add("close");
-  assert.throws(() => ctx.pool.respond("NBF-1"), /herdr could not close NBF-1's workspace/);
+  await assert.rejects(() => ctx.pool.respond("NBF-1"), /herdr could not close NBF-1's workspace/);
   assert.deepEqual([ctx.entry("NBF-1").phase, ctx.entry("NBF-1").workspace], ["finished", "w2"], "still parked, no round");
   ctx.h.refused.clear();
   ctx.h.calls.length = 0;
-  ctx.pool.respond("NBF-1");
+  await ctx.pool.respond("NBF-1");
   assert.equal(closes(ctx.h, "w2"), 1, "the workspace is closed once");
   assert.deepEqual([ctx.entry("NBF-1").phase, ctx.entry("NBF-1").workspace, ctx.entry("NBF-1").asked], ["queued", undefined, true]);
-  assert.throws(() => ctx.pool.respond("NBF-1"), /a round is already queued for NBF-1/, "a second press says a round is queued");
+  await assert.rejects(() => ctx.pool.respond("NBF-1"), /a round is already queued for NBF-1/, "a second press says a round is queued");
   assert.equal(closes(ctx.h, "w2"), 1);
 });
 
@@ -5812,20 +5812,20 @@ test("A11-154: Respond to review that cannot act says why and closes nothing: no
   const merged = await parkedOnQuestion(ghFor({ 1: feedbackPull({ head: HEAD_1 }) }));
   merged.store.set(recordPullStates(merged.store.get(), new Map([["NBF-1", { [approvedPr.url]: "merged" }]])));
   merged.h.calls.length = 0;
-  assert.throws(() => merged.pool.respond("NBF-1"), /NBF-1 has no pull request open/);
+  await assert.rejects(() => merged.pool.respond("NBF-1"), /NBF-1 has no pull request open/);
   assert.deepEqual(merged.h.calls, [], "the parked workspace of a run Respond cannot act on is left open");
   const settled = await needsHumanRun(ghFor({ 1: feedbackPull({ head: HEAD_1 }) }));
   settled.store.set({ ...settled.store.get(), entries: settled.store.get().entries.map((e) => ({ ...e, trackerState: "completed" })) });
-  assert.throws(() => settled.pool.respond("NBF-1"), /NBF-1's ticket is completed in the tracker/);
+  await assert.rejects(() => settled.pool.respond("NBF-1"), /NBF-1's ticket is completed in the tracker/);
   const running = setup(1, ["NBF-1"]);
   await running.pool.tick();
-  assert.throws(() => running.pool.respond("NBF-1"), /NBF-1 is still running/);
-  assert.throws(() => running.pool.respond("NBF-9"), /NBF-9 is not on the board/);
+  await assert.rejects(() => running.pool.respond("NBF-1"), /NBF-1 is still running/);
+  await assert.rejects(() => running.pool.respond("NBF-9"), /NBF-9 is not on the board/);
 });
 
 test("A11-154: Respond to review on a draft acts as Approve", async () => {
   const ctx = await draftRun(ghFor({ 1: feedbackPull() }));
-  ctx.pool.respond("NBF-1");
+  await ctx.pool.respond("NBF-1");
   assert.deepEqual([ctx.entry("NBF-1").phase, ctx.entry("NBF-1").review, ctx.entry("NBF-1").asked, ctx.entry("NBF-1").feedback], ["queued", [approvedPr], undefined, undefined], "the approved round, not an asked one");
 });
 
@@ -5835,7 +5835,7 @@ const talkLeftover = (status: string, fields: Partial<{ workspace_id: string; la
 
 test("A11-154: a round never starts beside a Talk session that is working: it stays queued, says what it waits for, and starts once the session has ended", async () => {
   const ctx = await needsHumanRun(ghFor({ 1: feedbackPull({ head: HEAD_1 }) }));
-  ctx.pool.respond("NBF-1");
+  await ctx.pool.respond("NBF-1");
   ctx.h.extra.push(talkLeftover("working"));
   ctx.h.calls.length = 0;
   await ctx.pool.tick();
@@ -5854,7 +5854,7 @@ test("A11-154: a leftover that is idle, done or has no pane is closed before the
   for (const [why, leftover] of [["idle", talkLeftover("idle")], ["done", talkLeftover("done")], ["no pane, held by the run's name alone", talkLeftover("unknown", { name: null, session: null })],
     ["held by the session alone, under another name", talkLeftover("idle", { label: "claude", name: null })]] as const) {
     const ctx = await needsHumanRun(ghFor({ 1: feedbackPull({ head: HEAD_1 }) }));
-    ctx.pool.respond("NBF-1");
+    await ctx.pool.respond("NBF-1");
     ctx.h.extra.push(leftover);
     ctx.h.calls.length = 0;
     const logged = await captureStderr(async () => { await ctx.pool.tick(); });
@@ -5870,14 +5870,14 @@ test("A11-154: a leftover that is idle, done or has no pane is closed before the
 
 test("A11-154: what is not the run's own is left alone, and a workspace herdr will not close holds the round back, saying why", async () => {
   const ctx = await needsHumanRun(ghFor({ 1: feedbackPull({ head: HEAD_1 }) }));
-  ctx.pool.respond("NBF-1");
+  await ctx.pool.respond("NBF-1");
   ctx.h.extra.push(talkLeftover("idle", { workspace_id: "w7", label: "t-nbf-2", name: "t-nbf-2", session: "session-t-nbf-2" }));
   ctx.h.calls.length = 0;
   await ctx.pool.tick();
   assert.equal(closes(ctx.h, "w7"), 0, "another run's idle workspace is not this run's leftover");
   assert.equal(ctx.entry("NBF-1").phase, "running");
   const held = await needsHumanRun(ghFor({ 1: feedbackPull({ head: HEAD_1 }) }));
-  held.pool.respond("NBF-1");
+  await held.pool.respond("NBF-1");
   held.h.extra.push(talkLeftover("idle"));
   held.h.refused.add("close");
   await held.pool.tick();
@@ -5902,7 +5902,7 @@ test("A11-154: a Talk session never starts beside a working agent that holds the
 
 test("A11-154: a Talk is refused while a round of the run is queued or running, and the refusal names the round", async () => {
   const ctx = await needsHumanRun(ghFor({ 1: feedbackPull({ head: HEAD_1 }) }));
-  ctx.pool.respond("NBF-1");
+  await ctx.pool.respond("NBF-1");
   assert.throws(() => ctx.pool.talk("NBF-1"), /NBF-1 has a review round queued: talk to it once the round has ended, as the round and a talk session would share one session/);
   await ctx.pool.tick();
   assert.throws(() => ctx.pool.talk("NBF-1"), /NBF-1 has a review round running/);
@@ -5948,7 +5948,7 @@ test("A11-154 Done-when: a stacked pull request whose checks fail after its base
   const pulls: Record<number, unknown> = { 1: feedbackPull({ head: HEAD_1, base: stacked.base }) };
   const answers = ghFor(pulls);
   // The code host's sweep: once the blocker's pull request merged, a pull request stacked on its branch is moved to the default branch, as the plugin's own is (its tests, not this one's).
-  const sweeping: CodeHost = { ...answers.codeHost, sweepRetargets: ({ urls, stacked: bases }) => {
+  const sweeping: CodeHost = { ...answers.codeHost, sweepRetargets: async ({ urls, stacked: bases }) => {
     if (stacked.blocker === "MERGED" && bases.has(stacked.base)) {
       stacked.edits.push([...urls]);
       stacked.base = "main";

@@ -42,7 +42,7 @@ export async function closeEmptyMember(ctx: PoolContext, entry: Entry, { url, be
     remember(ctx, url, done, feedback.head, "emptyAt");
     return null;
   }
-  const note = closeNote({ url, below, outcome: closeOutcome(ctx, url, below) });
+  const note = closeNote({ url, below, outcome: await closeOutcome(ctx, url, below) });
   if (note !== previousNote) log(`${entry.ticket.key}: ${note}`);
   return note;
 }
@@ -55,19 +55,19 @@ const restackHeadUnknown = (done: RestackDone): boolean => done.head === undefin
  * past the restack, and a later sweep reads the member's files. Merged in just now (`updated`): that is the restack, made at this head, and a later head is the one to read. Anything else (a conflict, a refusal) leaves the member as it was, for the watch and the next
  * sweep. Null: the note stands.
  */
-function confirmRestack(ctx: PoolContext, entry: Entry, { url, done, head }: { url: string; done: RestackDone; head: string }): null {
-  const result = askUpdate(ctx, url, head);
+async function confirmRestack(ctx: PoolContext, entry: Entry, { url, done, head }: { url: string; done: RestackDone; head: string }): Promise<null> {
+  const result = await askUpdate(ctx, url, head);
   if (result.kind === "up-to-date") ctx.restacked.set(url, { ...done, head, upToDate: true });
   if (result.kind === "updated") {
     ctx.restacked.set(url, { ...done, head });
-    followHead(ctx, entry.ticket.key, url, head);
+    await followHead(ctx, entry.ticket.key, url, head);
   }
   return null;
 }
 
 /** A merge pushed to a finished run's pull request moves its head: the head the run ended at moves with it, so the push is not read as a person's (A11-153). */
-export function followHead(ctx: PoolContext, key: string, url: string, from: string): void {
-  const to = ctx.codeHost.stackMergeFactsOf?.(url)?.head;
+export async function followHead(ctx: PoolContext, key: string, url: string, from: string): Promise<void> {
+  const to = (await ctx.codeHost.stackMergeFactsOf?.(url))?.head;
   if (to !== undefined && to !== from) update(ctx, (queue) => moveOutcomeHeads(queue, key, from, to));
 }
 
@@ -90,11 +90,11 @@ const wasSaidEmpty = (note: string | undefined): boolean => note !== undefined &
 const isCandidate = (note: string | undefined): boolean => note !== undefined && (isRestackedNote(note) || isEmptyMemberNote(note));
 
 /** Closes the member with the board's comment, if the code host can, and says what came of it. */
-function closeOutcome(ctx: PoolContext, url: string, below: RestackBelow): CloseOutcome {
+async function closeOutcome(ctx: PoolContext, url: string, below: RestackBelow): Promise<CloseOutcome> {
   const { closePull } = ctx.codeHost;
   if (closePull === undefined) return { kind: "unsupported" };
   try {
-    closePull.call(ctx.codeHost, url, closeComment(url, below));
+    await closePull.call(ctx.codeHost, url, closeComment(url, below));
     return { kind: "closed" };
   } catch (err) {
     return { kind: "refused", reason: messageOf(err) };

@@ -111,7 +111,7 @@ test("A11-249: a pull request the code host cannot read writes nothing, and is a
   const made = world({}, {});
   holding(made, { closedWork: { commits: COMMITS, files: FILES } });
   const reads = made.codeHost.readClosedWork!;
-  made.codeHost.readClosedWork = (url) => (readable ? reads(url) : null);
+  made.codeHost.readClosedWork = async (url) => (readable ? reads(url) : null);
   await made.pool.refreshTracker();
   assert.deepEqual([made.tracker.comments, existsSync(folderOf(made))], [[], false]);
   readable = true;
@@ -226,7 +226,7 @@ test("A11-249: a record file that is not a record is read again from the code ho
 test("A11-249: a pull request that cannot be read is said once, not at every refresh, and is still asked again", async () => {
   const made = world();
   holding(made, { closedWork: { commits: COMMITS, files: FILES } });
-  made.codeHost.readClosedWork = () => null;
+  made.codeHost.readClosedWork = async () => null;
   const said: string[] = [];
   const write = process.stderr.write.bind(process.stderr);
   process.stderr.write = ((text: string) => { said.push(String(text)); return true; }) as typeof process.stderr.write;

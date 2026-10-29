@@ -96,11 +96,11 @@ async function readFleetJob(wait: FleetJobWait, seams: WaitSeams): Promise<Readi
 /** A CI conclusion that is a pass. */
 const PASSING = new Set(["success", "skipped", "neutral"]);
 
-function readCiRun(wait: CiRunWait, seams: WaitSeams): Reading {
+async function readCiRun(wait: CiRunWait, seams: WaitSeams): Promise<Reading> {
   if (seams.codeHost.readCiRun === undefined) return unreadable(wait, "the code host cannot read a CI run (it is older than contract 1.17)");
   let run;
   try {
-    run = seams.codeHost.readCiRun(wait.repository, wait.runId);
+    run = await seams.codeHost.readCiRun(wait.repository, wait.runId);
   } catch (error) {
     return unreadable(wait, whyOf(error));
   }
@@ -178,7 +178,7 @@ export async function readWait(wait: Wait, seams: WaitSeams): Promise<Reading> {
   try {
     switch (wait.kind) {
       case "fleetJob": return await readFleetJob(wait, seams);
-      case "ciRun": return readCiRun(wait, seams);
+      case "ciRun": return await readCiRun(wait, seams);
       case "pullRequest": return await readPullRequest(wait, seams);
       case "ticket": return await readTicket(wait, seams);
       case "session": return readSession(wait, seams);

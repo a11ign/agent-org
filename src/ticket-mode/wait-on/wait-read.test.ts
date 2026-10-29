@@ -30,7 +30,7 @@ function seamsOf(world: World) {
   const seams: WaitSeams = {
     fleetJobStatus: async (id) => { calls.push(`fleet ${id}`); return typeof world.job === "string" ? world.job : JSON.stringify(answer(world.job)); },
     codeHost: {
-      ...(world.run === "absent" ? {} : { readCiRun: (repository: string, runId: number) => { calls.push(`ci ${repository}#${runId}`); return answer(ciRun); } }),
+      ...(world.run === "absent" ? {} : { readCiRun: async (repository: string, runId: number) => { calls.push(`ci ${repository}#${runId}`); return answer(ciRun); } }),
       readPullState: async (url) => { calls.push(`pull ${url}`); return answer(world.pull === undefined ? null : world.pull); },
       readReviewState: async (url) => { calls.push(`review ${url}`); return answer(world.reviews === undefined ? null : world.reviews); },
     },
@@ -90,7 +90,7 @@ test("A11-245: a CI run that completed with success, skipped or neutral is finis
 
 test("A11-245: a host that answers a run in a shape the contract does not allow is an unreadable item and rejects nothing", async () => {
   const seams = seamsOf({ run: undefined as unknown as null }).seams;
-  const broken: WaitSeams = { ...seams, codeHost: { ...seams.codeHost, readCiRun: () => undefined as unknown as null } };
+  const broken: WaitSeams = { ...seams, codeHost: { ...seams.codeHost, readCiRun: async () => undefined as unknown as null } };
   const reading = await readWait(CI, broken);
   assert.equal(reading.status, "unreadable");
   const all = await readWaits([CI, JOB], new Map(), { ...broken, fleetJobStatus: async () => JSON.stringify(DONE_JOB) });

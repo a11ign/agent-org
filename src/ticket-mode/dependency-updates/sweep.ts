@@ -50,13 +50,13 @@ async function sweepOnce(deps: DependencySweepDeps, memory: SweepContext["memory
   // Everything but asking goes on while the team is unknown: reruns, the forgetting of closed pull requests and the logs are not the team's.
   const team = await requestTeamOf(ctx);
   let full = false;
-  const ask = (request: TicketRequest): void => {
+  const ask = async (request: TicketRequest): Promise<void> => {
     if (full || team === null) return;
     // A writer run waits for no Pause (a person just asked for it), but the sweep's has no person: while the board is paused it asks for nothing.
     if (deps.store.get().paused) sayOnce(ctx, "dependency updates: the queue is paused, so no dependency ticket is asked for until it is resumed");
-    full = deps.store.get().paused || !requestTicket(ctx, request, team);
+    full = deps.store.get().paused || !(await requestTicket(ctx, request, team));
   };
-  askOwnRequests(ctx, ask);
+  await askOwnRequests(ctx, ask);
   const self = (await deps.codeHost.readOwnLogin()) ?? "";
   const repositories = repositoriesOf(ctx);
   for (const repository of repositories) {
@@ -67,8 +67,8 @@ async function sweepOnce(deps: DependencySweepDeps, memory: SweepContext["memory
 }
 
 /** The requests the board makes of its own accord (the watchdog's defect hours): each key that has no entry yet, or whose failed entry is due again, is asked for. */
-function askOwnRequests({ deps, state }: SweepContext, ask: (request: TicketRequest) => void): void {
-  for (const request of deps.requests?.() ?? []) if (due(state.tickets[request.key], deps.now())) ask(request);
+async function askOwnRequests({ deps, state }: SweepContext, ask: (request: TicketRequest) => Promise<void>): Promise<void> {
+  for (const request of deps.requests?.() ?? []) if (due(state.tickets[request.key], deps.now())) await ask(request);
 }
 
 /**
@@ -100,20 +100,20 @@ function repositoriesOf(ctx: SweepContext): readonly string[] {
 }
 
 /** One repository's open pull requests: each is skipped, asked for as a major, or watched as a group. */
-async function sweepRepository(ctx: SweepContext, ask: (request: TicketRequest) => void, { repository, pulls, self }: Readonly<{ repository: string; pulls: readonly DependencyPull[]; self: string }>): Promise<void> {
+async function sweepRepository(ctx: SweepContext, ask: (request: TicketRequest) => Promise<void>, { repository, pulls, self }: Readonly<{ repository: string; pulls: readonly DependencyPull[]; self: string }>): Promise<void> {
   forgetClosed(ctx, repository, pulls);
   for (const pull of pulls) {
     const update = classifyDependencyPull(pull);
     if (update.kind === "skip") sayOnce(ctx, `dependency updates: ${pull.url} is left alone: ${update.reason}`);
-    else if (update.kind === "major") askMajor(ctx, ask, { repository, pull, update });
+    else if (update.kind === "major") await askMajor(ctx, ask, { repository, pull, update });
     else await watchGroup(ctx, ask, { repository, pull, group: update.group, self });
   }
 }
 
 /** The key of a major that has no entry yet, or whose failed entry is due again, is asked for. */
-function askMajor({ deps, state }: SweepContext, ask: (request: TicketRequest) => void, { repository, pull, update }: Readonly<{ repository: string; pull: DependencyPull; update: MajorUpdate }>): void {
+async function askMajor({ deps, state }: SweepContext, ask: (request: TicketRequest) => Promise<void>, { repository, pull, update }: Readonly<{ repository: string; pull: DependencyPull; update: MajorUpdate }>): Promise<void> {
   const key = majorKey(repository, update);
-  if (due(state.tickets[key], deps.now())) ask({ key, repository, request: (team) => majorRequest({ team, repository, url: pull.url, headRefName: pull.headRefName, body: pull.body, update }) });
+  if (due(state.tickets[key], deps.now())) await ask({ key, repository, request: (team) => majorRequest({ team, repository, url: pull.url, headRefName: pull.headRefName, body: pull.body, update }) });
 }
 
 /** A pull request that is no longer open forgets the head it was rerun at, so a pull request number never carries a record into another life. */

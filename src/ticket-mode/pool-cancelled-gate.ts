@@ -57,14 +57,14 @@ function rerunPlan(ctx: PoolContext, key: string, { url, read }: OpenPull): Read
  * What the board does about one open pull request of a finished run that sits BLOCKED behind cancelled runs of its required checks: it asks the code host to rerun them, once for the head, and logs it. It does nothing for a host that cannot rerun a whole run
  * (`rerunRuns` absent), and for a pull request the log already records a rerun for at this head. A refusal is logged with its reason, and the next watch asks again until {@link MAX_REFUSALS}.
  */
-export function rerunCancelledGate(ctx: PoolContext, entry: Entry, pull: OpenPull): void {
+export async function rerunCancelledGate(ctx: PoolContext, entry: Entry, pull: OpenPull): Promise<void> {
   if (ctx.codeHost.rerunRuns === undefined) return;
   const key = entry.ticket.key;
   const plan = rerunPlan(ctx, key, pull);
   if (plan === null) return;
   const { url, read } = pull;
   const { runs, head } = plan;
-  const refused = ctx.codeHost.rerunRuns(runs);
+  const refused = await ctx.codeHost.rerunRuns(runs);
   const checks = checksOf(read);
   const why = refused === null ? undefined : (shortReason(refused) ?? "no reason given");
   const rerun: CancelledRerun = { url, head, checks, ...(why === undefined ? {} : { refused: why }) };

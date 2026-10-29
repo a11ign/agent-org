@@ -151,7 +151,7 @@ test("A11-238: a refusal note is the stack merge's to clear, even when the sweep
   const stale = `GitHub refused the stack merge of ${BOTTOM}: ${REASON}`;
   const { host, entry, sweep } = world({
     run: (urls) => finishedRun(urls, { [BOTTOM]: ready(BOTTOM_HEAD), [ABOVE]: ready(ABOVE_HEAD) }, { retargets: { [BOTTOM]: stale }, blockers: [{ key: "NBF-0", state: "started", status: "In Review", branch: "nbf-1-fit", pulls: {} }] }),
-    codeHost: (fake) => ({ ...fake, sweepRetargets: ({ previous }) => ({ ...previous }) }),
+    codeHost: (fake) => ({ ...fake, sweepRetargets: async ({ previous }) => ({ ...previous }) }),
   });
   await sweep();
   assert.deepEqual(requested(host), [`${REPOSITORY}#1872`], "the refusal is gone from GitHub (the head moved on), so the pull request is handed back");
@@ -162,7 +162,7 @@ test("A11-238: a note about a pull request's base stands, and its stack merge wa
   const note = `Needs retarget: ${BOTTOM} still targets nbf-1-fit, whose branch is gone: retarget it by hand`;
   const { host, sweep, entry } = world({
     run: (urls) => finishedRun(urls, { [BOTTOM]: ready(BOTTOM_HEAD), [ABOVE]: ready(ABOVE_HEAD) }, { blockers: [{ key: "NBF-0", state: "started", status: "In Review", branch: "nbf-1-fit", pulls: {} }] }),
-    codeHost: (fake) => ({ ...fake, sweepRetargets: () => ({ [BOTTOM]: note }) }),
+    codeHost: (fake) => ({ ...fake, sweepRetargets: async () => ({ [BOTTOM]: note }) }),
   });
   await sweep();
   assert.deepEqual(entry().retargets, { [BOTTOM]: note }, "the retarget note is the card's");
@@ -170,24 +170,23 @@ test("A11-238: a note about a pull request's base stands, and its stack merge wa
   assert.ok(!host.calls.includes(`stackMergeFactsOf ${BOTTOM}`), "its stack is not even read");
 });
 
-test("A11-282: the sweep of the bases asks the code host's asynchronous sweep when it has one, and never the synchronous one, which holds the board thread's loop", async () => {
+test("A11-282, A11-395: the sweep of the bases asks the code host's sweep, which answers a promise and holds nothing, for the run's open pull requests", async () => {
   const note = `Needs retarget: ${BOTTOM} still targets nbf-1-fit, whose branch is gone: retarget it by hand`;
   const asked: string[] = [];
   const { sweep, entry } = world({
     run: (urls) => finishedRun(urls, { [BOTTOM]: ready(BOTTOM_HEAD), [ABOVE]: ready(ABOVE_HEAD) }, { blockers: [{ key: "NBF-0", state: "started", status: "In Review", branch: "nbf-1-fit", pulls: {} }] }),
-    codeHost: (fake) => ({ ...fake, sweepRetargets: () => { throw new Error("the synchronous sweep holds the process still"); },
-      sweepRetargetsAsync: async ({ urls }) => { asked.push(...urls); return { [BOTTOM]: note }; } }),
+    codeHost: (fake) => ({ ...fake, sweepRetargets: async ({ urls }) => { asked.push(...urls); return { [BOTTOM]: note }; } }),
   });
   await sweep();
-  assert.deepEqual(asked, [BOTTOM, ABOVE], "the asynchronous sweep was asked for the run's open pull requests");
-  assert.deepEqual(entry().retargets, { [BOTTOM]: note }, "and its note is the card's, as the synchronous sweep's is");
+  assert.deepEqual(asked, [BOTTOM, ABOVE], "the sweep was asked for the run's open pull requests");
+  assert.deepEqual(entry().retargets, { [BOTTOM]: note }, "and its note is the card's");
 });
 
 test("A11-282: a run a person queued again while the sweep waited on GitHub is left alone: nothing is handed to the arm bot and no note is written over it", async () => {
   const note = `Needs retarget: ${BOTTOM} still targets nbf-1-fit, whose branch is gone: retarget it by hand`;
   const { host, sweep, entry, ctx } = world({
     run: (urls) => finishedRun(urls, { [BOTTOM]: ready(BOTTOM_HEAD), [ABOVE]: ready(ABOVE_HEAD) }, { blockers: [{ key: "NBF-0", state: "started", status: "In Review", branch: "nbf-1-fit", pulls: {} }] }),
-    codeHost: (fake) => ({ ...fake, sweepRetargetsAsync: async () => {
+    codeHost: (fake) => ({ ...fake, sweepRetargets: async () => {
       // Retry landed while GitHub was being asked: the run is queued again.
       (ctx.store.set as (queue: Queue) => void)({ entries: [{ ...entry(), phase: "queued" }] } as unknown as Queue);
       return { [ABOVE]: note };

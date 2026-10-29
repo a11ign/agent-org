@@ -30,12 +30,12 @@ export type ForeignRedsRead = Readonly<{
 }>;
 
 /** The checks failing where the run cannot mend them, for the open pull request at a URL of an entry. */
-export type ForeignReds = (entry: Entry, url: string) => ForeignRedsRead;
+export type ForeignReds = (entry: Entry, url: string) => Promise<ForeignRedsRead>;
 
 const NOTHING: ForeignRedsRead = { names: new Set(), onMain: new Set(), mainPassing: null, mainPending: null, mainBranch: null };
 
 /** No check is red elsewhere: what a caller that asked nothing says. */
-export const NO_FOREIGN_REDS: ForeignReds = () => NOTHING;
+export const NO_FOREIGN_REDS: ForeignReds = async () => NOTHING;
 
 /** The `owner/name` a pull request's address is in, or null for any other address. PURE. */
 const repositoryOf = (url: string): string | null => /^https:\/\/github\.com\/([^/]+\/[^/]+)\/pull\/\d+/.exec(url)?.[1] ?? null;
@@ -47,10 +47,10 @@ type MainRead = Readonly<{ failing: ReadonlySet<string>; passing: ReadonlySet<st
  * The checks failing on the head of `repository`'s default branch and the ones passing there, or none of either when the code host cannot say: a host without the read, one that could not ask, and one that threw are all
  * "main is not known to be red", so the run's checks are answered as before, and none is known to be green either (A11-215): a read that failed leaves `passing` empty, a host that cannot say leaves it null. Said in the log once for the pass when the host could not ask.
  */
-function readMain(ctx: PoolContext, repository: string): MainRead {
+async function readMain(ctx: PoolContext, repository: string): Promise<MainRead> {
   const unread: MainRead = { failing: new Set(), passing: new Set(), pending: null, branch: null };
   try {
-    const red = ctx.codeHost.readDefaultBranchRed?.(repository);
+    const red = await ctx.codeHost.readDefaultBranchRed?.(repository);
     if (red === undefined) return { failing: new Set(), passing: null, pending: null, branch: null };
     if (red === null) {
       log(`the checks failing on ${repository}'s default branch could not be read, so a check there is neither known to be red nor to be green`);
@@ -95,10 +95,10 @@ function failingElsewhere(pass: readonly PassRead[], entry: Entry, url: string):
  */
 export function foreignRedsOf(ctx: PoolContext, pass: readonly PassRead[]): ForeignReds {
   const main = new Map<string, MainRead>();
-  return (entry, url) => {
+  return async (entry, url) => {
     const repository = repositoryOf(url);
     if (repository === null) return NOTHING;
-    if (!main.has(repository)) main.set(repository, readMain(ctx, repository));
+    if (!main.has(repository)) main.set(repository, await readMain(ctx, repository));
     const { failing, passing, pending, branch } = main.get(repository)!;
     return { names: new Set([...failing, ...failingElsewhere(pass, entry, url)]), onMain: failing, mainPassing: passing, mainPending: pending, mainBranch: branch };
   };

@@ -61,7 +61,7 @@ function refusedVerdictOf(reviewer: ReviewerPort, ref: { pr: string; head: strin
 }
 
 /** Posts the record of a refused re-review on its pull request, as the code host's `commentOnPull` does. A host without it is said once, and a post that fails is said: the result is in the run's log either way. */
-function commentRefused(ctx: PoolContext, url: string, comment: string): void {
+async function commentRefused(ctx: PoolContext, url: string, comment: string): Promise<void> {
   const { codeHost, refusedHeads } = ctx;
   if (codeHost.commentOnPull === undefined) {
     if (!refusedHeads.has("no-commentOnPull")) log("the code host cannot comment on a pull request, so a refused re-review is recorded in the run's log alone");
@@ -69,7 +69,7 @@ function commentRefused(ctx: PoolContext, url: string, comment: string): void {
     return;
   }
   try {
-    codeHost.commentOnPull(url, comment);
+    await codeHost.commentOnPull(url, comment);
   } catch (err) {
     log(`${url}: the result of the refused re-review could not be commented on the pull request (${messageOf(err).split("\n")[0]}); it is in the run's log`);
   }
@@ -117,7 +117,7 @@ export async function recordRefusedRereview(ctx: PoolContext, reviewer: Reviewer
   const reply = replies.length === 0 ? null : replies.map(({ text }) => text.trim()).join("\n\n").slice(-REPLIES_KEPT);
   log(`${url}: the re-review at ${head.slice(0, 8)} ended ${refused.verdict === "not-convinced" ? "still not convinced" : "convinced, but the verdict door refused it"}; recorded`);
   if (held !== undefined) update(ctx, (queue) => recordRereview(queue, held.ticket.key, { url, head, review: blockTextOf(state), verdict: refused.verdict, reasons: refused.text, reply, decisions: look.decided ?? null }, ctx.now()));
-  commentRefused(ctx, url, rereviewComment(head, refused.verdict, refused.text));
+  await commentRefused(ctx, url, rereviewComment(head, refused.verdict, refused.text));
 }
 
 /**

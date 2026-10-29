@@ -27,7 +27,7 @@ function board(now = 9_000) {
   const dir = tmpDir("after-merge-route-");
   const settings = parseTicketSettings({ clones: { "agent-org": "/r/agent-org" }, stateDir: dir });
   const noop = () => {};
-  const pool = { tick: async () => {}, stop: noop, close: noop, dismiss: async () => {}, remove: async () => {}, respond: noop, reconcile: noop, ensureSession: async () => {}, refreshTracker: async () => {}, watchFeedback: noop,
+  const pool = { tick: async () => {}, stop: noop, close: noop, dismiss: async () => {}, remove: async () => {}, respond: async () => {}, reconcile: noop, ensureSession: async () => {}, refreshTracker: async () => {}, watchFeedback: noop,
     releaseReviewers: noop, retargetStacked: noop, rebaseStacked: async () => {}, applyEdit: async () => {}, discardEdit: noop, stopWriterRun: noop, reviewNewHeads: noop };
   const made = createBoard({ settings, source: createFakeTracker(), codeHost: createFakeCodeHost(), key: "k".repeat(48), queuePath: join(dir, "tickets", "queue.json"), choicePath: join(dir, "choice.json"),
     pool, now: () => now, version: null, next: () => null });

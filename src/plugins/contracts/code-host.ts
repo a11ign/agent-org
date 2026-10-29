@@ -1,7 +1,7 @@
 // @ts-check
-// module: the code host contract, version 3.0 -- what ticket mode asks of the place pull requests live (A11-158)
+// module: the code host contract, version 4.0 -- what ticket mode asks of the place pull requests live (A11-158)
 //
-// A TYPE FILE: it imports nothing at run time. It is SYNCHRONOUS, because the readers of it are, EXCEPT THE READS THE INSTANCE'S LOOP MAKES ON A SWEEP (contract 2.0) AND THE REVIEW CLAIM'S TWO CALLS (3.0), which answer a promise: the ticket port's gate (`ticket-port/port.ts`) and ticket
+// A TYPE FILE: it imports nothing at run time. It is SYNCHRONOUS, because the readers of it are, EXCEPT THE READS THE INSTANCE'S LOOP MAKES ON A SWEEP (contract 2.0), THE REVIEW CLAIM'S TWO CALLS (3.0) AND THE OPERATIONS IT MAKES ON AN EVENT (4.0), which answer a promise: the ticket port's gate (`ticket-port/port.ts`) and ticket
 // mode's injected `gh: (args) => string` (`pool-context.ts`). It is written from the GitHub operations ticket mode makes today, and carries `CodeHostPort`'s four
 // operations, which stay declared in `port.ts` (its source test holds that file to no import at all, a re-export included) and are named here by a type-only import. It
 // imports nothing else of core: `ReviewState` is declared here, and `ticket-mode/reviewer-port.ts` re-exports it.
@@ -9,6 +9,7 @@
 //
 // ROW MODE'S GITHUB OPERATIONS are an optional `rows` group of this contract, not a second plugin (`docs/adr/0002-row-mode-github-is-an-optional-part-of-the-code-host-contract.md`); the group is declared in `code-host-rows.ts`.
 //
+// 4.0 (A11-395): the operations the board makes ON AN EVENT ANSWER A PROMISE, where they answered the value, which is a MAJOR change: `readQueueFailure`, `holdFromQueue`, `readDefaultBranchRed`, `readMergeFlow`, `readClosedWork`, `pullsNaming`, `sweepRetargets`, `stackMergeFactsOf`, `requestStackMerge`, `readCiRun`, `readCheckLog`, `rerunFailedChecks`, `rerunRuns`, `updateBranch`, `closePull` and `commentOnPull` each held the board's loop while `gh` ran. A promise resolves to what the call answered before (a null for "could not ask" and a refusal text included, never a rejection for a call the place refused), and one that THROWS now REJECTS with the same first line. `sweepRetargetsAsync` (2.2) is folded into `sweepRetargets`: after this there is one sweep. `armMerge` stays synchronous: it is `CodeHostPort`'s, which `ticket-port/port.ts` declares, and nothing on the board's loop calls it. A plugin of major 3 is refused (`READ_MAJORS`), since its operations answer the value.
 // 3.0 (A11-379): `readReviewClaims` and `writeReviewClaim` ANSWER A PROMISE, where they answered the value, which is a MAJOR change: the reviewer's start made both as a synchronous `gh` on the board's thread, and held the loop for each. A promise resolves to what the call answered before (`{ unreadable }` and a refusal text included, never a rejection for a call GitHub refused), and a host runs both without holding the process still. A plugin of major 2 is refused (`READ_MAJORS`), since its claim calls answer the value.
 // 2.2 (A11-282): `repositories.readRepositoriesAsync` and `sweepRetargetsAsync`, both OPTIONAL: the organisation's repositories, and the sweep of the stacked pull requests' bases, answering a promise, which the board's clone sweep and its restack sweep read, so a `gh` of a second no longer holds the board thread. A host without it is read through `readRepositories`, as before; a minor only adds.
 // 2.1 (A11-365): `readCallCounts`, OPTIONAL: how many calls the host has made to the place pull requests live (`GithubCallCounts`: in total, in the last minute, by kind, how many a conditional read answered as unchanged, and the current and last sweep), which `/api/health` serves so a day's rate can be read from the board; and `refreshPull`, OPTIONAL: drop what the host holds of the repository of a pull request, so the next read of it is a fresh one. A host may read a repository's pull requests ONCE per sweep and share the reading (the GitHub plugin does), so a read is as old as the sweep; a caller that records what it read to compare it later (the head and the description a stand-off round is given) refreshes first. A plugin of 2.0 is read as one that counts none and holds nothing back, and `/api/health` then says no counts.
@@ -65,7 +66,7 @@ import type { CodeHostRows } from "./code-host-rows.ts";
 export type { ChangeFacts, ChangeRef, CodeHostEvent, CodeHostEventKind, CodeHostPort, CodeHostRows };
 
 /** The code host contract's version, `<major>.<minor>`: a minor only adds, and a major breaks (`src/plugins/version.ts`). */
-export const CODE_HOST_CONTRACT_VERSION = "3.0";
+export const CODE_HOST_CONTRACT_VERSION = "4.0";
 
 /** The account the host's dependency bot opens its pull requests as (contract 1.19): the only author {@link CodeHost.openDependencyPulls} returns. */
 export const DEPENDENCY_PULL_AUTHOR = "dependabot[bot]";
@@ -369,41 +370,41 @@ export interface CodeHost extends CodeHostPort {
    * The checks failing on the head of `repository`'s default branch (contract 1.13), or null for "could not ask": a repository the host cannot read, a branch with no head, and an answer of another shape are all
    * null. Null is never "nothing is red". A host without it is read as one that names none, and no red check is called main's.
    */
-  readDefaultBranchRed?(repository: string): DefaultBranchRed | null;
+  readDefaultBranchRed?(repository: string): Promise<DefaultBranchRed | null>;
   /**
    * Whether `repository` (`owner/name`) allows auto-merge and has the arm workflow on its default branch (contract 1.25), or null for "could not ask": a repository the host cannot read and an answer it cannot read are both null. Null is never "it has no merge flow".
    * A host without it is read as one that cannot be asked: the board then gives the reason it can read from the pull request alone, and doctor says the repository could not be read.
    */
-  readMergeFlow?(repository: string): MergeFlow | null;
+  readMergeFlow?(repository: string): Promise<MergeFlow | null>;
   /**
    * Brings the branch of the pull request at `url` up to date with its base (contract 1.15), as the workers' account, provided its head is still `expectedHead`: a head that moved since the caller read it is `refused`, not raced. Never throws: a host that cannot say
    * answers `refused` with a reason, and an address that is no pull request of the host is `refused`. A host without it cannot update a branch, and the board then holds a pull request as it did before.
    */
-  updateBranch?(url: string, expectedHead: string): UpdateBranchResult;
+  updateBranch?(url: string, expectedHead: string): Promise<UpdateBranchResult>;
   /**
-   * Closes the pull request at `url` with `comment` posted on it (contract 1.23), as the workers' account: the board closes a member of a stack that holds nothing of its own, and never a person's pull request. THROWS, with the host's own first line, when the pull request cannot be
+   * Closes the pull request at `url` with `comment` posted on it (contract 1.23), as the workers' account: the board closes a member of a stack that holds nothing of its own, and never a person's pull request. REJECTS (4.0), with the host's own first line, when the pull request cannot be
    * closed, and for an address that is no pull request of the host; it answers nothing, so a caller never reads a refusal as a close. A pull request that is already closed is not an error. A host without it cannot close, and the board then says on the card that the pull request is to be closed.
    */
-  closePull?(url: string, comment: string): void;
+  closePull?(url: string, comment: string): Promise<void>;
   /**
-   * Posts `comment` on the pull request at `url` as the workers' account (contract 1.26): the board records the result of a re-review the verdict door refused on the pull request itself. THROWS, with the host's own first line, when the comment
+   * Posts `comment` on the pull request at `url` as the workers' account (contract 1.26): the board records the result of a re-review the verdict door refused on the pull request itself. REJECTS (4.0), with the host's own first line, when the comment
    * cannot be posted (an address that is no pull request of the host included), so no caller reads a refusal as a post.
    */
-  commentOnPull?(url: string, comment: string): void;
+  commentOnPull?(url: string, comment: string): Promise<void>;
   /**
    * What the pull request at `url` is, as the stack merge sees it (contract 1.16), or null for "could not ask": an address that is no pull request of the host, and a pull request the host will not say are both null. Null is never "it is not in a stack".
    * A host without it is read as one the board asks the arm bot for nothing on.
    */
-  stackMergeFactsOf?(url: string): StackMergeFacts | null;
+  stackMergeFactsOf?(url: string): Promise<StackMergeFacts | null>;
   /**
-   * Asks the arm bot to merge the pull request (contract 1.16): the board never merges itself, so this starts the arm bot's own job, which re-reads everything with its own identity and trusts nothing the request says. THROWS, with the host's own first line, when the request is refused. It is also how the board puts a pull request back in the merge queue after a removal that was not the change's (A11-295): the job arms a plain pull request with auto-merge, and does nothing for one that is not approved or is held.
+   * Asks the arm bot to merge the pull request (contract 1.16): the board never merges itself, so this starts the arm bot's own job, which re-reads everything with its own identity and trusts nothing the request says. REJECTS (4.0), with the host's own first line, when the request is refused. It is also how the board puts a pull request back in the merge queue after a removal that was not the change's (A11-295): the job arms a plain pull request with auto-merge, and does nothing for one that is not approved or is held.
    */
-  requestStackMerge?(request: StackMergeRequest): void;
+  requestStackMerge?(request: StackMergeRequest): Promise<void>;
   /**
    * The workflow run `runId` of `repository` (`owner/name`), or null for "could not ask": a run the host does not have, a refused read and an answer it cannot read are all null. Null is never "it has not finished". A host without it is read as one that cannot be asked
    * about a run (contract 1.17).
    */
-  readCiRun?(repository: string, runId: number): CiRun | null;
+  readCiRun?(repository: string, runId: number): Promise<CiRun | null>;
   /**
    * The workflow runs of `repository` (`owner/name`) on `branch`, newest first, each with its jobs (contract 1.22), or null for "could not ask": a repository the host cannot read, an answer it cannot read and a list cut short at the host's page limit are all
    * null. Null is never "no runs". A run whose id is in `settled` (the caller holds its jobs and it has completed) is answered with no jobs, so the host reads each completed run's jobs once. A host without it is read as one that cannot be asked.
@@ -414,7 +415,7 @@ export interface CodeHost extends CodeHostPort {
    * Null is never "none names it". The host answers what it finds and judges nothing: a pull request that only mentions the key in passing is listed too, and the caller decides which of them are the ticket's. A host without it is read as one that
    * cannot be asked (contract 1.18).
    */
-  pullsNaming?(key: string, repositories: readonly string[]): readonly NamingPull[] | null;
+  pullsNaming?(key: string, repositories: readonly string[]): Promise<readonly NamingPull[] | null>;
   /**
    * The open pull requests of `repository` (`owner/name`) that the dependency bot ({@link DEPENDENCY_PULL_AUTHOR}) opened, or null for "could not ask": a repository the host cannot read, an answer it cannot read and a list cut short at the host's limit are
    * all null. Null is never "there are none". The host filters by AUTHOR, never by title (and without a search-backed flag such as `gh pr list --author`, whose allowance is small): this is the trust boundary of the board's dependency tickets. A host without it is read as one that cannot be asked (contract 1.19).
@@ -424,12 +425,12 @@ export interface CodeHost extends CodeHostPort {
    * The failing `merge_group` run behind the removal from the merge group at commit `groupCommit` of the pull request at `url` (contract 1.21), or null for "could not ask": an address that is no pull request of the host, no run for that commit and a refused read are all null. Null is never "no job failed".
    * A host without it is read as one that cannot be asked, and the board then names the removal without the run's errors.
    */
-  readQueueFailure?(url: string, groupCommit: string): QueueFailure | null;
+  readQueueFailure?(url: string, groupCommit: string): Promise<QueueFailure | null>;
   /**
-   * Puts the `hold:board` label on the pull request at `url` (`on`), or takes it off (contract 1.21), and answers whether the label is now as asked. THROWS, with the host's own first line, when it could not ask or was refused. Taking off a label that is not there is done. A host without it cannot hold a pull request
+   * Puts the `hold:board` label on the pull request at `url` (`on`), or takes it off (contract 1.21), and answers whether the label is now as asked. REJECTS (4.0), with the host's own first line, when it could not ask or was refused. Taking off a label that is not there is done. A host without it cannot hold a pull request
    * from the arm bot, and the board then names the removals alone.
    */
-  holdFromQueue?(url: string, on: boolean): boolean;
+  holdFromQueue?(url: string, on: boolean): Promise<boolean>;
   /**
    * The pull request's state as the reviewer sees it, or null when the host does not say. REJECTS with the reviewer's refusal when its gate does not load. A host may answer from a read of the repository made a few seconds ago (the GitHub plugin's ten); `fresh: true`
    * asks for a read made now, as a caller does that is about to act on there being no review at a head (a reviewer that ended without a verdict is not asked to post it again over a review the host had not read yet).
@@ -453,12 +454,7 @@ export interface CodeHost extends CodeHostPort {
    * The note each open pull request of the sweep needs, by URL, after the retargets that are due are made: a merged base is moved to the default branch, and a
    * base whose branch is gone is said. A pull request that cannot be read keeps the note it had, and its head is never touched.
    */
-  sweepRetargets(sweep: RetargetRequest): Record<string, string>;
-  /**
-   * {@link CodeHost.sweepRetargets} answering a promise (contract 2.2), OPTIONAL: the board's sweep of the stacked pull requests asks it, so its `gh` reads, up to five for each pull request, hold nothing. The same notes, the same retargets, in the same order. A host
-   * without it is read through the synchronous one.
-   */
-  sweepRetargetsAsync?(sweep: RetargetRequest): Promise<Record<string, string>>;
+  sweepRetargets(sweep: RetargetRequest): Promise<Record<string, string>>;
   /**
    * What the merged pull request at `url` found (contract 1.4), or null for "could not ask": a pull request that has not merged is null too, since its findings are not final. Null is never "it
    * found nothing". A host without it passes no findings on.
@@ -468,22 +464,22 @@ export interface CodeHost extends CodeHostPort {
    * What the pull request at `url` still held when it closed (contract 1.20), or null for "could not ask": a pull request that is open or merged, an address that is no pull request of the host, a refused read, an answer it cannot read and a compare cut short
    * of its commits are all null. Null is never "it held nothing": a pull request whose commits are all on its base answers a {@link ClosedWork} with no commits. A host without it is read as one that cannot be asked.
    */
-  readClosedWork?(url: string): ClosedWork | null;
+  readClosedWork?(url: string): Promise<ClosedWork | null>;
   /**
    * The log of the job behind a failing check, given the address its run reports (`FailingCheck.detailsUrl`), as text, or null for "could not ask": an address that names no job (a commit status
    * reports none) and a log the host would not give are both null. Null is never "the log is empty" (contract 1.5).
    */
-  readCheckLog(detailsUrl: string): string | null;
+  readCheckLog(detailsUrl: string): Promise<string | null>;
   /**
    * Reruns the failed jobs of the runs the addresses name (`FailingCheck.detailsUrl`), each run once however many of its jobs are named, and answers why the host refused (its own first line), or null
    * once they are rerun. An address that names no run is left out (contract 1.5).
    */
-  rerunFailedChecks(detailsUrls: readonly string[]): string | null;
+  rerunFailedChecks(detailsUrls: readonly string[]): Promise<string | null>;
   /**
    * Reruns the WHOLE runs the addresses name (`FailingCheck.detailsUrl`), each run once however many of its jobs are named, and answers why the host refused (its own first line), or null once they are rerun. An address that names no run is left out (contract 1.28).
    * A host without it is read as one that cannot, and the board then reruns nothing for a pull request blocked behind a cancelled run.
    */
-  rerunRuns?(detailsUrls: readonly string[]): string | null;
+  rerunRuns?(detailsUrls: readonly string[]): Promise<string | null>;
   /**
    * How many calls the host has made to the place pull requests live since it started (contract 2.1): `/api/health` serves this. A host without it is read as one that counts none.
    */

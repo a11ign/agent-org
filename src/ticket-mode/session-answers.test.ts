@@ -35,7 +35,7 @@ function board(queue: Queue, port = 4747) {
   const clock = { at: 9_000 };
   const settings = parseTicketSettings({ clones: { "agent-org": "/r/agent-org" }, stateDir: dir, tickets: { port } });
   const noop = () => {};
-  const pool = { tick: async () => {}, stop: noop, close: noop, dismiss: async () => {}, remove: async () => {}, respond: noop, reconcile: noop, ensureSession: async () => {}, refreshTracker: async () => {}, watchFeedback: noop,
+  const pool = { tick: async () => {}, stop: noop, close: noop, dismiss: async () => {}, remove: async () => {}, respond: async () => {}, reconcile: noop, ensureSession: async () => {}, refreshTracker: async () => {}, watchFeedback: noop,
     releaseReviewers: noop, retargetStacked: noop, rebaseStacked: async () => {}, applyEdit: async () => {}, discardEdit: noop, stopWriterRun: noop, reviewNewHeads: noop };
   const queuePath = join(dir, "tickets", "queue.json");
   saveQueue(queuePath, queue);

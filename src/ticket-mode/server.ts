@@ -537,7 +537,7 @@ async function queueActionRoute(board: Board, method: string, path: string, body
     }
     if (verb === "approve") store.set(approve(store.get(), key, now()));
     // The pool's, like Close: a parked run's workspace is closed before its round is queued, and a refusal is named (A11-154).
-    if (verb === "respond") pool.respond(key);
+    if (verb === "respond") await pool.respond(key);
     // The pool's: a talk session needs a saved session to resume, and says so when there is none.
     if (verb === "talk") pool.talk?.(key);
     // A person's override of the overlap wait, which the board records on the run and logs (A11-125).

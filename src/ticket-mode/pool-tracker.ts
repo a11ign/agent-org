@@ -287,10 +287,6 @@ export function retargetStacked(ctx: PoolContext): Promise<void> {
 
 const RETARGETING = new WeakMap<object, Promise<void>>();
 
-/** The base notes of a sweep, asked of the code host without holding the board thread's loop when it can answer a promise (contract 2.2, A11-282), else as it always was. */
-const retargetsOf = (codeHost: CodeHost, sweep: Parameters<CodeHost["sweepRetargets"]>[0]): Promise<Record<string, string>> | Record<string, string> =>
-  codeHost.sweepRetargetsAsync === undefined ? codeHost.sweepRetargets(sweep) : codeHost.sweepRetargetsAsync(sweep);
-
 /** {@link retargetStacked}, one pass. */
 async function retargetEach(ctx: PoolContext): Promise<void> {
   const { codeHost, store } = ctx;
@@ -307,13 +303,13 @@ async function retargetEach(ctx: PoolContext): Promise<void> {
     const previous = entry.retargets ?? {};
     // The sweep of the bases keeps the note of a pull request it cannot read, so it is handed only the notes it wrote: one the stack merge or the restack wrote is theirs to keep or clear.
     const baseNotesBefore = Object.fromEntries(Object.entries(previous).filter(([, note]) => !isStackMergeNote(note) && !isRestackNote(note)));
-    const bases = stacked.size === 0 ? {} : await retargetsOf(codeHost, { urls, previous: baseNotesBefore, stacked, defaults, log });
+    const bases = stacked.size === 0 ? {} : await codeHost.sweepRetargets({ urls, previous: baseNotesBefore, stacked, defaults, log });
     // The sweep waited on GitHub without holding the loop (A11-282), and a person's Respond, Retry or Remove may have landed meanwhile: what follows is decided on the run as it is now, and not on a run that is no longer finished.
     entry = store.get().entries.find((each) => each.ticket.key === listed.ticket.key) ?? listed;
     if (entry.phase !== "finished") continue;
     const facts = new Map<string, StackMergeFacts | null>();
     const restacks = await sweepRestacks(ctx, entry, { urls, bases, facts, told });
-    const merges = sweepStackMerges(ctx, entry, urls, { skip: new Set([...Object.keys(bases), ...restacks.moved]), facts });
+    const merges = await sweepStackMerges(ctx, entry, urls, { skip: new Set([...Object.keys(bases), ...restacks.moved]), facts });
     const notes = noteOf(urls, { bases, restacks: restacks.notes, merges });
     const next = Object.keys(notes).length === 0 ? undefined : notes;
     if (JSON.stringify(next ?? {}) !== JSON.stringify(previous)) update(ctx, (queue) => recordRetargets(queue, entry.ticket.key, next));
@@ -338,13 +334,13 @@ function noteOf(urls: readonly string[], { bases, restacks, merges }: { bases: R
  * remembered by head. The note a pull request needs is what GitHub refused it with, or that the arm bot could not be asked (and the ask is made again on the next sweep). A pull request with a note about its base has none here: its stack merge waits for the base. Nor has one the restack just moved or found conflicting (A11-248): its head is not the one the watch read ready. One that cannot be read keeps the note it had.
  * A pull request that is not ready is not read at all, and a head the watch read is not the head GitHub says now is not ready either. A code host that has neither operation (before contract 1.16) asks the arm bot for nothing.
  */
-function sweepStackMerges(ctx: PoolContext, entry: Entry, urls: readonly string[], { skip, facts: read }: { skip: ReadonlySet<string>; facts: Map<string, StackMergeFacts | null> }): Record<string, string> {
+async function sweepStackMerges(ctx: PoolContext, entry: Entry, urls: readonly string[], { skip, facts: read }: { skip: ReadonlySet<string>; facts: Map<string, StackMergeFacts | null> }): Promise<Record<string, string>> {
   const { codeHost, now, stackMergeAsked } = ctx;
   const notes: Record<string, string> = {};
   if (codeHost.stackMergeFactsOf === undefined || codeHost.requestStackMerge === undefined) return notes;
   for (const url of urls) {
     if (skip.has(url) || !isPullReadyToMerge(entry, url)) continue;
-    const facts = factsOf(ctx, url, read);
+    const facts = await factsOf(ctx, url, read);
     if (facts === null) {
       const kept = entry.retargets?.[url];
       if (kept !== undefined && isStackMergeNote(kept)) notes[url] = kept;
@@ -352,18 +348,18 @@ function sweepStackMerges(ctx: PoolContext, entry: Entry, urls: readonly string[
     }
     const step = stackMergeStep({ url, facts, ready: entry.pullHeads?.[url]?.head === facts.head, asked: stackMergeAsked.get(url), now: now() });
     if (step.note !== null) notes[url] = step.note;
-    const refused = step.ask ? askArmBot(ctx, url, facts.head) : null;
+    const refused = step.ask ? await askArmBot(ctx, url, facts.head) : null;
     if (refused !== null) notes[url] = refused;
   }
   return notes;
 }
 
 /** Asks the arm bot to stack-merge the pull request at `head` and remembers that it did. @returns the note to show when the ask was refused (it is made again on the next sweep), or null once it was made. */
-function askArmBot(ctx: PoolContext, url: string, head: string): string | null {
+async function askArmBot(ctx: PoolContext, url: string, head: string): Promise<string | null> {
   const request = stackMergeRequestOf(url);
   try {
     if (request === null) throw new Error("it is not a GitHub pull request address");
-    ctx.codeHost.requestStackMerge?.(request);
+    await ctx.codeHost.requestStackMerge?.(request);
     ctx.stackMergeAsked.set(url, { head, at: ctx.now() });
     log(`${url}: approved and green in a stack, so the arm bot was asked to merge it with the stack merge`);
     return null;
@@ -374,8 +370,8 @@ function askArmBot(ctx: PoolContext, url: string, head: string): string | null {
 }
 
 /** What the code host says of a pull request's stack, read once for the sweep of a run and kept for whoever asks next. A code host that cannot say reads as null. */
-function factsOf(ctx: PoolContext, url: string, read: Map<string, StackMergeFacts | null>): StackMergeFacts | null {
-  if (!read.has(url)) read.set(url, ctx.codeHost.stackMergeFactsOf?.(url) ?? null);
+async function factsOf(ctx: PoolContext, url: string, read: Map<string, StackMergeFacts | null>): Promise<StackMergeFacts | null> {
+  if (!read.has(url)) read.set(url, (await ctx.codeHost.stackMergeFactsOf?.(url)) ?? null);
   return read.get(url) ?? null;
 }
 
@@ -460,7 +456,7 @@ async function restackMember(ctx: PoolContext, entry: Entry, { url, stack, candi
   const previous = entry.retargets?.[url];
   const done = ctx.restacked.get(url) ?? doneFromNote(previous, url);
   const below = await belowOf(ctx, stack.key, candidates, done);
-  const read = below === null ? null : factsOf(ctx, url, facts);
+  const read = below === null ? null : await factsOf(ctx, url, facts);
   if (below === null || read === null) return null;
   // The base this conflict would be against is the default branch as it is once the member below has merged: the same merged pull request again is the same base (A11-374).
   const at: ConflictAt = { base: `merged ${below.url}` };
@@ -472,11 +468,11 @@ async function restackMember(ctx: PoolContext, entry: Entry, { url, stack, candi
     // A member that is closed is not handed to the arm bot, on this sweep or the ones before the board lists it closed. One that is empty and could not be closed still is, as it was before.
     return { note, moved: note !== null && isClosedMemberNote(note), feedback: null };
   }
-  const result = askUpdate(ctx, url, read.head);
+  const result = await askUpdate(ctx, url, read.head);
   const outcome: RestackOutcome = result.kind === "conflict" ? { kind: "conflict", round } : result;
   const note = restackNote({ url, defaultBranch: read.defaultBranch, below, outcome });
   if (result.kind !== "refused") ctx.restacked.set(url, { merged: below.url, head: read.head, ...(result.kind === "up-to-date" ? { upToDate: true as const } : {}) });
-  if (result.kind === "updated") followHead(ctx, key, url, read.head);
+  if (result.kind === "updated") await followHead(ctx, key, url, read.head);
   log(`${key}: ${note}`);
   const feedback = result.kind === "conflict" && round === "round" ? restackFeedback({ url, defaultBranch: read.defaultBranch, below, key }) : null;
   return { note, moved: result.kind === "updated" || result.kind === "conflict", feedback, ...(feedback === null ? {} : { conflict: at }) };
