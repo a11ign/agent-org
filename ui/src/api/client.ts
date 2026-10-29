@@ -83,6 +83,8 @@ export function createClient(connection: ViewConnection | null, { fetch: fetchWi
     grillTicket: (key: string) => post<WritersView>("/api/grill-ticket", { key }),
     stopWriterRun: (run: string) => post<WritersView>(`/api/writer/${encodeURIComponent(run)}/stop`),
     dismissWriterRun: (run: string) => post<WritersView>(`/api/writer/${encodeURIComponent(run)}/dismiss`),
+    /** Clear all: the finished requests named go in one write (the ones the person was shown), and a request still under way stays. */
+    dismissFinishedWriterRuns: (ids: readonly string[]) => post<WritersView>("/api/writer/dismiss-finished", { ids }),
 
     previewSettings: (file: EditFile, changes: readonly Change[]) => post<SettingsPreview>("/api/settings/preview", { file, changes }),
     saveSettings: (save: SettingsSave) => post<SettingsSaved>("/api/settings/save", save),

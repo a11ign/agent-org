@@ -13,7 +13,7 @@ import { afterMergeDue, afterMergeUnposted, markAfterMergePosted, markAfterMerge
 import { talk } from "./queue/talk.ts";
 import { requeueForUpdate } from "./queue/queue-pins.ts";
 import { declinedPrompt, toldDeclined } from "./queue/queue-declined.ts";
-import { emptyQueue, loadQueue, nextStarts, saveQueue, dismissWriter, LEGACY_CREATING_FAILURE, LEGACY_REVIEW_FAILURE, markWriterRunning, markWriterStarting, queueWriter, stopWriter, writerEnded, writerFailed, writerOf, writerResumed, writerToStart, writerWaiting } from "./queue.ts";
+import { emptyQueue, loadQueue, nextStarts, saveQueue, dismissFinishedWriters, dismissWriter, LEGACY_CREATING_FAILURE, LEGACY_REVIEW_FAILURE, markWriterRunning, markWriterStarting, queueWriter, stopWriter, writerEnded, writerFailed, writerOf, writerResumed, writerToStart, writerWaiting } from "./queue.ts";
 import { moveOutcomeHeads, recordOutcomeBlocks, recordOutcomeHeads, recordPullHeads } from "./queue/queue-pull-heads.ts";
 import type { Blocker, Ticket } from "./source.ts";
 
@@ -1043,6 +1043,21 @@ test("a stopped run keeps the tickets it made, and a finished run dismisses once
   assert.equal(writerOf(queue, "w1")?.finishedAt, 4, "a finished run is not changed by a stop");
   queue = dismissWriter(queue, "w1");
   assert.deepEqual(queue.writers, []);
+});
+
+test("dismissFinishedWriters removes every finished new-ticket request in one step and leaves runs under way and the board's check runs", () => {
+  let queue = emptyQueue(3);
+  for (const id of ["w1", "w2", "w3"]) queue = queueWriter(queue, { ...request, id }, 1);
+  queue = writerEnded(queue, "w1", { tickets: [filed("NBF-4")] }, 2);
+  queue = writerFailed(queue, "w2", "no team", 3);
+  const cleared = dismissFinishedWriters(queue);
+  assert.deepEqual(cleared.writers?.map((run) => [run.id, run.phase]), [["w3", "queued"]], "a queued run stays; both finished ones, Done and Failed, go");
+  assert.equal(dismissFinishedWriters(cleared).writers?.length, 1, "nothing finished: nothing changes");
+  assert.deepEqual(dismissFinishedWriters(queue, ["w2"]).writers?.map((run) => run.id), ["w1", "w3"], "only the finished runs named go: w1 is finished and not named, w3 is under way");
+  assert.deepEqual(dismissFinishedWriters(queue, ["w3"]).writers?.map((run) => run.id), ["w1", "w2", "w3"], "a run under way is not dismissed even when it is named");
+  assert.deepEqual(dismissFinishedWriters(queue, []).writers?.map((run) => run.id), ["w1", "w2", "w3"], "no ids named, none go");
+  const check = writerEnded(queueWriter(emptyQueue(1), { ...request, id: "c1", mode: "verify" as never }, 1), "c1", { tickets: [] }, 2);
+  assert.deepEqual(dismissFinishedWriters(check).writers?.map((run) => run.id), ["c1"], "a check run of the board is not a notification");
 });
 
 test("a writer run round-trips through the queue file with the tickets it filed", () => {

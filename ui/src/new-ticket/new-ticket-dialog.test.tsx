@@ -1,7 +1,7 @@
 import { fireEvent, screen, within } from "@testing-library/react";
 import { OTHER, queueingConfig, ticket } from "../../test/fixtures.ts";
-import { STAGES, writingConfig } from "./new-ticket-fixtures.ts";
-import { dialog, inDialog, openDialog, pageOver, textOf, typeRequest, writeButton } from "./new-ticket-harness.tsx";
+import { STAGES, writerBoard, writingConfig } from "./new-ticket-fixtures.ts";
+import { dialog, inDialog, openDialog, pageOver, pageWith, standOn, textOf, typeRequest, writeButton } from "./new-ticket-harness.tsx";
 
 // The New ticket, Manual placement and No terminal for Grill boards: the dialog the Tickets page's New ticket button opens.
 
@@ -189,8 +189,8 @@ describe("the writer pill and the buttons", () => {
   });
 
   it("does not draw a stale request strip under the dialog for an idle instance", async () => {
-    await pageOver([STAGES.done]);
+    await pageWith(standOn(writerBoard([STAGES.done])));
     openDialog();
-    expect(screen.getAllByRole("region", { name: "New ticket request" }).length).toBe(1);
+    expect(screen.queryAllByRole("region", { name: "New ticket request" }).length).toBe(0);
   });
 });

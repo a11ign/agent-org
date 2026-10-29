@@ -11,6 +11,7 @@ import type { ConfigView, ConnectionsView, QueueView, TicketView, ViewConnection
 import { POLL_MS } from "../api/poll-schedule.ts";
 import { usePoll, type PollView } from "../api/use-poll.ts";
 import type { LifecycleView } from "../lifecycle/Lifecycle.tsx";
+import { NO_WRITERS, useWriterRuns, type WriterRuns } from "../new-ticket/use-writer-runs.ts";
 import {
   ALL_GOALS_ID, MY_TICKETS, contextParentsOf, goalEntries, goalShown, mergedTickets, ofPicked, pickedProject, pickerEntries, projectRead, runningCount, scopeOf, ticketsInScope, ticketsView, isLive, unreachableOf,
   type GoalEntry,
@@ -76,7 +77,10 @@ export type ShellValue = Readonly<{
   chooseGoal: (id: string) => void;
   /** The chosen project's tickets: the list the Tickets page (A11-196) filters by the goal. */
   projectTickets: readonly TicketView[];
+  /** The new-ticket requests, polled once for every page: the Tickets page draws those under way, and the notification centre in the sidebar those finished. None on an instance that writes no tickets. */
+  writers: WriterRuns;
 }>;
+
 
 const noop = () => undefined;
 const browserFetch: Fetch = (...args) => globalThis.fetch(...args);
@@ -86,7 +90,7 @@ const LOADING_VIEW = { state: "loading", data: null, refusal: null, cached: fals
 const LOADING_SHELL: ShellValue = {
   connectionsReady: false, client: createClient(null), fetch: browserFetch, connections: [], connection: null, connectionsRefusal: null, switchConnection: noop, retryConnections: noop,
   queue: LOADING_VIEW, update: NO_UPDATE, unreachable: null, reconnected: false, checkNow: noop, config: null, tickets: LOADING_VIEW, scope: scopeOf(null, null), chooseScope: noop, readingScope: null, scopesRead: new Set(), held: null, allTickets: [], contextParents: [],
-  runningRuns: null, ticketCount: null, projects: [], project: null, chooseProject: noop, goals: [], goal: ALL_GOALS_ID, chooseGoal: noop, projectTickets: [],
+  runningRuns: null, ticketCount: null, projects: [], project: null, chooseProject: noop, goals: [], goal: ALL_GOALS_ID, chooseGoal: noop, projectTickets: [], writers: NO_WRITERS,
 };
 
 const ShellContext = createContext<ShellValue>(LOADING_SHELL);
@@ -199,6 +203,8 @@ function ConnectionReads({ listing, connection, switchConnection, retryConnectio
   const project = picked ?? chosenProject(counted, rememberedProject);
   const projectTickets = ofPicked(tickets.data ?? [], project);
   const goals = goalEntries(projectTickets);
+  // The requests of an instance that writes tickets are polled for as long as the shell is, so the bell on every page has them; an instance that writes none is not asked.
+  const writers = useWriterRuns({ client, connection, tickets, enabled: config.data?.writer === true });
   const value: ShellValue = {
     connectionsReady: true, client, fetch: fetchWith ?? browserFetch, connections: listing.connections, connection, connectionsRefusal: listing.refusal, switchConnection, retryConnections,
     queue, update, unreachable, reconnected, checkNow, config: config.data, tickets, scope, held: reads.held, allTickets, readingScope: reads.reading, scopesRead: reads.read,
@@ -214,7 +220,7 @@ function ConnectionReads({ listing, connection, switchConnection, retryConnectio
       // Each project opens on its own first scope: Anyone in a project, the person's own in My tickets.
       if (projectsOn) setScopeChoice(null);
     },
-    goals, goal: goalShown(goals, goalChoice), chooseGoal: setGoalChoice, projectTickets,
+    goals, goal: goalShown(goals, goalChoice), chooseGoal: setGoalChoice, projectTickets, writers,
   };
   return <ShellContext.Provider value={value}>{children}</ShellContext.Provider>;
 }

@@ -222,5 +222,15 @@ export function dismissWriter(queue: Queue, id: string): Queue {
   return { ...queue, writers: (queue.writers ?? []).filter((other) => other.id !== id) };
 }
 
+/**
+ * Remove finished new-ticket requests from the board in one step (the notification centre's Clear all): the ones in `ids`, which are the ones the person was shown, or every one when no ids are
+ * named. A run still under way, one the person was not shown (it finished after the page last read), and the board's own check runs, stay. PURE.
+ */
+export function dismissFinishedWriters(queue: Queue, ids?: readonly string[]): Queue {
+  const named = (run: WriterRun): boolean => ids === undefined || ids.includes(run.id);
+  const kept = (queue.writers ?? []).filter((run) => run.phase !== "finished" || isCheckRun(run.mode) || !named(run));
+  return { ...queue, writers: kept };
+}
+
 /** The writer run `id`, or undefined. */
 export const writerOf = (queue: Queue, id: string): WriterRun | undefined => findWriter(queue, id);

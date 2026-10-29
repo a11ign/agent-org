@@ -161,7 +161,8 @@ describe("the sidebar over a stand-in instance", () => {
     await sidebar.getByRole("button", { name: /^a11ign/ }).waitFor();
     expect(await sidebar.getByRole("link", { name: /Tickets/ }).textContent()).toBe("Tickets3");
     expect(await sidebar.getByRole("link", { name: /Runs/ }).textContent()).toBe("Runs3");
-    expect(await sidebar.getByRole("button").allTextContents()).toEqual(["a11ign3", "agent-org1", "All goals3", "Clean boundaries1", "Fleet1", "(no Goal)1"]);
+    expect(await sidebar.getByRole("button", { name: "Notifications, 0" }).count()).toBe(1);
+    expect((await sidebar.getByRole("button").allTextContents()).slice(1)).toEqual(["a11ign3", "agent-org1", "All goals3", "Clean boundaries1", "Fleet1", "(no Goal)1"]);
     expect(await sidebar.getByRole("status").filter({ hasText: "Connected" }).count()).toBe(1);
     await context.close();
   });
@@ -250,17 +251,17 @@ describe("keyboard focus", () => {
       await page.keyboard.press("Tab");
       names.push(await page.evaluate(() => {
         const element = document.activeElement as HTMLElement;
-        return element.tagName === "SELECT" ? "select" : (element.textContent ?? "").trim().slice(0, 40);
+        return element.tagName === "SELECT" ? "select" : (element.getAttribute("aria-label") ?? element.textContent ?? "").trim().slice(0, 40);
       }));
     }
     return names;
   }
 
-  it("runs the switcher, Tickets, Runs, the projects, the goals, then Settings, then the page, as the boards lay them out", async () => {
+  it("runs the bell, the switcher, Tickets, Runs, the projects, the goals, then Settings, then the page, as the boards lay them out", async () => {
     const stand: Stand = { instances: { here: { ...STAND.instances?.here, queueFails: { status: 500, error: "boom" } } } };
     const { page, context } = await open("/runs", { stand });
     await page.getByRole("alert").waitFor();
-    expect(await tabbed(page, 4)).toEqual(["select", "Tickets3", "Runs", "Settings"]);
+    expect(await tabbed(page, 5)).toEqual(["Notifications, 0", "select", "Tickets3", "Runs", "Settings"]);
     expect(await tabbed(page, 1)).toEqual(["Retry"]);
     await context.close();
   });
@@ -268,14 +269,14 @@ describe("keyboard focus", () => {
   it("puts the projects and goals between Runs and Settings on Tickets", async () => {
     const { page, context } = await open("/tickets");
     await page.getByRole("button", { name: /^a11ign/ }).waitFor();
-    expect(await tabbed(page, 10)).toEqual(["select", "Tickets3", "Runs3", "a11ign3", "agent-org1", "All goals3", "Clean boundaries1", "Fleet1", "(no Goal)1", "Settings"]);
+    expect(await tabbed(page, 11)).toEqual(["Notifications, 0", "select", "Tickets3", "Runs3", "a11ign3", "agent-org1", "All goals3", "Clean boundaries1", "Fleet1", "(no Goal)1", "Settings"]);
     await context.close();
   });
 
   it("puts the Settings sub-nav between Runs and Settings on Settings", async () => {
     const { page, context } = await open("/settings/workers");
     await page.getByRole("link", { name: /^Tickets\s*3$/ }).waitFor();
-    expect(await tabbed(page, 8)).toEqual(["select", "Tickets3", "Runs3", "Models", "Workers", "Machine", "Plugins", "Settings"]);
+    expect(await tabbed(page, 9)).toEqual(["Notifications, 0", "select", "Tickets3", "Runs3", "Models", "Workers", "Machine", "Plugins", "Settings"]);
     await context.close();
   });
 

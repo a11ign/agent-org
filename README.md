@@ -432,7 +432,7 @@ Ticket mode is two services, both on `127.0.0.1`:
   Settings, apart from the run's and the planner's, and `tickets.writer.model` and `.effort` stay the defaults until one is chosen there. It
   works on a ticket-only host, and through a remote connection or the tailnet-served board as the rest of the board does. A request is refused
   by name when it is empty or too long, names a placement other than Auto or Manual, names a choice under Auto, names a repository the machine
-  does not have, or a parent that does not exist. At most three new-ticket requests are unfinished at once.
+  does not have, or a parent that does not exist. At most three new-ticket requests are unfinished at once. A request still under way is a card on the Tickets page with Open terminal and Stop. A finished one (Done or Failed) is a notification in the panel behind the bell in the sidebar's head, on every page (A11-383): it lists what the request filed or why it failed, and is cleared one at a time (`POST /api/writer/<id>/dismiss`) or all at once (`POST /api/writer/dismiss-finished`, which leaves requests still under way). One that finishes while a page is open opens the panel, marked New, without taking the focus.
 - **Blocked until what blocks it is done.** A queued run whose ticket the tracker marks "blocked by" another waits, as Blocked, naming what
   it waits on, and holds no slot, while a run queued after it with nothing blocking it starts first. A blocker lets go once the tracker
   completes it, once its run on the queue is Completed, or once its pull requests have merged, whatever state its ticket is in (a pull request that says `Refs` leaves the ticket In

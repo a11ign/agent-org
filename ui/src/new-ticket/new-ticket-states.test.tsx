@@ -1,16 +1,18 @@
 import { fireEvent, screen, waitFor, within } from "@testing-library/react";
-import { FILED, REQUEST, STAGES, writerRun, writingConfig, type Stage } from "./new-ticket-fixtures.ts";
+import { REQUEST, STAGES, writerRun, writingConfig, type Stage } from "./new-ticket-fixtures.ts";
 import { pageOver, strips, textOf } from "./new-ticket-harness.tsx";
 
-// The Request: queued, writing, waiting for you, done and failed boards: the strip under the Tickets header, one card per request, drawn from `GET /api/writer`.
+// The Request: queued, writing and waiting for you boards: the strip under the Tickets header, one card per request still under way, drawn from `GET /api/writer`. A finished request is a notification (`notifications.test.tsx`).
 
-const LABEL: Readonly<Record<Stage, string>> = { queued: "Queued", writing: "Writing", waiting: "Waiting for you", done: "Done", failed: "Failed" };
-const BUTTONS: Readonly<Record<Stage, readonly string[]>> = { queued: ["Stop"], writing: ["Open terminal", "Stop"], waiting: ["Open terminal", "Stop"], done: ["Dismiss"], failed: ["Dismiss"] };
+type UnderWay = Exclude<Stage, "done" | "failed">;
+const UNDER_WAY: readonly UnderWay[] = ["queued", "writing", "waiting"];
+const LABEL: Readonly<Record<UnderWay, string>> = { queued: "Queued", writing: "Writing", waiting: "Waiting for you" };
+const BUTTONS: Readonly<Record<UnderWay, readonly string[]>> = { queued: ["Stop"], writing: ["Open terminal", "Stop"], waiting: ["Open terminal", "Stop"] };
 
 const card = (): HTMLElement => within(screen.getByRole("region", { name: "New ticket request" })).getByText(REQUEST.slice(0, 20), { exact: false }).closest("section") as HTMLElement;
 
 describe("a request in each state", () => {
-  it.each(Object.keys(STAGES) as Stage[])("%s: the board's label, head line, buttons and quoted request", async (stage) => {
+  it.each(UNDER_WAY)("%s: the board's label, head line, buttons and quoted request", async (stage) => {
     await pageOver([STAGES[stage]]);
     const head = card().querySelector(".run-head") as HTMLElement;
     expect(textOf(head.querySelector(".run-label"))).toBe(LABEL[stage]);
@@ -21,52 +23,30 @@ describe("a request in each state", () => {
     expect(card().className).toContain(`run-card-${stage}`);
   });
 
-  it("queued, writing: no note and no tickets", async () => {
+  it("queued, writing: no note", async () => {
     await pageOver([STAGES.queued, { ...STAGES.writing, id: "w2" }]);
     expect(strips().length).toBe(2);
-    for (const strip of strips()) {
-      expect(strip.querySelector(".run-note")).toBeNull();
-      expect(strip.querySelector(".run-made")).toBeNull();
-    }
+    for (const strip of strips()) expect(strip.querySelector(".run-note")).toBeNull();
+  });
+
+  it("finished requests leave the page: only the queued, writing and waiting cards are on it, and none has a Dismiss button", async () => {
+    await pageOver([STAGES.done, { ...STAGES.failed, id: "w2" }, { ...STAGES.queued, id: "w3" }, { ...STAGES.writing, id: "w4" }, { ...STAGES.waiting, id: "w5" }]);
+    expect(strips().map((strip) => textOf(strip.querySelector(".run-label")))).toEqual(["Queued", "Writing", "Waiting for you"]);
+    expect(strips().map((strip) => [...strip.querySelectorAll("a, button")].map((button) => textOf(button)))).toEqual([["Stop"], ["Open terminal", "Stop"], ["Open terminal", "Stop"]]);
+    expect(screen.queryByRole("button", { name: "Dismiss" })).toBeNull();
   });
 
   it("waiting: the writer's own question in the warning note, and Open terminal pointing at its terminal", async () => {
     await pageOver([STAGES.waiting]);
     expect(textOf(card().querySelector(".run-note"))).toBe("Which repository does the banner live in?");
-    expect(card().querySelector(".run-note-failed")).toBeNull();
     const terminal = within(card()).getByRole("link", { name: "Open terminal" });
     expect(terminal.getAttribute("href")).toBe(`/c/here/terminal?link=${encodeURIComponent("https://terminal.example/w1/p1")}`);
     expect(terminal.getAttribute("target")).toBe("_blank");
     expect(terminal.getAttribute("title")).toBe("Opens the writer's session in herdr");
   });
-
-  it("failed: the run's own reason in the danger note", async () => {
-    await pageOver([STAGES.failed]);
-    expect(textOf(card().querySelector(".run-note-failed"))).toBe("the writer ended its turn without creating a ticket");
-  });
-
 });
 
 describe("a request's note, its terminal and the tickets it filed", () => {
-  it("done: 'Filed by this request' lists each ticket's key, title and meta, linked to the tracker", async () => {
-    await pageOver([writerRun({ phase: "finished", status: "done", tickets: [FILED, { key: "A11-144", url: null, inPick: null }] })]);
-    expect(textOf(card().querySelector(".run-made-title"))).toBe("Filed by this request");
-    const [filed, unread] = [...card().querySelectorAll(".run-ticket")] as HTMLElement[];
-    expect(textOf(filed.querySelector(".run-ticket-key"))).toBe("A11-143");
-    expect(textOf(filed.querySelector(".run-ticket-title"))).toBe(FILED.title);
-    expect(textOf(filed.querySelector(".run-ticket-meta"))).toBe("Medium · a11ign");
-    expect(filed.getAttribute("href")).toBe("https://tracker.example/A11-143");
-    expect(filed.getAttribute("target")).toBe("_blank");
-    expect(unread?.tagName).toBe("DIV");
-    expect(textOf(unread)).toBe("A11-144");
-  });
-
-  it("done: a ticket whose address is not an http address is not linked", async () => {
-    await pageOver([writerRun({ phase: "finished", status: "done", tickets: [{ ...FILED, url: "javascript:alert(1)" }] })]);
-    expect(card().querySelector("a.run-ticket")).toBeNull();
-    expect(textOf(card().querySelector(".run-ticket-key"))).toBe("A11-143");
-  });
-
   it("leaves the model out of the head line for a request queued before the choice was stamped on it", async () => {
     await pageOver([writerRun({ model: undefined, effort: undefined } as never)]);
     expect(textOf(card().querySelector(".run-by"))).toBe("Ticket writer · Quick");

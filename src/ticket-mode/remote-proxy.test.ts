@@ -91,7 +91,7 @@ test("only the routes the page calls are passed on, by the method it calls them 
   for (const path of ["/api/queue", "/api/queue-children", "/api/choice", "/api/publish", "/api/paused", "/api/max", "/api/queue/NBF-1/approve", "/api/queue/NBF-1/talk", "/api/queue/NBF-1/stop", "/api/queue/NBF-1/dismiss", "/api/queue/NBF-1/apply-edit", "/api/queue/NBF-1/discard-edit"]) {
     assert.equal(passedOn("POST", path), true, path);
   }
-  for (const path of ["/api/writer/w1/stop", "/api/writer/w1/dismiss"]) {
+  for (const path of ["/api/writer/w1/stop", "/api/writer/w1/dismiss", "/api/writer/dismiss-finished"]) {
     assert.equal(passedOn("POST", path), true, path);
   }
   // A11-124: the board makes the tickets, so a draft's approve and discard are no route the page calls any more.

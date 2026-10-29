@@ -10,6 +10,8 @@
 }
 
 .sidebar {
+  /* The notification panel is anchored to the sidebar's head. */
+  position: relative;
   flex: 0 0 var(--sidebar-width);
   min-width: 0;
   display: flex;

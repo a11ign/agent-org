@@ -95,10 +95,10 @@ The tickets: A11-194 the shell, A11-195 an unreachable instance, A11-196 Tickets
 | Start, and the dialog's own note | `#writer-start`, `#writer-note`, `writerStart`, `writerBody` | The dialog's Start and footer line | A11-199 | AtomautNewTicketError |
 | The new tickets strip | `#writers`, `#writers-list`, `writerCard()`, `renderWriters()`, `refreshWriters()` | `/tickets`, the request strip | A11-199 | AtomautNewTicketWriting |
 | A request's status, and the model and effort it runs on | `WRITER_STATUS_LABEL`, `writerChoiceLabel` | The request card's head | A11-199 | AtomautNewTicketQueued |
-| Open terminal, Stop and Dismiss on a request | `writerRunActions`, `writerAction()`, `actionButton()` | The request card's buttons | A11-199 | AtomautNewTicketWriting |
+| Open terminal, Stop and Dismiss on a request | `writerRunActions`, `writerAction()`, `actionButton()` | The request card's Open terminal and Stop; a finished request's Dismiss is the Clear button of its notification (A11-383) | A11-199 | AtomautNewTicketWriting |
 | The question the agent asked | `writerCard()` | The waiting request card | A11-199 | AtomautNewTicketWaiting |
-| Created KEY, linked, and the note when Pick does not list it | `writerTicket()` | The done request card | A11-199 | AtomautNewTicketDone |
-| The failure | `writerCard()` | The failed request card | A11-199 | AtomautNewTicketFailed |
+| Created KEY, linked, and the note when Pick does not list it | `writerTicket()` | The Done item of the notification centre, behind the bell in the sidebar (A11-383) | A11-199 | AtomautTicketsNotifications |
+| The failure | `writerCard()` | The Failed item of the notification centre, behind the bell in the sidebar (A11-383) | A11-199 | AtomautTicketsNotificationsFailed |
 | Pick is read again when a request made a ticket or a Grill ended | `refreshWriters()` | The request strip refreshes the tickets | A11-199 | pattern: request card |
 
 ## 5. Board: the Runs page

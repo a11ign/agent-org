@@ -251,20 +251,11 @@ describe("the request goes on with the dialog closed", () => {
 });
 
 describe("the strip's buttons and failures", () => {
-  it("Stop and Dismiss post to the request and read the requests again", async () => {
-    const { base, board } = await pageOver([STAGES.writing, { ...STAGES.done, id: "w2" }], (view) => ({
-      post: (path: string) => {
-        if (path.endsWith("/dismiss")) view.runs.splice(1, 1);
-        return { runs: view.runs };
-      },
-    }));
-    const [writing, done] = strips() as HTMLElement[];
-    fireEvent.click(within(writing as HTMLElement).getByRole("button", { name: "Stop" }));
+  it("Stop posts to the request and reads the requests again", async () => {
+    const { base } = await pageOver([STAGES.writing], (view) => ({ post: () => ({ runs: view.runs }) }));
+    fireEvent.click(within(strips()[0] as HTMLElement).getByRole("button", { name: "Stop" }));
     await waitFor(() => expect(base.requests.some(({ method, path }) => method === "POST" && path === "/c/here/api/writer/w1/stop")).toBe(true));
-    fireEvent.click(within(done as HTMLElement).getByRole("button", { name: "Dismiss" }));
-    await waitFor(() => expect(strips().length).toBe(1));
-    expect(base.requests.some(({ method, path }) => method === "POST" && path === "/c/here/api/writer/w2/dismiss")).toBe(true);
-    expect(board.view.runs.length).toBe(1);
+    await waitFor(() => expect(base.requests.filter(({ path }) => path === "/c/here/api/writer").length).toBeGreaterThan(1));
   });
 
   it("shows the server's sentence when it refuses a Stop, keeps the card, and Dismiss hides the sentence", async () => {
@@ -315,7 +306,7 @@ describe("the strip's buttons and failures", () => {
   });
 });
 
-describe("what the person does while a request is out, and after a Dismiss", () => {
+describe("what the person does while a request is out", () => {
   it("keeps what was typed after the request went out, when it is accepted", async () => {
     const { release } = await overHeld(accepting(true));
     sendRequest();
@@ -324,15 +315,6 @@ describe("what the person does while a request is out, and after a Dismiss", () 
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
     openDialog();
     expect((inDialog().getByLabelText("What is the ticket for?") as HTMLTextAreaElement).value).toBe("The next request, begun while the first was out");
-  });
-
-  it("takes a dismissed request off the strip at once, even while the poll still lists it, and posts the Dismiss once", async () => {
-    const { base } = await pageOver([STAGES.done], { post: () => ({ runs: [] }) });
-    const dismiss = within(strips()[0] as HTMLElement).getByRole("button", { name: "Dismiss" });
-    fireEvent.click(dismiss);
-    fireEvent.click(dismiss);
-    await waitFor(() => expect(strips().length).toBe(0));
-    expect(base.requests.filter(({ method, path }) => method === "POST" && path.endsWith("/dismiss")).length).toBe(1);
   });
 
   it("shows a read failure again after a read has answered, though the same sentence was dismissed before", async () => {

@@ -119,6 +119,33 @@ describe("usePoll cadence", () => {
   });
 });
 
+describe("usePoll when it is not enabled (A11-383)", () => {
+  it("makes no read, shows nothing kept for the path, and reads from the moment it is enabled", async () => {
+    writeCached(LOCAL, "/api/kept", [9]);
+    const { read: scriptedRead, calls } = scripted([ok([1])]);
+    const kept = Object.assign(scriptedRead, { path: "/api/kept" });
+    const rendered = renderHook(({ enabled }) => usePoll(kept, { connection: LOCAL, enabled }), { initialProps: { enabled: false } });
+    await advance(20_000);
+    expect(calls.length).toBe(0);
+    expect(rendered.result.current).toMatchObject({ state: "loading", data: null, cached: false });
+    rendered.rerender({ enabled: true });
+    await advance(0);
+    expect(calls.length).toBe(1);
+    expect(rendered.result.current.data).toEqual([1]);
+  });
+
+  it("stops reading when it is disabled, and a refresh asked then reads nothing", async () => {
+    const { read: scriptedRead, calls } = scripted([ok([1])]);
+    const rendered = renderHook(({ enabled }) => usePoll(scriptedRead, { connection: LOCAL, enabled }), { initialProps: { enabled: true } });
+    await advance(0);
+    rendered.rerender({ enabled: false });
+    const before = calls.length;
+    act(() => rendered.result.current.refresh());
+    await advance(20_000);
+    expect(calls.length).toBe(before);
+  });
+});
+
 describe("usePoll's cap on the wait after failures (A11-217)", () => {
   it("keeps the failures' wait within maxWaitMs when it names less: 2s, 4s, then every 5s (A11-217)", async () => {
     const start = Date.now();
