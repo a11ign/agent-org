@@ -19,6 +19,6 @@ The plugin reads a repository's open pull requests with one `gh pr list` and sha
 ## Consequences
 
 - A sweep that reads many pull requests no longer holds the board's loop, and its reads are made a few at a time (`pool-reads.ts`) so a thirty-pull-request sweep does not start thirty `gh` at once.
-- The reviewer plugin starts a reviewer for the state the sweep has just read (`peekReviewState`, optional), since `ReviewerPort.start` is synchronous.
+- The reviewer plugin starts a reviewer for the state the sweep has just read (`peekReviewState`, optional), since `ReviewerPort.start` was synchronous. It no longer is: ADR 0016 (A11-379) made the reviewer port, and the code host's claim calls, answer a promise.
 - `end()` records a finished run's pull requests' files and heads after the reads return. Until then the run is finished with its files unrecorded, the state a read that failed already left, in which `overlapWait` holds its repository.
 - A read shared for ten seconds can be ten seconds old, where it was read at the call. The sweeps run every minute or two.

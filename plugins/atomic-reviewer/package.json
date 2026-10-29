@@ -7,7 +7,7 @@
   "agentOrg": {
     "name": "atomic",
     "concern": "reviewer",
-    "contract": "1.11",
+    "contract": "2.0",
     "description": "The gate's codex reviewer, started for each ready pull request.",
     "setUp": "Codex reviewer ready",
     "entry": "index.ts"

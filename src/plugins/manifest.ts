@@ -116,6 +116,9 @@ export type PublishingHelpers = Readonly<{
 /** The verdict door's run: it throws on a non-zero exit, with the door's stderr. */
 export type DoorRun = (file: string, args: string[], env: Record<string, string>) => void;
 
+/** The verdict door's run without holding the loop (A11-379): it rejects on a non-zero exit, with the door's `status` and `stderr` on the error. */
+export type DoorRunAsync = (file: string, args: string[], env: Record<string, string>) => Promise<void>;
+
 /** An agent herdr lists in a session: its label (the seat's) and its status. */
 export type ListedReviewer = { label: string; status: string; paneless?: boolean };
 
@@ -142,8 +145,19 @@ export type ReviewerGate = Readonly<{
     /** The reviewer App's token mint: what it answers for a checkout is the reason it could not, or null when the checkout has a token. */
     reviewerTokenMinter(app: unknown): (tree: string) => string | null;
     reviewerAppOf(): unknown;
+    /**
+     * The same steps without holding the loop (A11-379, reviewer contract 2.0): each answers what the member above answers, as a promise, over the async runners (`git`, the install, the mint and `herdr` run through `execAsync`). The port makes no
+     * synchronous spawn; the members above stay for row mode (`wake.ts`).
+     */
+    spawnReviewerAsync(order: Readonly<{ session: string; cause?: string; causeKey?: string; trust?: ReviewTrust }>, agents: { label: string; status: string }[],
+      options: Readonly<{ run?: (args: string[]) => Promise<string>; env?: Record<string, string>; cwd: string; tmpBase?: string }>): Promise<Readonly<{ label: string; workspace: string; profile: Readonly<{ kind: string; model: string; effort: string }> }> | Readonly<{ refusal: string }>>;
+    prepareReviewCheckoutAsync(options: Readonly<{ pr: number; session: string; trust?: ReviewTrust; repoRoot?: string }>): Promise<Readonly<{ path: string; head: string }> | Readonly<{ refusal: string }>>;
+    removeReviewCheckoutAsync(options: Readonly<{ pr: number; session: string; key?: string; repoRoot?: string }>): Promise<string | null>;
+    uncommittedPathsOfAsync(path: string): Promise<string[]>;
+    closeReviewerAsync(session: string, deps: Readonly<{ run: (args: string[]) => Promise<string>; warn: (line: string) => void }>): Promise<boolean>;
+    reviewerTokenMinterAsync(app: unknown): (tree: string) => Promise<string | null>;
   }>;
-  trust: Readonly<{ INSIDE: ReviewTrust; runDoor: DoorRun }>;
+  trust: Readonly<{ INSIDE: ReviewTrust; runDoor: DoorRun; runDoorAsync: DoorRunAsync }>;
   config: Readonly<{ homeProjectDeclaration(): Readonly<{ code: readonly Readonly<{ key: string; repo: string }>[] }> }>;
   identity: Readonly<{ REPO: string }>;
   orders: Readonly<{
@@ -174,6 +188,8 @@ export type ReviewerBoard = Readonly<{
   session: string;
   /** Runs `herdr` with the arguments, and answers what it printed (throws when it fails). */
   run: (args: string[]) => string;
+  /** {@link ReviewerBoard.run} without holding the loop (A11-379): it resolves what `herdr` printed, and rejects where `run` throws. The reviewer port runs every `herdr` call through it. */
+  runAsync: (args: string[]) => Promise<string>;
   /** The code host every read of a pull request goes through, asked when it is used (the code host is activated beside the reviewer). */
   codeHost: () => CodeHost;
   /** The host's checkouts by repository name (`host.json`'s `clones`). */
@@ -200,12 +216,14 @@ export type ReviewerBoard = Readonly<{
     agentName(label: string): string;
     /** The agents herdr lists in `session`, or null when it lists none it can read. */
     readAgents(run: (args: string[]) => string, options: Readonly<{ session: string }>): ListedReviewer[] | null;
+    /** {@link readAgents} over an async runner (A11-379): the same listing, as a promise. */
+    readAgentsAsync(run: (args: string[]) => Promise<string>, options: Readonly<{ session: string }>): Promise<ListedReviewer[] | null>;
     /** The dialog a pane's text shows (contract 1.6, A11-221): its paragraph's lines, which are the question as the pane draws it, and the lines above them, or null when the text shows none. */
     readDialogLines(pane: string | null): Readonly<{ dialog: Readonly<{ question: string; choices: readonly string[] }>; paragraph: readonly string[]; above: readonly string[] }> | null;
   }>;
   claims: Readonly<{
     REVIEW_LEASE_MS: number;
-    claimHead(claim: Readonly<{ instance: string; now: number; read: () => readonly Readonly<{ id: number; description: string; created: number }>[]; write: (description: string) => void; rereview?: boolean; otherSeen?: () => number | null }>): ReviewerClaimAnswer;
+    claimHead(claim: Readonly<{ instance: string; now: number; read: () => Promise<readonly Readonly<{ id: number; description: string; created: number }>[]>; write: (description: string) => Promise<void>; rereview?: boolean; otherSeen?: () => number | null }>): Promise<ReviewerClaimAnswer>;
     /** The other instances among a head's claim entries, each with when it was last seen (A11-172). */
     othersSeenIn(seen: Readonly<{ entries: readonly Readonly<{ id: number; description: string; created: number }>[]; instance: string }>): Map<string, number>;
     releasedDescriptionOf(release: Readonly<{ instance: string; now: number }>): string;

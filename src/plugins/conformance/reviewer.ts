@@ -14,6 +14,8 @@ type Subject = Readonly<{ reviewer: Reviewer; probe: ReviewerProbe }>;
 const OPERATIONS = ["start", "live", "close", "retire", "listedPulls", "settled", "verdictFileOf", "repostVerdict", "reprompt", "load", "refusal"] as const;
 const SETTLED = ["working", "ended", "gone"];
 
+const isPromise = (value: unknown): boolean => typeof (value as { then?: unknown } | null)?.then === "function";
+
 /** Loads the reviewer, and says whether it can start here. */
 async function ready(reviewer: Reviewer): Promise<string | null> {
   await reviewer.load();
@@ -26,54 +28,63 @@ const ALWAYS: Readonly<Record<string, (subject: Subject) => unknown>> = {
   "load resolves and refusal says why it cannot start, or null": async ({ reviewer }) => {
     await ready(reviewer);
   },
-  "live is false before a reviewer is started": ({ reviewer, probe }) => {
-    expect(reviewer.live(probe.ref) === false, "live() must be false for a head no reviewer was started for");
-    expect(!reviewer.listedPulls().includes(probe.ref.pr), "listedPulls() must not list a pull request no reviewer was started for");
+  "the calls that spawn a program answer a promise": async ({ reviewer, probe }) => {
+    // Contract 2.0 (A11-379): a reviewer that answers the value holds the board's loop for every program it runs. Each is asked in a way that changes nothing.
+    const answers: Record<string, unknown> = {
+      live: reviewer.live(probe.ref), settled: reviewer.settled(probe.ref), listedPulls: reviewer.listedPulls(), close: reviewer.close(probe.ref),
+      repostVerdict: reviewer.repostVerdict(probe.ref, "/nonexistent/verdict.md"), reprompt: reviewer.reprompt(probe.ref), retire: reviewer.retire("not a pull request url"),
+    };
+    await Promise.allSettled(Object.values(answers));
+    for (const [name, answer] of Object.entries(answers)) expect(isPromise(answer), `${name}() must answer a promise (contract 2.0)`);
   },
-  "settled is gone when there is no reviewer for the head": ({ reviewer, probe }) => {
-    expect(reviewer.settled(probe.ref) === "gone", "settled() must be gone when no reviewer is there");
+  "live is false before a reviewer is started": async ({ reviewer, probe }) => {
+    expect(await reviewer.live(probe.ref) === false, "live() must be false for a head no reviewer was started for");
+    expect(!(await reviewer.listedPulls()).includes(probe.ref.pr), "listedPulls() must not list a pull request no reviewer was started for");
+  },
+  "settled is gone when there is no reviewer for the head": async ({ reviewer, probe }) => {
+    expect(await reviewer.settled(probe.ref) === "gone", "settled() must be gone when no reviewer is there");
   },
   "start answers a label, or a refusal naming why": async ({ reviewer, probe }) => {
     const refusal = await ready(reviewer);
-    const answer = reviewer.start(probe.ref);
+    const answer = await reviewer.start(probe.ref);
     expect(isObject(answer) && ("label" in answer ? isString(answer.label) : isString((answer as { refusal?: unknown }).refusal)), "start() must answer { label } or { refusal }");
     if (refusal !== null) expect("refusal" in answer, "start() must refuse while refusal() says the reviewer cannot start here");
     else expect("label" in answer, `start() must start a reviewer for ${probe.ref.pr}: ${"refusal" in answer ? answer.refusal : ""}`);
     if ("label" in answer) {
-      expect(reviewer.live(probe.ref) === true, "live() must be true once start() answered a label");
-      expect(reviewer.listedPulls().includes(probe.ref.pr), "listedPulls() must list the pull request a reviewer was started for");
-      expect(SETTLED.includes(reviewer.settled(probe.ref)), "settled() must be working, ended or gone");
+      expect(await reviewer.live(probe.ref) === true, "live() must be true once start() answered a label");
+      expect((await reviewer.listedPulls()).includes(probe.ref.pr), "listedPulls() must list the pull request a reviewer was started for");
+      expect(SETTLED.includes(await reviewer.settled(probe.ref)), "settled() must be working, ended or gone");
     }
   },
   "verdictFileOf is a path or null": ({ reviewer, probe }) => {
     const file = reviewer.verdictFileOf(probe.ref);
     expect(file === null || isString(file), "verdictFileOf() must be the verdict file's path, or null when the reviewer wrote none");
   },
-  "repostVerdict and reprompt answer, and never throw for a refusal": ({ reviewer, probe }) => {
-    const repost = reviewer.repostVerdict(probe.ref, "/nonexistent/verdict.md");
+  "repostVerdict and reprompt answer, and never throw for a refusal": async ({ reviewer, probe }) => {
+    const repost = await reviewer.repostVerdict(probe.ref, "/nonexistent/verdict.md");
     expect("posted" in repost || ("refusal" in repost && typeof repost.final === "boolean"), "repostVerdict() must answer { posted } or { refusal, final }");
-    const prompt = reviewer.reprompt(probe.ref);
+    const prompt = await reviewer.reprompt(probe.ref);
     expect("prompted" in prompt || "refusal" in prompt, "reprompt() must answer { prompted } or { refusal }");
     // A brief that names the plan step of a partial pull request (contract 1.3) is one a reviewer takes, with its section found or not.
     for (const section of ["Step 3 of 9: the section of the plan", null]) {
-      const stepped = reviewer.reprompt(probe.ref, { doneWhen: null, step: { step: 3, of: 9, section } });
+      const stepped = await reviewer.reprompt(probe.ref, { doneWhen: null, step: { step: 3, of: 9, section } });
       expect("prompted" in stepped || "refusal" in stepped, "reprompt() with a brief that names a plan step must answer { prompted } or { refusal }");
     }
     // A brief that quotes the ticket's explicit decisions (contract 1.4) is one a reviewer takes too.
-    const decided = reviewer.reprompt(probe.ref, { doneWhen: null, decisions: "## Decisions\n\n- Widen the policy, by the chairman's decision." });
+    const decided = await reviewer.reprompt(probe.ref, { doneWhen: null, decisions: "## Decisions\n\n- Widen the policy, by the chairman's decision." });
     expect("prompted" in decided || "refusal" in decided, "reprompt() with a brief that quotes the ticket's decisions must answer { prompted } or { refusal }");
     // A re-review brief whose description changed since the last look (contract 1.5) is one a reviewer takes too, with no replies to quote.
-    const answered = reviewer.reprompt(probe.ref, { doneWhen: null, rereview: { replies: [], body: [{ kind: "removed", text: "Out of Region: none" }, { kind: "added", text: "Outside-Region: src/a.ts — the reason" }] } });
+    const answered = await reviewer.reprompt(probe.ref, { doneWhen: null, rereview: { replies: [], body: [{ kind: "removed", text: "Out of Region: none" }, { kind: "added", text: "Outside-Region: src/a.ts — the reason" }] } });
     expect("prompted" in answered || "refusal" in answered, "reprompt() with a re-review brief that carries the description's changed lines must answer { prompted } or { refusal }");
   },
-  "close answers closed, gone or busy, or a refusal": ({ reviewer, probe }) => {
-    const answer = reviewer.close(probe.ref);
+  "close answers closed, gone or busy, or a refusal": async ({ reviewer, probe }) => {
+    const answer = await reviewer.close(probe.ref);
     expect(("state" in answer && ["closed", "gone", "busy"].includes(answer.state)) || "refusal" in answer, "close() must answer { state } or { refusal }");
   },
-  "retire answers retired, or a refusal, and lists the pull request no more": ({ reviewer, probe }) => {
-    const answer = reviewer.retire(probe.ref.pr);
+  "retire answers retired, or a refusal, and lists the pull request no more": async ({ reviewer, probe }) => {
+    const answer = await reviewer.retire(probe.ref.pr);
     expect(("retired" in answer && answer.retired === true) || "refusal" in answer, "retire() must answer { retired } or { refusal }");
-    if ("retired" in answer) expect(!reviewer.listedPulls().includes(probe.ref.pr), "listedPulls() must not list a pull request whose reviewer was retired");
+    if ("retired" in answer) expect(!(await reviewer.listedPulls()).includes(probe.ref.pr), "listedPulls() must not list a pull request whose reviewer was retired");
   },
 };
 

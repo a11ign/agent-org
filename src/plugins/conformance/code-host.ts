@@ -153,8 +153,8 @@ const ALWAYS: Readonly<Record<string, (subject: Subject) => unknown>> = {
     expect(host.rerunFailedChecks([]) === null, "rerunFailedChecks of no addresses must answer null: there is nothing to refuse");
     expect(host.rerunFailedChecks(["https://example.invalid/checks/not-a-job"]) === null, "rerunFailedChecks must leave out an address that names no run");
   },
-  "readReviewClaims answers the entries of a head, or why it could not": ({ host, probe }) => {
-    const read = host.readReviewClaims(probe.repository, "0".repeat(40));
+  "readReviewClaims answers the entries of a head, or why it could not": async ({ host, probe }) => {
+    const read = await host.readReviewClaims(probe.repository, "0".repeat(40));
     const entries = "entries" in read ? read.entries : undefined;
     expect(isObject(read) && (Array.isArray(entries) !== isString("unreadable" in read ? read.unreadable : undefined)), "readReviewClaims must answer { entries } or { unreadable }, and never both or neither");
     expect(entries === undefined || entries.every((entry) => Number.isFinite(entry.id) && isString(entry.description) && Number.isFinite(entry.created)), "each claim entry must be { id, description, created }");
@@ -451,12 +451,12 @@ const CONDITIONAL: Readonly<Record<string, Conditional<Subject>>> = {
     const log = host.readCheckLog(check.detailsUrl);
     expect(isString(log) && log.includes(check.log), `readCheckLog(${check.detailsUrl}) must read the log the host holds`);
   }),
-  "a claim written on a head is read back from it": withClaim("no claim is written", ({ host, claim }) => {
+  "a claim written on a head is read back from it": withClaim("no claim is written", async ({ host, claim }) => {
     const description = `claimed by conformance at ${new Date(0).toISOString()}, lease 60 min`;
-    const before = host.readReviewClaims(claim.repository, claim.head);
+    const before = await host.readReviewClaims(claim.repository, claim.head);
     expect("entries" in before, `readReviewClaims(${claim.repository}, ${claim.head}) must read the head the probe names`);
-    expect(host.writeReviewClaim({ repository: claim.repository, head: claim.head, description, environment: claim.environment }) === null, "writeReviewClaim must answer null once the claim is written");
-    const after = host.readReviewClaims(claim.repository, claim.head);
+    expect(await host.writeReviewClaim({ repository: claim.repository, head: claim.head, description, environment: claim.environment }) === null, "writeReviewClaim must answer null once the claim is written");
+    const after = await host.readReviewClaims(claim.repository, claim.head);
     expect("entries" in after && after.entries.length === before.entries.length + 1 && after.entries.some((entry) => entry.description === description), "the claim written must be read back among the head's entries");
   }),
   "the verdict door is a file the plugin ships, with the program that installs it": {

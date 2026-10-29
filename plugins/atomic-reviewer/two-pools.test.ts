@@ -25,7 +25,7 @@ import { atomicReviewerPort as portOver, type Seams } from "./port.ts";
 /** The port a board makes: over the real helpers of core, with the board's collaborators these options name. */
 function atomicReviewerPort({ session, run, codeHost, clones, instance, seen = new Map<string, number>(), heads = new Map<string, string>(), ...seams }: Seams & Readonly<{ session: string; run: (args: string[]) => string; codeHost: ReturnType<typeof createFakeCodeHost>;
   clones: Record<string, string>; instance: string; seen?: Map<string, number>; heads?: Map<string, string> }>) {
-  return portOver(reviewingHelpers({ session, run, codeHost: () => codeHost, clones, instance, heads, seen }), seams);
+  return portOver(reviewingHelpers({ session, run, runAsync: async (args) => run(args), codeHost: () => codeHost, clones, instance, heads, seen }), seams);
 }
 
 const PR_URL = `https://github.com/${REPO}/pull/7`;
@@ -53,10 +53,10 @@ function githubOf(clock: { now: number }, { rival = false }: { rival?: boolean }
     statuses.push({ id: 1, sha: OTHER_HEAD, context: "agent-org/review", created_at: new Date(clock.now).toISOString(), description: claimDescriptionOf({ instance: RIVAL, now: clock.now }) });
   }
   host.seedPull(REPO, 7, { head: HEAD, settled: true, trust: "inside" });
-  host.readReviewClaims = (_repository, head) => ({
+  host.readReviewClaims = async (_repository, head) => ({
     entries: statuses.filter((status) => status.sha === head && status.context === "agent-org/review").map((status) => ({ id: status.id, description: status.description, created: Date.parse(status.created_at) })),
   });
-  host.writeReviewClaim = ({ head, description }) => {
+  host.writeReviewClaim = async ({ head, description }) => {
     state.writes.push(`${head}: ${description}`);
     if (state.refuse !== null) return `gh: ${state.refuse} (HTTP 403)`;
     statuses.push({ id: statuses.length + 1, sha: head, context: "agent-org/review", created_at: new Date(clock.now).toISOString(), description });
@@ -86,9 +86,9 @@ function poolOf({ instance, github, status, spawns, clock, root, refuseSpawn }: 
   // The instances seen are one record, shared by the port that records them and the pool that writes them, as the server wires them.
   const seen = new Map<string, number>();
   const heads = new Map<string, string>();
-  const reviewerPort = atomicReviewerPort({ session: "tickets", instance, seen, heads, run: herdrOf(status), codeHost: github.host, mint: () => null,
-    clones: settings.clones, now: () => clock.now, checkout: () => ({ path: "/work/pr-7", head: HEAD }),
-    spawn: (order) => {
+  const reviewerPort = atomicReviewerPort({ session: "tickets", instance, seen, heads, run: herdrOf(status), codeHost: github.host, mint: async () => null,
+    clones: settings.clones, now: () => clock.now, checkout: async () => ({ path: "/work/pr-7", head: HEAD }),
+    spawn: async (order) => {
       if (refuseSpawn !== undefined) return { refusal: refuseSpawn };
       spawns.push(order.session);
       status.set(order.session, "working");
@@ -187,7 +187,7 @@ test("A11-172: ticket:review starts a head the pool could not claim, once the cl
   const path = reviewerMemoryPath(join(root, "pool-a"));
   const command = async () => {
     const read = await github.host.readReviewState(PR_URL);
-    return reviewOnDemand({ url: PR_URL, port: pool.reviewer!, readState: () => read, started: readReviewerMemory(path).memory.started, record: () => {} });
+    return await reviewOnDemand({ url: PR_URL, port: pool.reviewer!, readState: () => read, started: readReviewerMemory(path).memory.started, record: () => {} });
   };
   const refused = await command();
   assert.equal(refused.code, 1);
@@ -203,7 +203,7 @@ test("A11-172: ticket:review starts a head the pool could not claim, once the cl
 test("A11-172: ticket:review says so when it starts a lone instance's reviewer without a claim", async () => {
   const { github, spawns, pool } = await refusedPoolOf({ rival: false });
   const read = await github.host.readReviewState(PR_URL);
-  const started = reviewOnDemand({ url: PR_URL, port: pool.reviewer!, readState: () => read, started: new Set(), record: () => {} });
+  const started = await reviewOnDemand({ url: PR_URL, port: pool.reviewer!, readState: () => read, started: new Set(), record: () => {} });
   assert.equal(started.code, 0, started.out);
   assert.match(started.out, /started reviewer-7 for .* at h1; started without a claim on GitHub, because no other instance is seen: gh: Resource not accessible by integration \(HTTP 403\); its verdict posts/);
   assert.deepEqual(spawns, ["reviewer-7"]);
@@ -310,7 +310,7 @@ test("A11-172: a head ticket:review started without a claim is said so on the bo
   // `ticket:review` runs in its own process with its own port over the same state directory, and records its start in the file as the command does.
   const other = poolOf({ instance: "pool-a", github, status, spawns, clock, root: tmpDir("review-claim-hand-") });
   const read = await github.host.readReviewState(PR_URL);
-  const started = reviewOnDemand({ url: PR_URL, port: other.reviewer!, readState: () => read, started: new Set(), record: (label, key, at, unclaimed) => {
+  const started = await reviewOnDemand({ url: PR_URL, port: other.reviewer!, readState: () => read, started: new Set(), record: (label, key, at, unclaimed) => {
     const latest = readReviewerMemory(path).memory;
     latest.started.add(key);
     latest.heads.set(label, at);

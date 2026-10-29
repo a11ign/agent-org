@@ -13,9 +13,12 @@ const ROOT = "/checkout";
 const DEPS: PluginDeps = fakePluginDeps();
 
 /** A checkout holding bundled plugins by directory name, each of the concern named, every entry present. */
-function checkout(concerns: Readonly<Record<string, string>>, contract = "1.0"): PackageFiles {
+/** The contract major this agent-org reads of a concern, for a plugin whose test names no version of its own: the code host and the reviewer moved to 3.0 and 2.0 (A11-379). */
+const READ_VERSION: Readonly<Record<string, string>> = { codeHost: "3.0", reviewer: "2.0" };
+
+function checkout(concerns: Readonly<Record<string, string>>, contract?: string): PackageFiles {
   const manifests = new Map(Object.entries(concerns).map(([name, concern]) => [`${ROOT}/plugins/${name}/package.json`,
-    JSON.stringify({ agentOrg: { concern, contract, description: `A ${concern}.`, entry: "index.ts" } })]));
+    JSON.stringify({ agentOrg: { concern, contract: contract ?? READ_VERSION[concern] ?? "1.0", description: `A ${concern}.`, entry: "index.ts" } })]));
   return { directories: (path) => (path === `${ROOT}/plugins` ? Object.keys(concerns).sort() : []), text: (path) => manifests.get(path) ?? null, isFile: (path) => path.endsWith("/index.ts") };
 }
 

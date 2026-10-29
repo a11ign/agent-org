@@ -23,8 +23,8 @@ function hostWithPull(): CodeHost {
   const entries: { id: number; description: string; created: number }[] = [];
   return {
     ...host,
-    readReviewClaims: () => ({ entries }),
-    writeReviewClaim: ({ description }) => { entries.push({ id: entries.length + 1, description, created: Date.now() }); return null; },
+    readReviewClaims: async () => ({ entries }),
+    writeReviewClaim: async ({ description }) => { entries.push({ id: entries.length + 1, description, created: Date.now() }); return null; },
   };
 }
 
@@ -43,8 +43,8 @@ function herdr(listed: Map<string, string>, refuse?: string) {
 
 function portOver(run: (args: string[]) => string) {
   const codeHost = hostWithPull();
-  const helpers = reviewingHelpers({ session: "tickets", run, codeHost: () => codeHost, clones: { "announcement-emulator": "/repos/announcement-emulator" }, instance: "work", heads: new Map() });
-  return atomicReviewerPort(helpers, { mint: () => null, checkout: () => ({ path: "/work/pr-11", head: "h1" }) });
+  const helpers = reviewingHelpers({ session: "tickets", run, runAsync: async (args) => run(args), codeHost: () => codeHost, clones: { "announcement-emulator": "/repos/announcement-emulator" }, instance: "work", heads: new Map() });
+  return atomicReviewerPort(helpers, { mint: async () => null, checkout: async () => ({ path: "/work/pr-11", head: "h1" }) });
 }
 
 test("A11-241: the reviewer for announcement-emulator#11 keeps the full workspace label, starts and prompts one agent name within herdr's limit, and is live under the full label", async () => {
@@ -53,7 +53,7 @@ test("A11-241: the reviewer for announcement-emulator#11 keeps the full workspac
   const herd = herdr(listed);
   const port = portOver(herd.run);
   assert.equal(LABEL.length, 33, "the seat's label is the one herdr refuses as an agent name");
-  assert.deepEqual(port.start({ pr: PR_URL, head: "h1" }), { label: LABEL });
+  assert.deepEqual(await port.start({ pr: PR_URL, head: "h1" }), { label: LABEL });
   const create = herd.calls.find((args) => args.includes("create"))!;
   assert.equal(create[create.indexOf("--label") + 1], LABEL, "the workspace is labelled with the full name");
   const start = herd.calls.find((args) => args.includes("start"))!;
@@ -62,9 +62,9 @@ test("A11-241: the reviewer for announcement-emulator#11 keeps the full workspac
   assert.match(name, HERDR_AGENT_NAME);
   assert.equal(name, herdrAgentName(LABEL));
   assert.equal(prompt[prompt.indexOf("prompt") + 1], name, "the prompt goes to the agent that was started");
-  assert.equal(port.live({ pr: PR_URL, head: "h1" }), false, "not live until herdr lists its workspace");
+  assert.equal(await port.live({ pr: PR_URL, head: "h1" }), false, "not live until herdr lists its workspace");
   listed.set(LABEL, "working");
-  assert.equal(port.live({ pr: PR_URL, head: "h1" }), true, "live from a listing under the full label");
+  assert.equal(await port.live({ pr: PR_URL, head: "h1" }), true, "live from a listing under the full label");
 });
 
 test("A11-241: herdr's refusal of the start, answered on stdout, reaches the start's refusal with herdr's message", async () => {
@@ -72,7 +72,7 @@ test("A11-241: herdr's refusal of the start, answered on stdout, reaches the sta
   const reason = "invalid_agent_name: agent name must start with a lowercase letter";
   const herd = herdr(new Map(), reason);
   const port = portOver(herd.run);
-  const started = port.start({ pr: PR_URL, head: "h1" });
+  const started = await port.start({ pr: PR_URL, head: "h1" });
   assert.ok("refusal" in started && started.refusal.includes(reason), JSON.stringify(started));
 });
 
@@ -88,9 +88,9 @@ test("A11-241: a blocked reviewer with a long label has its pane read and its tr
     return JSON.stringify({ type: "ok" });
   };
   const codeHost = hostWithPull();
-  const helpers = reviewingHelpers({ session: "tickets", run, codeHost: () => codeHost, clones: { "announcement-emulator": root }, instance: "work", heads: new Map([[LABEL, "h1"]]) });
-  const port = atomicReviewerPort(helpers, { codexTrust: { rootOf: () => root, ensure: (trusted) => ({ kind: "present", root: trusted, file: "config.toml", level: "trusted" }), log: () => {} } });
-  const answer = port.unblock!({ pr: PR_URL, head: "h1" });
+  const helpers = reviewingHelpers({ session: "tickets", run, runAsync: async (args) => run(args), codeHost: () => codeHost, clones: { "announcement-emulator": root }, instance: "work", heads: new Map([[LABEL, "h1"]]) });
+  const port = atomicReviewerPort(helpers, { codexTrust: { rootOf: async () => root, ensure: (trusted) => ({ kind: "present", root: trusted, file: "config.toml", level: "trusted" }), log: () => {} } });
+  const answer = await port.unblock!({ pr: PR_URL, head: "h1" });
   assert.ok(answer !== null && "answered" in answer, JSON.stringify(answer));
   const name = herdrAgentName(LABEL);
   assert.deepEqual(calls.find((args) => args.includes("read")), ["--session", "tickets", "agent", "read", name, "--source", "visible"]);

@@ -13,7 +13,7 @@ const NAMES = ["atomic", "second"];
 const files: PackageFiles = {
   directories: (path) => (path === `${ROOT}/plugins` ? NAMES : []),
   text: (path) => (NAMES.some((name) => path === `${ROOT}/plugins/${name}/package.json`)
-    ? JSON.stringify({ agentOrg: { concern: "reviewer", contract: "1.0", description: "A reviewer.", entry: "index.ts" } }) : null),
+    ? JSON.stringify({ agentOrg: { concern: "reviewer", contract: "2.0", description: "A reviewer.", entry: "index.ts" } }) : null),
   isFile: (path) => path.endsWith("/index.ts"),
 };
 const catalog = buildCatalog({ root: ROOT, files });

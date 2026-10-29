@@ -79,8 +79,8 @@ function ghFor(pr: { head: string; reviews?: unknown[]; outside?: boolean; check
     readPullFeedback: (url, self, alsoIgnore) => { hold(url); return host.readPullFeedback(url, self, alsoIgnore); },
     readReviewState: (url) => { hold(url); return host.readReviewState(url); },
     readPullState: (url) => { hold(url); return host.readPullState(url); },
-    readReviewClaims: () => ({ entries: claimEntriesOf(pr) }),
-    writeReviewClaim: ({ description }) => {
+    readReviewClaims: async () => ({ entries: claimEntriesOf(pr) }),
+    writeReviewClaim: async ({ description }) => {
       const statuses = pr.statuses ??= [];
       statuses.push({ id: statuses.length + 1, context: "agent-org/review", created_at: new Date().toISOString(), description });
       return null;
@@ -96,10 +96,10 @@ const claiming = (fake: ReturnType<typeof ghFor>) => ({ codeHost: fake.codeHost,
 function fakePort() {
   const starts: ReviewerRef[] = [];
   const port: ReviewerPort = {
-    start(ref) { starts.push(ref); return { label: "reviewer-7" }; },
-    live: () => false,
-    close: () => ({ state: "gone" }), retire: () => ({ retired: true, report: null }), listedPulls: () => [],
-    settled: () => "working", verdictFileOf: () => null, repostVerdict: () => ({ posted: true }), reprompt: () => ({ prompted: true }),
+    async start(ref) { starts.push(ref); return { label: "reviewer-7" }; },
+    live: async () => false,
+    close: async () => ({ state: "gone" }), retire: async () => ({ retired: true, report: null }), listedPulls: async () => [],
+    settled: async () => "working", verdictFileOf: () => null, repostVerdict: async () => ({ posted: true }), reprompt: async () => ({ prompted: true }),
   };
   return { port, starts };
 }

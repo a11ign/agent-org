@@ -84,7 +84,7 @@ async function unpostedVerdict(ctx: PoolContext, port: ReviewerPort, state: Revi
     rememberReviewers(ctx);
   };
   if (repost.attempts >= MAX_REPOST_ATTEMPTS) return surfaced(repost.reason ?? "the verdict is not on the pull request");
-  if (port.settled(ref) === "working") return null;
+  if (await port.settled(ref) === "working") return null;
   // The reviewer has ended: its review may have been posted since the sweep read the pull request (the code host shares one read among a sweep's readers), so it is read afresh before anything is posted again (A11-365).
   const fresh = await ctx.codeHost.readReviewState(url, { fresh: true });
   if (fresh !== null && fresh.head === head && reviewPostedAt(fresh.reviews, head)) return null;
@@ -93,11 +93,11 @@ async function unpostedVerdict(ctx: PoolContext, port: ReviewerPort, state: Revi
     // Nothing to post. The reviewer is prompted once, as a reviewer that has just started is; a second look with no file is the failure.
     if (repost.attempts > 0) return surfaced(NO_VERDICT_FILE);
     recordRepost({ attempts: 1, reason: NO_VERDICT_FILE });
-    const prompted = port.reprompt(ref, await briefOf(ctx, url, state));
+    const prompted = await port.reprompt(ref, await briefOf(ctx, url, state));
     if ("refusal" in prompted) log(`${url}: ${prompted.refusal}`);
     return null;
   }
-  const answer = port.repostVerdict(ref, file);
+  const answer = await port.repostVerdict(ref, file);
   if ("posted" in answer) {
     // Counted until a review at this head is on the pull request: the next watch clears the count, and a repost is not made again meanwhile.
     recordRepost({ attempts: repost.attempts + 1 });
@@ -244,7 +244,7 @@ function sayGreenGap(ctx: PoolContext, url: string, head: string, key: string): 
  * this instance first (A11-149), so a head another instance holds is refused here. A refusal is said once per `url@head`, so a sweep every few minutes does
  * not repeat it for a pull request that stays red.
  */
-function startWith(ctx: PoolContext, reviewer: ReviewerPort, url: string, head: string, kind: StartKind): StartAnswer {
+async function startWith(ctx: PoolContext, reviewer: ReviewerPort, url: string, head: string, kind: StartKind): Promise<StartAnswer> {
   const { refusedHeads, reviewerDropped } = ctx;
   const key = `${url}@${head}`;
   const dropped = kind.droppedKey(key);
@@ -260,8 +260,8 @@ function startWith(ctx: PoolContext, reviewer: ReviewerPort, url: string, head: 
   looks.set(key, { at: ctx.now(), body: kind.body, ...decisions, ...(decided === "" ? {} : { decided }) });
   reviewerDropped.delete(dropped);
   rememberReviewers(ctx);
-  const adopted = kind.adopts && reviewer.live({ pr: url, head });
-  const started = adopted ? null : reviewer.start({ pr: url, head }, kind.brief);
+  const adopted = kind.adopts && await reviewer.live({ pr: url, head });
+  const started = adopted ? null : await reviewer.start({ pr: url, head }, kind.brief);
   const refusal = started !== null && "refusal" in started ? started.refusal : null;
   // Counted before the memory is written, so a restart keeps the count; the card follows it at the end of the look (A11-241).
   const counted = kind.counts && countStartRefusal(ctx, key, refusal);
@@ -401,9 +401,9 @@ const answeredWords = (url: string, head: string, how: string): string => `${REV
  * Whether the head's block may be looked at again now: the checks have settled, no reviewer is live for the head, and it was not re-reviewed before looks were kept (such a head has no look to compare with, and
  * A11-156's one re-review by reply is spent).
  */
-function rereviewable(ctx: PoolContext, reviewer: ReviewerPort, url: string, state: ReviewState, look: Look | undefined): boolean {
+async function rereviewable(ctx: PoolContext, reviewer: ReviewerPort, url: string, state: ReviewState, look: Look | undefined): Promise<boolean> {
   const spent = look === undefined && ctx.reviewerRereviewed.has(`${url}@${state.head}`);
-  return !spent && state.settled && !reviewer.live({ pr: url, head: state.head });
+  return !spent && state.settled && !await reviewer.live({ pr: url, head: state.head });
 }
 
 /** Hands the run that holds a block it has no round left to answer to a person (once), instead of starting the reviewer (A11-235). */
@@ -441,7 +441,7 @@ async function rereviewFor(ctx: PoolContext, reviewer: ReviewerPort, url: string
   const { head } = state;
   const block = standingBlock(state.reviews, head);
   const look = ctx.reviewerMemory.looks.get(`${url}@${head}`);
-  if (block === null || !rereviewable(ctx, reviewer, url, state, look)) return null;
+  if (block === null || !await rereviewable(ctx, reviewer, url, state, look)) return null;
   const held = heldBy(ctx, url);
   if (held !== undefined && !mayRereview(held)) return null;
   const changed = bodyAnswersBlock(held, block, bodyChangeSince(look, state));
@@ -460,7 +460,7 @@ async function rereviewFor(ctx: PoolContext, reviewer: ReviewerPort, url: string
   }
   const quoted = replies.slice(-MAX_REPLIES_QUOTED).map(({ author, url: where, text }) => ({ author, url: where, text }));
   const brief = rereviewBrief(await briefOf(ctx, url, state), held, { replies: quoted, changed, decided, amended });
-  const started = startWith(ctx, reviewer, url, head, { recorded: ctx.reviewerRereviewed, droppedKey: rereviewKey, says: "to re-review", brief, adopts: false, body: bodyOf(state), counts: true });
+  const started = await startWith(ctx, reviewer, url, head, { recorded: ctx.reviewerRereviewed, droppedKey: rereviewKey, says: "to re-review", brief, adopts: false, body: bodyOf(state), counts: true });
   if (held !== undefined && started.refusal === null) update(ctx, (queue) => countRereview(queue, held.ticket.key, ctx.now(), `the block was answered ${how}`));
   return started;
 }
@@ -470,15 +470,15 @@ async function rereviewFor(ctx: PoolContext, reviewer: ReviewerPort, url: string
  * in `closing`, which `releaseReviewers` asks again: a not-convinced verdict starts a round, and no watch reads this run until it ends.
  * A re-review's reviewer is the exception (A11-156): the block that stands at its head is the one it answers, so it closes once it has posted its own review, or has ended its turn.
  */
-function closeAnsweredReviewer(ctx: PoolContext, reviewer: ReviewerPort, url: string, state: ReviewState): void {
+async function closeAnsweredReviewer(ctx: PoolContext, reviewer: ReviewerPort, url: string, state: ReviewState): Promise<void> {
   const { closing, reviewerRereviewed } = ctx;
   const { head } = state;
   const ref = { pr: url, head };
   const key = `${url}@${head}`;
   const verdict = reviewVerdict(state.reviews, head);
-  const awaitingOwn = reviewerRereviewed.has(key) && verdict === "not-convinced" && reviewer.settled(ref) === "working";
-  if (verdict === null || awaitingOwn || !reviewer.live(ref)) return;
-  const answer = reviewer.close(ref);
+  const awaitingOwn = reviewerRereviewed.has(key) && verdict === "not-convinced" && await reviewer.settled(ref) === "working";
+  if (verdict === null || awaitingOwn || !await reviewer.live(ref)) return;
+  const answer = await reviewer.close(ref);
   if ("refusal" in answer) {
     log(answer.refusal);
     closing.delete(key);
@@ -507,7 +507,7 @@ function forgetMendedClaimProblems(ctx: PoolContext): void {
  * The dialog the head's reviewer is stopped on and the port could not answer (A11-221, contract 1.6): its first line, or null while the reviewer shows none (a reviewer of 1.5, which has no `unblock`, never does). A dialog the
  * port answered is logged. One it left is logged once per dialog, and kept on the pull request's read until a look finds none.
  */
-function stoppedDialog(ctx: PoolContext, reviewer: ReviewerPort, url: string, ref: ReviewerRef): string | null {
+async function stoppedDialog(ctx: PoolContext, reviewer: ReviewerPort, url: string, ref: ReviewerRef): Promise<string | null> {
   const before = ctx.pullReads.get(url);
   // A look that could not be made says nothing of a dialog, so the last look's finding at this head stands.
   const unread = (why: string): string | null => {
@@ -516,7 +516,7 @@ function stoppedDialog(ctx: PoolContext, reviewer: ReviewerPort, url: string, re
   };
   let seen: ReviewerDialog | null | undefined;
   try {
-    seen = reviewer.unblock?.(ref);
+    seen = await reviewer.unblock?.(ref);
   } catch (err) {
     return unread(messageOf(err));
   }
@@ -543,13 +543,13 @@ function sayOnce(ctx: PoolContext, key: string, line: string): void {
  */
 async function readForLook(ctx: PoolContext, reviewer: ReviewerPort, url: string, given: ReviewState | undefined): Promise<ReviewState | null> {
   const state = given ?? await ctx.codeHost.readReviewState(url);
-  if (state === null || !endedWithoutReview(ctx, reviewer, url, state)) return state;
+  if (state === null || !await endedWithoutReview(ctx, reviewer, url, state)) return state;
   return (await ctx.codeHost.readReviewState(url, { fresh: true })) ?? state;
 }
 
 /** Whether a reviewer was started for the head of `state`, has stopped working, and `state` shows no review on the head. */
-const endedWithoutReview = (ctx: PoolContext, reviewer: ReviewerPort, url: string, state: ReviewState): boolean =>
-  ctx.reviewerStarted.has(`${url}@${state.head}`) && reviewer.settled({ pr: url, head: state.head }) !== "working" && !reviewPostedAt(state.reviews, state.head);
+const endedWithoutReview = async (ctx: PoolContext, reviewer: ReviewerPort, url: string, state: ReviewState): Promise<boolean> =>
+  ctx.reviewerStarted.has(`${url}@${state.head}`) && await reviewer.settled({ pr: url, head: state.head }) !== "working" && !reviewPostedAt(state.reviews, state.head);
 
 /**
  * One open pull request at its current head, as the pool looks at it (A11-119): a posted verdict is remembered, a reviewer that ended without one is looked
@@ -604,18 +604,18 @@ async function lookAt(ctx: PoolContext, reviewer: ReviewerPort, url: string, giv
   if (startable) noteGreen(ctx, key);
   else forgetGreen(ctx, url, posted || !state.settled ? null : key);
   const first = startable && (await codeHost.readPullState(url)) === "OPEN" ? await (given.early === true ? startEarlyFor : startFor)(ctx, reviewer, url, state) : null;
-  closeAnsweredReviewer(ctx, reviewer, url, state);
+  await closeAnsweredReviewer(ctx, reviewer, url, state);
   // A re-review the verdict door refused leaves its result on the run and on the pull request (A11-290), before another look at the head is asked for.
   await recordRefusedRereview(ctx, reviewer, url, state, (since) => repliesAfter(ctx, url, key, since));
   // The reply to a block asks for one more look at the same head, once the first reviewer has gone.
   const rereview = first === null ? await rereviewFor(ctx, reviewer, url, state) : null;
   const started = first ?? rereview;
   const tookOver = tookOverOf(started, pullReads.get(url), head);
-  const reviewing = reviewer.live(ref);
+  const reviewing = await reviewer.live(ref);
   const unclaimed = unclaimedNoteOf(started, reviewing ? ctx.reviewerMemory.unclaimed.get(key) : undefined);
   // A reviewer started for this head with no review posted on it yet, or one re-reviewing a head its block stands on, may be stopped on a dialog (A11-221).
   const mayShowDialog = reviewerStarted.has(key) && (!posted || reviewerRereviewed.has(key));
-  const dialog = reviewing && mayShowDialog ? stoppedDialog(ctx, reviewer, url, ref) : null;
+  const dialog = reviewing && mayShowDialog ? await stoppedDialog(ctx, reviewer, url, ref) : null;
   const read: PullRead = {
     head, settled: state.settled, reviewing, verdict: reviewWordAt(state.reviews, head),
     earlier: earlierReviewWord(state.reviews, head), refusal: started?.refusal ?? null, unposted, ...(tookOver === undefined ? {} : { tookOver }), ...(unclaimed === undefined ? {} : { unclaimed }),
@@ -843,12 +843,12 @@ export async function releaseReviewers(ctx: PoolContext): Promise<void> {
   const { closing, codeHost, reviewer, reviewerRereviewed, reviewerStarted } = ctx;
   if (reviewer === undefined) return;
   for (const [key, ref] of [...closing]) {
-    const answer = reviewer.close(ref);
+    const answer = await reviewer.close(ref);
     if ("refusal" in answer) log(answer.refusal);
     if ("refusal" in answer || answer.state !== "busy") closing.delete(key);
   }
   const pulls = new Set([...reviewerStarted, ...reviewerRereviewed].map((key) => key.slice(0, key.lastIndexOf("@"))));
-  for (const url of reviewer.listedPulls()) pulls.add(url);
+  for (const url of await reviewer.listedPulls()) pulls.add(url);
   for (const url of pulls) {
     const state = await codeHost.readPullState(url);
     if (state === null) {
@@ -856,7 +856,7 @@ export async function releaseReviewers(ctx: PoolContext): Promise<void> {
       continue;
     }
     if (state === "OPEN") continue;
-    const answer = reviewer.retire(url);
+    const answer = await reviewer.retire(url);
     if ("refusal" in answer) {
       log(answer.refusal);
       continue;

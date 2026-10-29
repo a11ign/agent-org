@@ -1,6 +1,6 @@
 // module: the review claim -- a commit status on a pull request's head that says which instance is reviewing it (A11-149). Every instance reads it on GitHub,
 // so two instances that sweep the same pull request start one reviewer between them. THE PROTOCOL IS PURE over an injected `read` and `write`; the calls that back
-// them are the code host's (`readReviewClaims`, `writeReviewClaim`, contract 1.5), which the GitHub plugin makes.
+// them are the code host's (`readReviewClaims`, `writeReviewClaim`, contract 1.5, answering a promise since 3.0), which the GitHub plugin makes. The protocol awaits both, so it answers a promise and the board's loop goes on between its steps (A11-379).
 
 /** The commit status context a claim is written under, and the one the door writes the verdict to. ONE SPELLING WITH `pr-review-verdict.sh`. */
 export const REVIEW_CLAIM_CONTEXT = "agent-org/review";
@@ -107,9 +107,9 @@ export function reasonOf(err: unknown): string {
 }
 
 /** What `action` returns, or the unclaimed answer for an action that threw at `step`. */
-function attempt<T>(step: ClaimStep, action: () => T): Readonly<{ value: T }> | Readonly<{ unclaimed: Extract<ClaimAnswer, { outcome: "unclaimed" }> }> {
+async function attempt<T>(step: ClaimStep, action: () => Promise<T>): Promise<Readonly<{ value: T }> | Readonly<{ unclaimed: Extract<ClaimAnswer, { outcome: "unclaimed" }> }>> {
   try {
-    return { value: action() };
+    return { value: await action() };
   } catch (err) {
     return { unclaimed: { outcome: "unclaimed", reason: reasonOf(err), step } };
   }
@@ -134,8 +134,8 @@ type Listing = Readonly<{ entries: readonly ClaimEntry[] }> | Readonly<{ answer:
  * The statuses `read` lists, or the answer that ends the claim before anything is written: `finished` when a verdict is among them, `unclaimed` when the
  * read failed.
  */
-function listingOf(read: () => readonly ClaimEntry[], step: ClaimStep): Listing {
-  const listed = attempt(step, read);
+async function listingOf(read: () => Promise<readonly ClaimEntry[]>, step: ClaimStep): Promise<Listing> {
+  const listed = await attempt(step, read);
   if ("unclaimed" in listed) return { answer: listed.unclaimed };
   const finished = listed.value.find((entry) => describedClaimOf(entry.description)?.kind === "finished");
   return finished === undefined ? { entries: listed.value } : { answer: { outcome: "finished", description: finished.description } };
@@ -145,8 +145,8 @@ function listingOf(read: () => readonly ClaimEntry[], step: ClaimStep): Listing 
  * The listing a re-review (A11-156) decides on: the one claim that starts after a verdict. The verdict it answers is not its end, and the claims before that verdict
  * are the first review's, so only the entries after the newest verdict are read.
  */
-function listingAfterVerdict(read: () => readonly ClaimEntry[], step: ClaimStep): Listing {
-  const listed = attempt(step, read);
+async function listingAfterVerdict(read: () => Promise<readonly ClaimEntry[]>, step: ClaimStep): Promise<Listing> {
+  const listed = await attempt(step, read);
   return "unclaimed" in listed ? { answer: listed.unclaimed } : afterNewestVerdict(listed.value);
 }
 
@@ -154,10 +154,10 @@ function listingAfterVerdict(read: () => readonly ClaimEntry[], step: ClaimStep)
  * What a write GitHub refused comes to (A11-172): `alone` when nobody else can be reviewing the head, else the refusal as it was. The head is read AGAIN first, so a claim another instance wrote while this
  * one was being refused is seen (`held`); a read that fails then says nothing of who holds the head, so the refusal stands. Only after that read is `otherSeen` asked, which the reads record into.
  */
-function aloneOrRefused({ refused, instance, now, read, otherSeen }: {
-  refused: Extract<ClaimAnswer, { outcome: "unclaimed" }>; instance: string; now: number; read: () => Listing; otherSeen: () => number | null;
-}): ClaimAnswer {
-  const again = read();
+async function aloneOrRefused({ refused, instance, now, read, otherSeen }: {
+  refused: Extract<ClaimAnswer, { outcome: "unclaimed" }>; instance: string; now: number; read: () => Promise<Listing>; otherSeen: () => number | null;
+}): Promise<ClaimAnswer> {
+  const again = await read();
   if ("answer" in again) return again.answer.outcome === "finished" ? again.answer : refused;
   const holder = claimsIn(again.entries).find((claim) => now - claim.created < REVIEW_LEASE_MS);
   if (holder !== undefined && holder.instance !== instance) return { outcome: "held", instance: holder.instance, since: holder.created };
@@ -166,8 +166,8 @@ function aloneOrRefused({ refused, instance, now, read, otherSeen }: {
 }
 
 /**
- * Claims a head for `instance` (A11-149), or says why it cannot. PURE: `read` returns the claim's entries, and `write` posts a claim with the description it
- * is given, and throws when GitHub refuses it. In order:
+ * Claims a head for `instance` (A11-149), or says why it cannot. PURE: `read` answers a promise of the claim's entries, and `write` posts a claim with the description it
+ * is given, and rejects when GitHub refuses it (A11-379: both are awaited, in the order below, so the protocol holds the loop for none of them). In order:
  *
  * 1. A finished entry (a verdict) means the review is posted: `finished`, and nothing is started. A `rereview` is the exception (A11-156): it claims the head again
  *    after the verdict that stands, and only the entries after that verdict are read.
@@ -185,11 +185,11 @@ function aloneOrRefused({ refused, instance, now, read, otherSeen }: {
  * (asked after that second read, which the caller's `read` may record), or null for none. A read that failed cannot show a claim, and a write that landed but was not read back
  * may hold the head, so neither is `alone`. With no `otherSeen` given, nothing is `alone`.
  */
-export function claimHead({ instance, now, read, write, rereview = false, otherSeen = () => now /* none given: another instance is taken to be seen, so nothing is `alone` */ }: {
-  instance: string; now: number; read: () => readonly ClaimEntry[]; write: (description: string) => void; rereview?: boolean; otherSeen?: () => number | null;
-}): ClaimAnswer {
+export async function claimHead({ instance, now, read, write, rereview = false, otherSeen = () => now /* none given: another instance is taken to be seen, so nothing is `alone` */ }: {
+  instance: string; now: number; read: () => Promise<readonly ClaimEntry[]>; write: (description: string) => Promise<void>; rereview?: boolean; otherSeen?: () => number | null;
+}): Promise<ClaimAnswer> {
   const listingOfHead = rereview ? listingAfterVerdict : listingOf;
-  const first = listingOfHead(read, "read");
+  const first = await listingOfHead(read, "read");
   if ("answer" in first) return first.answer;
   const claims = claimsIn(first.entries);
   const live = claims.filter((claim) => now - claim.created < REVIEW_LEASE_MS);
@@ -197,9 +197,9 @@ export function claimHead({ instance, now, read, write, rereview = false, otherS
   if (live[0] !== undefined) return { outcome: "held", instance: live[0].instance, since: live[0].created };
   // The expired claim this takes over: the most recent one of another instance, with no verdict after it (a verdict would have answered `finished` above).
   const expired = claims.filter((claim) => now - claim.created >= REVIEW_LEASE_MS && claim.instance !== instance).at(-1);
-  const written = attempt("write", () => write(claimDescriptionOf({ instance, now })));
+  const written = await attempt("write", () => write(claimDescriptionOf({ instance, now })));
   if ("unclaimed" in written) return aloneOrRefused({ refused: written.unclaimed, instance, now, read: () => listingOfHead(read, "write"), otherSeen });
-  const second = listingOfHead(read, "readback");
+  const second = await listingOfHead(read, "readback");
   if ("answer" in second) return second.answer;
   const after = second.entries;
   // Our own claim was written a moment ago, so it is on the list unless GitHub's clock says it is older than the lease: then nothing can be said.

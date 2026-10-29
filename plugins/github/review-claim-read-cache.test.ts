@@ -13,7 +13,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { tmpDir, tmpDirForFile } from "../../src/lib/tmp-fixture.ts";
 import { claimDescriptionOf } from "../../src/ticket-port/review-claim.ts";
-import type { Gh } from "./gh.ts";
+import type { AsyncGh, Gh } from "./gh.ts";
 import { readReviewClaims, writeReviewClaim } from "./review-claims.ts";
 
 const NOW = Date.UTC(2026, 9, 22, 12);
@@ -55,27 +55,30 @@ function github() {
   return { scheduler: account("scheduler"), reviewer: account("reviewer"), listings };
 }
 
-test("A11-172: a claim read straight after a write by another identity sees the write, with the wrapper's read cache on", () => {
+/** A `gh` that answers a promise of what the synchronous wrapper printed: the cache under test is the wrapper's, and the claim's calls are the plugin's async ones. */
+const asAsync = (gh: Gh): AsyncGh => async (args) => gh(args);
+
+test("A11-172: a claim read straight after a write by another identity sees the write, with the wrapper's read cache on", async () => {
   const { scheduler, reviewer, listings } = github();
-  const entries = (gh: Gh) => {
-    const read = readReviewClaims(REPO, SHA, gh);
+  const entries = async (gh: Gh) => {
+    const read = await readReviewClaims(REPO, SHA, asAsync(gh));
     assert.ok("entries" in read, `the read was answered: ${JSON.stringify(read)}`);
     return read.entries;
   };
-  assert.deepEqual(entries(scheduler), [], "the first read, as the scheduler: the head has no claim");
-  assert.equal(writeReviewClaim({ repository: REPO, head: SHA, description: claimDescriptionOf({ instance: "work", now: NOW }), environment: {} }, reviewer), null);
-  const after = entries(scheduler);
+  assert.deepEqual(await entries(scheduler), [], "the first read, as the scheduler: the head has no claim");
+  assert.equal(await writeReviewClaim({ repository: REPO, head: SHA, description: claimDescriptionOf({ instance: "work", now: NOW }), environment: {} }, asAsync(reviewer)), null);
+  const after = await entries(scheduler);
   assert.deepEqual(after.map((entry) => entry.description), [claimDescriptionOf({ instance: "work", now: NOW })], "the read-back, as the scheduler, straight after the reviewer's write, lists the claim");
   assert.equal(listings(), 2, "both reads reached GitHub: neither was served from the store");
-  assert.equal(entries(scheduler).length, 1, "and an identical read inside the cache's seconds is read again too");
+  assert.equal((await entries(scheduler)).length, 1, "and an identical read inside the cache's seconds is read again too");
   assert.equal(listings(), 3);
 });
 
-test("A11-172: POSITIVE CONTROL: a plain GET of the same path, as the claim used to read it, returns the list from before the write", () => {
+test("A11-172: POSITIVE CONTROL: a plain GET of the same path, as the claim used to read it, returns the list from before the write", async () => {
   const { scheduler, reviewer, listings } = github();
   const plain = () => scheduler(["api", "--paginate", STATUSES_PATH]);
   assert.equal(plain(), "", "the first read: nothing is claimed");
-  writeReviewClaim({ repository: REPO, head: SHA, description: claimDescriptionOf({ instance: "work", now: NOW }), environment: {} }, reviewer);
+  await writeReviewClaim({ repository: REPO, head: SHA, description: claimDescriptionOf({ instance: "work", now: NOW }), environment: {} }, asAsync(reviewer));
   assert.equal(plain(), "", "the cache is on: the scheduler's second read is the first one's answer, though the head now holds a claim");
   assert.equal(listings(), 1, "and it never reached GitHub");
 });

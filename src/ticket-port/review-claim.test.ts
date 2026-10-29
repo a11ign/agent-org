@@ -19,8 +19,8 @@ function headOf(entries: ClaimEntry[] = [], writtenAt = NOW) {
   const store = [...entries];
   return {
     store,
-    read: () => [...store],
-    write: (description: string) => { store.push({ id: store.length + 1, description, created: writtenAt }); },
+    read: async () => [...store],
+    write: async (description: string) => { store.push({ id: store.length + 1, description, created: writtenAt }); },
   };
 }
 
@@ -31,101 +31,101 @@ test("the lease is 60 minutes, and the claim context is the one the door writes 
   assert.equal(REVIEW_CLAIM_CONTEXT, "agent-org/review");
 });
 
-test("a head nobody claimed is claimed for this instance, with the claim's description written once", () => {
+test("a head nobody claimed is claimed for this instance, with the claim's description written once", async () => {
   const head = headOf();
-  assert.deepEqual(claimHead({ ...claimAs("work", NOW), read: head.read, write: head.write }), { outcome: "won", tookOver: null });
+  assert.deepEqual(await claimHead({ ...claimAs("work", NOW), read: head.read, write: head.write }), { outcome: "won", tookOver: null });
   assert.deepEqual(head.store.map((entry) => entry.description), [`claimed by work at ${at(NOW)}, lease 60 min`]);
 });
 
-test("another instance's live claim holds the head: this instance starts nothing and writes nothing", () => {
+test("another instance's live claim holds the head: this instance starts nothing and writes nothing", async () => {
   const head = headOf([claimOf("laptop", NOW - 5 * 60_000)]);
-  assert.deepEqual(claimHead({ ...claimAs("work", NOW), read: head.read, write: head.write }), { outcome: "held", instance: "laptop", since: NOW - 5 * 60_000 });
+  assert.deepEqual(await claimHead({ ...claimAs("work", NOW), read: head.read, write: head.write }), { outcome: "held", instance: "laptop", since: NOW - 5 * 60_000 });
   assert.equal(head.store.length, 1, "no claim is written");
 });
 
-test("this instance's own live claim is its own: a restart proceeds, and no second claim is written", () => {
+test("this instance's own live claim is its own: a restart proceeds, and no second claim is written", async () => {
   const head = headOf([claimOf("work", NOW - 5 * 60_000)]);
-  assert.deepEqual(claimHead({ ...claimAs("work", NOW), read: head.read, write: head.write }), { outcome: "won", tookOver: null });
+  assert.deepEqual(await claimHead({ ...claimAs("work", NOW), read: head.read, write: head.write }), { outcome: "won", tookOver: null });
   assert.equal(head.store.length, 1);
 });
 
-test("a claim is live up to the lease and expired at it: one a millisecond short still holds, one at the lease is taken over", () => {
+test("a claim is live up to the lease and expired at it: one a millisecond short still holds, one at the lease is taken over", async () => {
   const short = headOf([claimOf("laptop", NOW - LEASE + 1)]);
-  assert.equal(claimHead({ ...claimAs("work", NOW), read: short.read, write: short.write }).outcome, "held", "a millisecond short of the lease holds");
+  assert.equal((await claimHead({ ...claimAs("work", NOW), read: short.read, write: short.write })).outcome, "held", "a millisecond short of the lease holds");
   const expired = headOf([claimOf("laptop", NOW - LEASE)]);
-  assert.deepEqual(claimHead({ ...claimAs("work", NOW), read: expired.read, write: expired.write }), { outcome: "won", tookOver: "took over the claim of laptop, 60 min old with no verdict" }, "at the lease it is taken over, and says so");
+  assert.deepEqual(await claimHead({ ...claimAs("work", NOW), read: expired.read, write: expired.write }), { outcome: "won", tookOver: "took over the claim of laptop, 60 min old with no verdict" }, "at the lease it is taken over, and says so");
 });
 
-test("an expired claim with no verdict is taken over, and the newest such claim is the one named", () => {
+test("an expired claim with no verdict is taken over, and the newest such claim is the one named", async () => {
   const head = headOf([claimOf("first", NOW - 3 * 60 * 60_000, 1), claimOf("second", NOW - 2 * 60 * 60_000, 2)]);
-  assert.deepEqual(claimHead({ ...claimAs("work", NOW), read: head.read, write: head.write }), { outcome: "won", tookOver: "took over the claim of second, 120 min old with no verdict" });
+  assert.deepEqual(await claimHead({ ...claimAs("work", NOW), read: head.read, write: head.write }), { outcome: "won", tookOver: "took over the claim of second, 120 min old with no verdict" });
   assert.equal(head.store.length, 3, "this instance's claim is written beside the expired ones");
 });
 
-test("a verdict on the head means the review is posted: nothing starts, and nothing is written", () => {
+test("a verdict on the head means the review is posted: nothing starts, and nothing is written", async () => {
   const posted = { id: 2, description: finishedDescriptionOf({ verdict: "convinced", instance: "laptop", now: NOW }), created: NOW };
   const head = headOf([claimOf("laptop", NOW - 60_000, 1), posted]);
-  assert.deepEqual(claimHead({ ...claimAs("work", NOW), read: head.read, write: head.write }), { outcome: "finished", description: posted.description });
+  assert.deepEqual(await claimHead({ ...claimAs("work", NOW), read: head.read, write: head.write }), { outcome: "finished", description: posted.description });
   assert.equal(head.store.length, 2);
 });
 
-test("A11-156: a re-review claims the head again after the verdict that stands, and reads only the entries after it", () => {
+test("A11-156: a re-review claims the head again after the verdict that stands, and reads only the entries after it", async () => {
   const block = { id: 2, description: finishedDescriptionOf({ verdict: "not-convinced", instance: "work", now: NOW - 30 * 60_000 }), created: NOW - 30 * 60_000 };
   const head = headOf([claimOf("work", NOW - 40 * 60_000, 1), block]);
-  assert.equal(claimHead({ ...claimAs("work", NOW), read: head.read, write: head.write }).outcome, "finished", "a first review of this head is over: the verdict stands");
-  assert.deepEqual(claimHead({ ...claimAs("work", NOW), read: head.read, write: head.write, rereview: true }), { outcome: "won", tookOver: null }, "a re-review claims it again");
+  assert.equal((await claimHead({ ...claimAs("work", NOW), read: head.read, write: head.write })).outcome, "finished", "a first review of this head is over: the verdict stands");
+  assert.deepEqual(await claimHead({ ...claimAs("work", NOW), read: head.read, write: head.write, rereview: true }), { outcome: "won", tookOver: null }, "a re-review claims it again");
   assert.deepEqual(head.store.map((entry) => entry.description).slice(2), [`claimed by work at ${at(NOW)}, lease 60 min`], "with a claim written after the verdict");
 });
 
-test("A11-156: the first review's claim, even another instance's and unexpired, is no claim on a re-review; one written after the verdict is", () => {
+test("A11-156: the first review's claim, even another instance's and unexpired, is no claim on a re-review; one written after the verdict is", async () => {
   const block = { id: 2, description: finishedDescriptionOf({ verdict: "not-convinced", instance: "work", now: NOW - 30 * 60_000 }), created: NOW - 30 * 60_000 };
   const before = headOf([claimOf("laptop", NOW - 40 * 60_000, 1), block]);
-  assert.equal(claimHead({ ...claimAs("work", NOW), read: before.read, write: before.write, rereview: true }).outcome, "won", "a claim before the verdict belongs to the review that ended in it");
+  assert.equal((await claimHead({ ...claimAs("work", NOW), read: before.read, write: before.write, rereview: true })).outcome, "won", "a claim before the verdict belongs to the review that ended in it");
   const after = headOf([claimOf("laptop", NOW - 40 * 60_000, 1), block, claimOf("laptop", NOW - 5 * 60_000, 3)]);
-  assert.deepEqual(claimHead({ ...claimAs("work", NOW), read: after.read, write: after.write, rereview: true }), { outcome: "held", instance: "laptop", since: NOW - 5 * 60_000 }, "another instance's re-review holds the head");
+  assert.deepEqual(await claimHead({ ...claimAs("work", NOW), read: after.read, write: after.write, rereview: true }), { outcome: "held", instance: "laptop", since: NOW - 5 * 60_000 }, "another instance's re-review holds the head");
   assert.equal(after.store.length, 3, "and nothing is written");
 });
 
-test("A11-156: an approval is the end of a head, a re-review's included: there is no block left to answer", () => {
+test("A11-156: an approval is the end of a head, a re-review's included: there is no block left to answer", async () => {
   const block = { id: 2, description: finishedDescriptionOf({ verdict: "not-convinced", instance: "work", now: NOW - 30 * 60_000 }), created: NOW - 30 * 60_000 };
   const approved = { id: 4, description: finishedDescriptionOf({ verdict: "convinced", instance: "work", now: NOW - 60_000 }), created: NOW - 60_000 };
   const head = headOf([claimOf("work", NOW - 40 * 60_000, 1), block, claimOf("work", NOW - 20 * 60_000, 3), approved]);
-  assert.equal(claimHead({ ...claimAs("work", NOW), read: head.read, write: head.write }).outcome, "finished", "a start that is not a re-review sees a head with its verdict");
-  assert.deepEqual(claimHead({ ...claimAs("work", NOW), read: head.read, write: head.write, rereview: true }), { outcome: "finished", description: approved.description }, "and so does a re-review");
+  assert.equal((await claimHead({ ...claimAs("work", NOW), read: head.read, write: head.write })).outcome, "finished", "a start that is not a re-review sees a head with its verdict");
+  assert.deepEqual(await claimHead({ ...claimAs("work", NOW), read: head.read, write: head.write, rereview: true }), { outcome: "finished", description: approved.description }, "and so does a re-review");
   assert.equal(head.store.length, 4, "nothing is written");
 });
 
-test("a verdict that lands after this instance wrote its claim means the review is posted, and the answer says so", () => {
+test("a verdict that lands after this instance wrote its claim means the review is posted, and the answer says so", async () => {
   const posted = { id: 2, description: finishedDescriptionOf({ verdict: "not-convinced", instance: "laptop", now: NOW }), created: NOW };
   const head = headOf();
   let reads = 0;
-  const read = () => (reads++ === 0 ? [] : [...head.store, posted]);
-  assert.deepEqual(claimHead({ ...claimAs("work", NOW), read, write: head.write }), { outcome: "finished", description: posted.description });
+  const read = async () => (reads++ === 0 ? [] : [...head.store, posted]);
+  assert.deepEqual(await claimHead({ ...claimAs("work", NOW), read, write: head.write }), { outcome: "finished", description: posted.description });
 });
 
-test("two instances that both wrote agree on one winner: the earlier claim, and a tie goes to the lower id", () => {
+test("two instances that both wrote agree on one winner: the earlier claim, and a tie goes to the lower id", async () => {
   const head = headOf();
-  assert.equal(claimHead({ ...claimAs("work", NOW), read: head.read, write: head.write }).outcome, "won", "the first to look claims it");
-  assert.deepEqual(claimHead({ ...claimAs("laptop", NOW + 1000), read: head.read, write: head.write }), { outcome: "held", instance: "work", since: NOW }, "the second sees the first's earlier claim");
+  assert.equal((await claimHead({ ...claimAs("work", NOW), read: head.read, write: head.write })).outcome, "won", "the first to look claims it");
+  assert.deepEqual(await claimHead({ ...claimAs("laptop", NOW + 1000), read: head.read, write: head.write }), { outcome: "held", instance: "work", since: NOW }, "the second sees the first's earlier claim");
   const tied = [claimOf("laptop", NOW, 2), claimOf("work", NOW, 1)];
-  assert.deepEqual(claimHead({ ...claimAs("laptop", NOW), read: () => tied, write: () => {} }), { outcome: "held", instance: "work", since: NOW }, "a tie in the second goes to the lower id");
-  assert.equal(claimHead({ ...claimAs("work", NOW), read: () => tied, write: () => {} }).outcome, "won");
+  assert.deepEqual(await claimHead({ ...claimAs("laptop", NOW), read: async () => tied, write: async () => {} }), { outcome: "held", instance: "work", since: NOW }, "a tie in the second goes to the lower id");
+  assert.equal((await claimHead({ ...claimAs("work", NOW), read: async () => tied, write: async () => {} })).outcome, "won");
 });
 
-test("a claim that cannot be read or written starts nothing, and says why in its first line", () => {
+test("a claim that cannot be read or written starts nothing, and says why in its first line", async () => {
   const head = headOf();
-  assert.deepEqual(claimHead({ ...claimAs("work", NOW), read: () => { throw new Error("gh: HTTP 502\nmore"); }, write: head.write }), { outcome: "unclaimed", reason: "gh: HTTP 502", step: "read" });
+  assert.deepEqual(await claimHead({ ...claimAs("work", NOW), read: async () => { throw new Error("gh: HTTP 502\nmore"); }, write: head.write }), { outcome: "unclaimed", reason: "gh: HTTP 502", step: "read" });
   assert.equal(head.store.length, 0, "nothing is written when nothing could be read");
   // A second instance is in sight, so the refused write is no fallback (A11-172): it stays a claim that could not be made.
-  const refused = claimHead({ ...claimAs("work", NOW), read: head.read, otherSeen: () => NOW - 60_000, write: () => { throw new Error("gh: Resource not accessible (HTTP 403)"); } });
+  const refused = await claimHead({ ...claimAs("work", NOW), read: head.read, otherSeen: () => NOW - 60_000, write: async () => { throw new Error("gh: Resource not accessible (HTTP 403)"); } });
   assert.deepEqual(refused, { outcome: "unclaimed", reason: "gh: Resource not accessible (HTTP 403)", step: "write" });
   let reads = 0;
-  const readAgainFails = () => { if (reads++ > 0) throw new Error("gh: HTTP 502"); return []; };
-  assert.deepEqual(claimHead({ ...claimAs("work", NOW), read: readAgainFails, write: head.write }), { outcome: "unclaimed", reason: "gh: HTTP 502", step: "readback" });
+  const readAgainFails = async () => { if (reads++ > 0) throw new Error("gh: HTTP 502"); return []; };
+  assert.deepEqual(await claimHead({ ...claimAs("work", NOW), read: readAgainFails, write: head.write }), { outcome: "unclaimed", reason: "gh: HTTP 502", step: "readback" });
 });
 
-test("a claim that is not on the head when read back is unclaimed, not held by this instance", () => {
-  const none = claimHead({ ...claimAs("work", NOW), read: () => [], write: () => {} });
+test("a claim that is not on the head when read back is unclaimed, not held by this instance", async () => {
+  const none = await claimHead({ ...claimAs("work", NOW), read: async () => [], write: async () => {} });
   assert.deepEqual(none, { outcome: "unclaimed", reason: "the claim was not on the head after it was written", step: "readback" });
 });
 
@@ -151,24 +151,24 @@ test("a gh run with the reviewer's environment sees it laid over this process's 
   }
 });
 
-test("A11-149: a release cancels its instance's own claim, so the head is free for the next instance at once", () => {
+test("A11-149: a release cancels its instance's own claim, so the head is free for the next instance at once", async () => {
   const released = { id: 2, description: releasedDescriptionOf({ instance: "work", now: NOW }), created: NOW };
   const head = headOf([claimOf("work", NOW - 60_000, 1), released]);
-  assert.deepEqual(claimHead({ ...claimAs("laptop", NOW), read: head.read, write: head.write }), { outcome: "won", tookOver: null });
+  assert.deepEqual(await claimHead({ ...claimAs("laptop", NOW), read: head.read, write: head.write }), { outcome: "won", tookOver: null });
   assert.equal(head.store.length, 3, "the next instance writes its own claim");
 });
 
-test("A11-149: a release cancels only the claim of the instance that released it", () => {
+test("A11-149: a release cancels only the claim of the instance that released it", async () => {
   const released = { id: 2, description: releasedDescriptionOf({ instance: "work", now: NOW }), created: NOW };
   const head = headOf([claimOf("laptop", NOW - 60_000, 1), released]);
-  assert.deepEqual(claimHead({ ...claimAs("work", NOW), read: head.read, write: head.write }), { outcome: "held", instance: "laptop", since: NOW - 60_000 }, "laptop's live claim still holds the head");
+  assert.deepEqual(await claimHead({ ...claimAs("work", NOW), read: head.read, write: head.write }), { outcome: "held", instance: "laptop", since: NOW - 60_000 }, "laptop's live claim still holds the head");
 });
 
-test("A11-149: two installs that share a host name are two claimants: one's live claim holds the head against the other's", () => {
+test("A11-149: two installs that share a host name are two claimants: one's live claim holds the head against the other's", async () => {
   const head = headOf([claimOf("MacBook.1a2b3c4d", NOW - 60_000, 1)]);
-  assert.deepEqual(claimHead({ ...claimAs("MacBook.9f8e7d6c", NOW), read: head.read, write: head.write }), { outcome: "held", instance: "MacBook.1a2b3c4d", since: NOW - 60_000 });
+  assert.deepEqual(await claimHead({ ...claimAs("MacBook.9f8e7d6c", NOW), read: head.read, write: head.write }), { outcome: "held", instance: "MacBook.1a2b3c4d", since: NOW - 60_000 });
   assert.equal(head.store.length, 1, "nothing is written");
-  assert.equal(claimHead({ ...claimAs("MacBook.1a2b3c4d", NOW), read: head.read, write: head.write }).outcome, "won", "the same install still sees its own");
+  assert.equal((await claimHead({ ...claimAs("MacBook.1a2b3c4d", NOW), read: head.read, write: head.write })).outcome, "won", "the same install still sees its own");
 });
 
 test("A11-149: a release is read back as a release, and is none of a claim, a verdict, or another context's", () => {
@@ -180,61 +180,61 @@ test("A11-149: a release is read back as a release, and is none of a claim, a ve
 const refusedByGithub = (): Error => Object.assign(new Error("Command failed: gh api --method POST repos/a11ign/agent-org/statuses/abc --silent -f state=success"),
   { stderr: "gh: Resource not accessible by integration (HTTP 403)\n{\"message\":\"Resource not accessible by integration\"}\n" });
 
-test("A11-172: a failed call's reason is GitHub's, the first line gh printed, and the command's own message only when gh printed none", () => {
+test("A11-172: a failed call's reason is GitHub's, the first line gh printed, and the command's own message only when gh printed none", async () => {
   assert.equal(reasonOf(refusedByGithub()), "gh: Resource not accessible by integration (HTTP 403)");
   assert.equal(reasonOf(Object.assign(new Error("Command failed: gh api x"), { stderr: Buffer.from("\n gh: HTTP 502 \nmore") })), "gh: HTTP 502", "a Buffer is read, and a blank line is passed over");
   assert.equal(reasonOf(Object.assign(new Error("Command failed: gh api x\nsecond"), { stderr: "" })), "Command failed: gh api x");
   assert.equal(reasonOf("plain"), "plain");
   const head = headOf();
-  const answer = claimHead({ ...claimAs("work", NOW), read: head.read, otherSeen: () => NOW, write: () => { throw refusedByGithub(); } });
+  const answer = await claimHead({ ...claimAs("work", NOW), read: head.read, otherSeen: () => NOW, write: async () => { throw refusedByGithub(); } });
   assert.deepEqual(answer, { outcome: "unclaimed", reason: "gh: Resource not accessible by integration (HTTP 403)", step: "write" }, "the answer carries GitHub's words, not the command's");
 });
 
-test("A11-172: a refused write after a clean read is `alone` when no other instance has been seen, with GitHub's reason, and nothing was written", () => {
+test("A11-172: a refused write after a clean read is `alone` when no other instance has been seen, with GitHub's reason, and nothing was written", async () => {
   const head = headOf();
-  const refuse = () => { throw refusedByGithub(); };
-  assert.deepEqual(claimHead({ ...claimAs("work", NOW), read: head.read, write: refuse, otherSeen: () => null }),
+  const refuse = async () => { throw refusedByGithub(); };
+  assert.deepEqual(await claimHead({ ...claimAs("work", NOW), read: head.read, write: refuse, otherSeen: () => null }),
     { outcome: "alone", reason: "gh: Resource not accessible by integration (HTTP 403)" });
   assert.equal(head.store.length, 0);
 });
 
-test("A11-172: another instance seen just within the lease keeps the refused write a refusal; one seen at the lease no longer counts", () => {
-  const refuse = () => { throw refusedByGithub(); };
+test("A11-172: another instance seen just within the lease keeps the refused write a refusal; one seen at the lease no longer counts", async () => {
+  const refuse = async () => { throw refusedByGithub(); };
   const head = headOf();
-  const within = claimHead({ ...claimAs("work", NOW), read: head.read, write: refuse, otherSeen: () => NOW - LEASE + 1 });
+  const within = await claimHead({ ...claimAs("work", NOW), read: head.read, write: refuse, otherSeen: () => NOW - LEASE + 1 });
   assert.deepEqual([within.outcome, "step" in within ? within.step : null], ["unclaimed", "write"], "a millisecond short of the lease it is still there");
-  assert.equal(claimHead({ ...claimAs("work", NOW), read: head.read, write: refuse, otherSeen: () => NOW - LEASE }).outcome, "alone", "at the lease it is past");
-  assert.equal(claimHead({ ...claimAs("work", NOW), read: head.read, write: refuse }).outcome, "unclaimed", "a caller that says nothing of other instances never gets the fallback");
+  assert.equal((await claimHead({ ...claimAs("work", NOW), read: head.read, write: refuse, otherSeen: () => NOW - LEASE })).outcome, "alone", "at the lease it is past");
+  assert.equal((await claimHead({ ...claimAs("work", NOW), read: head.read, write: refuse })).outcome, "unclaimed", "a caller that says nothing of other instances never gets the fallback");
 });
 
-test("A11-172: another instance's live claim on this head is `held`, whatever the write would do, so the fallback never takes a head another holds", () => {
+test("A11-172: another instance's live claim on this head is `held`, whatever the write would do, so the fallback never takes a head another holds", async () => {
   const head = headOf([claimOf("laptop", NOW - 5 * 60_000)]);
-  const answer = claimHead({ ...claimAs("work", NOW), read: head.read, otherSeen: () => null, write: () => { throw refusedByGithub(); } });
+  const answer = await claimHead({ ...claimAs("work", NOW), read: head.read, otherSeen: () => null, write: async () => { throw refusedByGithub(); } });
   assert.deepEqual(answer, { outcome: "held", instance: "laptop", since: NOW - 5 * 60_000 });
 });
 
-test("A11-172: a claim another instance wrote while this one's write was refused is seen by the read that follows, and holds the head", () => {
+test("A11-172: a claim another instance wrote while this one's write was refused is seen by the read that follows, and holds the head", async () => {
   const head = headOf();
   let reads = 0;
-  const read = () => (reads++ === 0 ? [] : [claimOf("laptop", NOW - 1_000, 1)]);
-  const answer = claimHead({ ...claimAs("work", NOW), read, otherSeen: () => null, write: () => { throw refusedByGithub(); } });
+  const read = async () => (reads++ === 0 ? [] : [claimOf("laptop", NOW - 1_000, 1)]);
+  const answer = await claimHead({ ...claimAs("work", NOW), read, otherSeen: () => null, write: async () => { throw refusedByGithub(); } });
   assert.deepEqual(answer, { outcome: "held", instance: "laptop", since: NOW - 1_000 });
   assert.equal(head.store.length, 0);
   // A verdict that landed meanwhile is the finished review, and a second read that fails leaves the refusal standing: nobody knows who holds the head.
   const posted = { id: 2, description: finishedDescriptionOf({ verdict: "convinced", instance: "laptop", now: NOW }), created: NOW };
   let again = 0;
-  assert.deepEqual(claimHead({ ...claimAs("work", NOW), read: () => (again++ === 0 ? [] : [posted]), otherSeen: () => null, write: () => { throw refusedByGithub(); } }), { outcome: "finished", description: posted.description });
+  assert.deepEqual(await claimHead({ ...claimAs("work", NOW), read: async () => (again++ === 0 ? [] : [posted]), otherSeen: () => null, write: async () => { throw refusedByGithub(); } }), { outcome: "finished", description: posted.description });
   let third = 0;
-  const unreadable = claimHead({ ...claimAs("work", NOW), read: () => { if (third++ > 0) throw new Error("gh: HTTP 502"); return []; }, otherSeen: () => null, write: () => { throw refusedByGithub(); } });
+  const unreadable = await claimHead({ ...claimAs("work", NOW), read: async () => { if (third++ > 0) throw new Error("gh: HTTP 502"); return []; }, otherSeen: () => null, write: async () => { throw refusedByGithub(); } });
   assert.deepEqual(unreadable, { outcome: "unclaimed", reason: "gh: Resource not accessible by integration (HTTP 403)", step: "write" });
 });
 
-test("A11-172: whether another instance is seen is asked after the second read, so what that read shows counts", () => {
+test("A11-172: whether another instance is seen is asked after the second read, so what that read shows counts", async () => {
   let seen: number | null = null;
   let reads = 0;
   // The caller's read records another instance's recent status on the second listing only, as the port's records what each listing shows.
-  const read = () => { if (reads++ > 0) seen = NOW - 5_000; return []; };
-  const answer = claimHead({ ...claimAs("work", NOW), read, otherSeen: () => seen, write: () => { throw refusedByGithub(); } });
+  const read = async () => { if (reads++ > 0) seen = NOW - 5_000; return []; };
+  const answer = await claimHead({ ...claimAs("work", NOW), read, otherSeen: () => seen, write: async () => { throw refusedByGithub(); } });
   assert.equal(answer.outcome, "unclaimed", "the instance the second read showed keeps the refusal");
 });
 
@@ -244,19 +244,19 @@ test("A11-172: a reason is cut to 200 characters, so a long body does not crowd 
   assert.ok(reasonOf(long).endsWith("..."));
 });
 
-test("A11-172: a read that failed is never alone, and neither is a write that landed but was not read back: nobody knows who holds the head", () => {
-  const unreadable = claimHead({ ...claimAs("work", NOW), read: () => { throw refusedByGithub(); }, write: () => {}, otherSeen: () => null });
+test("A11-172: a read that failed is never alone, and neither is a write that landed but was not read back: nobody knows who holds the head", async () => {
+  const unreadable = await claimHead({ ...claimAs("work", NOW), read: async () => { throw refusedByGithub(); }, write: async () => {}, otherSeen: () => null });
   assert.deepEqual(unreadable, { outcome: "unclaimed", reason: "gh: Resource not accessible by integration (HTTP 403)", step: "read" });
-  const notReadBack = claimHead({ ...claimAs("work", NOW), read: () => [], write: () => {}, otherSeen: () => null });
+  const notReadBack = await claimHead({ ...claimAs("work", NOW), read: async () => [], write: async () => {}, otherSeen: () => null });
   assert.deepEqual(notReadBack, { outcome: "unclaimed", reason: "the claim was not on the head after it was written", step: "readback" });
   let reads = 0;
-  const readBackFails = claimHead({ ...claimAs("work", NOW), read: () => { if (reads++ > 0) throw refusedByGithub(); return []; }, write: () => {}, otherSeen: () => null });
+  const readBackFails = await claimHead({ ...claimAs("work", NOW), read: async () => { if (reads++ > 0) throw refusedByGithub(); return []; }, write: async () => {}, otherSeen: () => null });
   assert.equal("step" in readBackFails ? readBackFails.step : null, "readback", "a read-back that throws is the read-back step");
 });
 
-test("A11-172: a re-review whose claim cannot be written is alone under the same rule", () => {
+test("A11-172: a re-review whose claim cannot be written is alone under the same rule", async () => {
   const block = { id: 2, description: finishedDescriptionOf({ verdict: "not-convinced", instance: "work", now: NOW - 30 * 60_000 }), created: NOW - 30 * 60_000 };
-  const answer = claimHead({ ...claimAs("work", NOW), read: () => [claimOf("work", NOW - 40 * 60_000, 1), block], rereview: true, otherSeen: () => null, write: () => { throw refusedByGithub(); } });
+  const answer = await claimHead({ ...claimAs("work", NOW), read: async () => [claimOf("work", NOW - 40 * 60_000, 1), block], rereview: true, otherSeen: () => null, write: async () => { throw refusedByGithub(); } });
   assert.equal(answer.outcome, "alone");
 });
 
@@ -266,4 +266,16 @@ test("A11-172: the other instances among the entries are found by their claim, v
     { id: 5, description: "success for review/reviewer-7", created: NOW }];
   assert.deepEqual([...othersSeenIn({ entries, instance: "work" })], [["laptop", NOW - 10_000], ["tablet", NOW - 90_000]]);
   assert.deepEqual([...othersSeenIn({ entries: [], instance: "work" })], []);
+});
+
+test("A11-379: the protocol awaits each call before it makes the next: the read, then the write, then the read-back, and the loop goes on between them", async () => {
+  const steps: string[] = [];
+  const store: ClaimEntry[] = [];
+  const later = (step: string) => new Promise<void>((resolve) => setTimeout(() => { steps.push(step); resolve(); }, 5));
+  const answered = claimHead({ ...claimAs("work", NOW),
+    read: async () => { await later(`read ${store.length}`); return [...store]; },
+    write: async (description) => { await later("write"); store.push({ id: 1, description, created: NOW }); } });
+  steps.push("the caller goes on");
+  assert.deepEqual(await answered, { outcome: "won", tookOver: null });
+  assert.deepEqual(steps, ["the caller goes on", "read 0", "write", "read 1"], "the caller ran while the first read was pending, and the calls came one after another");
 });

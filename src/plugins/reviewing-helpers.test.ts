@@ -28,3 +28,12 @@ test("A11-161: the code host is asked when it is used, and refused until the act
   activated({ codeHost: () => host });
   assert.equal(reviewing.board().codeHost(), host);
 });
+
+test("A11-379: a board that names no async herdr is given core's, and one that names its own keeps it", async () => {
+  const given = reviewingHelpers({ ...COLLABORATORS, codeHost: () => createFakeCodeHost() }).board();
+  assert.equal(typeof given.runAsync, "function", "the reviewer port runs every herdr call through runAsync, so a board always has one");
+  assert.equal(typeof given.herdr.readAgentsAsync, "function");
+  const own = async (args: string[]) => args.join(" ");
+  const board = reviewingHelpers({ ...COLLABORATORS, runAsync: own, codeHost: () => createFakeCodeHost() }).board();
+  assert.equal(await board.runAsync(["agent", "list"]), "agent list", "the board's own is the one the port gets");
+});

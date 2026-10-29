@@ -1,5 +1,10 @@
 // @ts-check
-// module: the reviewer contract, version 1.11 -- `ReviewerPort`, moved as it was, with the two calls the pool makes before it starts one (A11-158)
+// module: the reviewer contract, version 2.0 -- `ReviewerPort`, moved as it was, with the two calls the pool makes before it starts one (A11-158)
+//
+// 2.0 (A11-379): every call of the port that spawns a program ANSWERS A PROMISE, where it answered the value, which is a MAJOR change: `start`, `live`, `settled`, `close`, `retire`, `listedPulls`, `repostVerdict`, `reprompt` and `unblock`. A reviewer
+// start held the board's loop about nine times, about 10 s in all, because its `herdr`, `git`, install, token mint and claim calls were synchronous spawns on the board's thread. A promise resolves to what the call answered before, and the port runs its programs
+// through the async runners, so the loop goes on while a reviewer starts. `verdictFileOf` reads files and spawns nothing, and stays synchronous. A start, a close or a retire in flight holds its seat: a second call for that seat is refused until the first settles (a `close` answers
+// busy). A plugin of major 1 is refused (`READ_MAJORS`), since its calls answer the value.
 //
 // 1.11 (A11-274): `ReviewBrief.closing`, OPTIONAL: the word the pull request names its ticket with, worked out from its plan step and the run's other pull requests, as the chairman decided it for A11-253: `refs` while it finishes a step
 // that is not the last or another pull request of the run is still open, else `closes`. The reviewer accepts `Refs` on every pull request but the last to merge, and asks for `Closes` only on that one. A reviewer of 1.10 ignores it and judges the word by itself.
@@ -39,7 +44,7 @@
 // so no caller changed when the contract moved. A machine with no enabled reviewer plugin starts none: "none" is the absence of one.
 
 /** The reviewer contract's version, `<major>.<minor>`: a minor only adds, and a major breaks (`src/plugins/version.ts`). */
-export const REVIEWER_CONTRACT_VERSION = "1.11";
+export const REVIEWER_CONTRACT_VERSION = "2.0";
 
 /** A pull request at one head: its url, and the commit the reviewer reads and the verdict is on. */
 export type ReviewerRef = Readonly<{ pr: string; head: string }>;
@@ -86,24 +91,24 @@ export type ReviewerPort = Readonly<{
    * is not the end of its claim: the reviewer is started again for the same head (A11-156). `unclaimed` is why the head's claim could not be written (A11-172): on a refusal, the claim is the reason
    * nothing started and the next sweep tries again; on a start, the reviewer began WITHOUT a claim because no other instance is seen, and the board says so.
    */
-  start(ref: ReviewerRef, brief?: ReviewBrief): Readonly<{ label: string; tookOver?: string; unclaimed?: string }> | Readonly<{ refusal: string; unclaimed?: string }>;
-  live(ref: ReviewerRef): boolean;
-  close(ref: ReviewerRef): CloseAnswer;
-  retire(pr: string): RetireAnswer;
-  listedPulls(): readonly string[];
+  start(ref: ReviewerRef, brief?: ReviewBrief): Promise<Readonly<{ label: string; tookOver?: string; unclaimed?: string }> | Readonly<{ refusal: string; unclaimed?: string }>>;
+  live(ref: ReviewerRef): Promise<boolean>;
+  close(ref: ReviewerRef): Promise<CloseAnswer>;
+  retire(pr: string): Promise<RetireAnswer>;
+  listedPulls(): Promise<readonly string[]>;
   /** Whether the reviewer for `ref` is still working, has ended its turn, or is not there (A11-83). */
-  settled(ref: ReviewerRef): ReviewerSettled;
+  settled(ref: ReviewerRef): Promise<ReviewerSettled>;
   /** The verdict file the reviewer wrote for `ref` in its checkout, or null when it wrote none (A11-83). */
-  verdictFileOf(ref: ReviewerRef): string | null;
+  verdictFileOf(ref: ReviewerRef): string | null;  // synchronous: it reads files and spawns nothing
   /** Posts a verdict file through the verdict door for `ref`, minting the reviewer's token first (A11-83). */
-  repostVerdict(ref: ReviewerRef, file: string): RepostAnswer;
+  repostVerdict(ref: ReviewerRef, file: string): Promise<RepostAnswer>;
   /** Sends the reviewer its verdict prompt again, for a reviewer that ended without writing a verdict file (A11-83). */
-  reprompt(ref: ReviewerRef, brief?: ReviewBrief): PromptAnswer;
+  reprompt(ref: ReviewerRef, brief?: ReviewBrief): Promise<PromptAnswer>;
   /**
    * OPTIONAL (contract 1.6, A11-221). Looks at the reviewer for `ref` when herdr shows it blocked, and answers a dialog the reviewer may answer by itself (Codex's trust dialog for a repository the host file names): `answered`
    * is the line it answered. Any other dialog is `stuck`, with its first line, and nothing is pressed. Null when the look was made and nothing is showing (the reviewer is not blocked, or its pane shows no dialog). `unread` is a look that could not be made (herdr did not list the session, or the pane could not be read), with why: it says nothing of whether a dialog shows, so the caller keeps what the last look found. A reviewer without the method never reports a dialog.
    */
-  unblock?(ref: ReviewerRef): ReviewerDialog | null;
+  unblock?(ref: ReviewerRef): Promise<ReviewerDialog | null>;
 }>;
 
 /**

@@ -96,22 +96,22 @@ function reviewerPort(tmpBase: string | undefined) {
   const codeHost = createFakeCodeHost("worker-bot");
   codeHost.seedPull(`${OWNER}/plugin`, 7, { head: "h1", state: "open", trust: "inside", settled: true, reviews: [] });
   const entries: { id: number; description: string; created: number }[] = [];
-  const host = { ...codeHost, readReviewClaims: () => ({ entries }), writeReviewClaim: ({ description }: { description: string }) => { entries.push({ id: entries.length + 1, description, created: Date.now() }); return null; } };
+  const host = { ...codeHost, readReviewClaims: async () => ({ entries }), writeReviewClaim: async ({ description }: { description: string }) => { entries.push({ id: entries.length + 1, description, created: Date.now() }); return null; } };
   const run = (args: string[]) => (args.includes("workspace") && args.includes("list") ? JSON.stringify({ result: { workspaces: [] } }) : "{}");
-  const helpers = reviewingHelpers({ session: "tickets", run, codeHost: () => host, clones: { plugin: "/repos/plugin" }, instance: "work", heads: new Map(), ...(tmpBase === undefined ? {} : { tmpBase }) });
-  const port = atomicReviewerPort(helpers, { mint: () => null, exists: () => false, checkout: () => ({ path: "/work/pr-7", head: "h1" }), removeCheckout: () => null,
-    spawn: (order, _agents, options) => { spawned.push({ ...(options.tmpBase === undefined ? {} : { tmpBase: options.tmpBase }), ...(options.env === undefined ? {} : { env: options.env }) }); return { label: order.session, workspace: "w1", profile: { kind: "codex", model: "m", effort: "e" } }; } });
+  const helpers = reviewingHelpers({ session: "tickets", run, runAsync: async (args) => run(args), codeHost: () => host, clones: { plugin: "/repos/plugin" }, instance: "work", heads: new Map(), ...(tmpBase === undefined ? {} : { tmpBase }) });
+  const port = atomicReviewerPort(helpers, { mint: async () => null, exists: () => false, checkout: async () => ({ path: "/work/pr-7", head: "h1" }), removeCheckout: async () => null,
+    spawn: async (order, _agents, options) => { spawned.push({ ...(options.tmpBase === undefined ? {} : { tmpBase: options.tmpBase }), ...(options.env === undefined ? {} : { env: options.env }) }); return { label: order.session, workspace: "w1", profile: { kind: "codex", model: "m", effort: "e" } }; } });
   return { port, spawned };
 }
 
 test("A11-303: the reviewer the board's atomic plugin starts is given the board's base, and a board that names none gives it none", async () => {
   await loadReviewerGate();
   const given = reviewerPort("/base");
-  assert.ok("label" in given.port.start({ pr: `https://github.com/${OWNER}/plugin/pull/7`, head: "h1" }));
+  assert.ok("label" in await given.port.start({ pr: `https://github.com/${OWNER}/plugin/pull/7`, head: "h1" }));
   assert.equal(given.spawned[0]!.tmpBase, "/base");
   assert.equal("TMPDIR" in (given.spawned[0]!.env ?? {}), false, "the base is a spawn option and not an environment: the door runs with the reviewer's environment too, when the directory may be gone");
   const none = reviewerPort(undefined);
-  none.port.start({ pr: `https://github.com/${OWNER}/plugin/pull/7`, head: "h1" });
+  await none.port.start({ pr: `https://github.com/${OWNER}/plugin/pull/7`, head: "h1" });
   assert.equal(none.spawned[0]!.tmpBase, undefined);
 });
 

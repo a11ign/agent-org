@@ -44,7 +44,7 @@ export async function reviewerToStart(active: Pick<Awaited<ReturnType<typeof act
  * a head with no reviewer and no posted review; a start is passed to `record`, so the pool reads it. PURE but for `port`, `readState`, `record`,
  * which a test injects.
  */
-export function reviewOnDemand({ url, head, port, readState, started, record, now = Date.now }: {
+export async function reviewOnDemand({ url, head, port, readState, started, record, now = Date.now }: {
   url: string; head?: string; port: ReviewerPort; readState: (url: string) => ReviewState | null;
   /** The `url@head` keys the pool remembers as started, as read before this start. */
   started: ReadonlySet<string>;
@@ -52,16 +52,16 @@ export function reviewOnDemand({ url, head, port, readState, started, record, no
   record: (label: string, key: string, head: string, unclaimed: string | undefined, look: Look) => void;
   /** The clock a start's look is stamped with (A11-235). */
   now?: () => number;
-}): { code: number; out: string } {
+}): Promise<{ code: number; out: string }> {
   if (!PULL_URL.test(url)) return { code: 2, out: `ticket:review: ${JSON.stringify(url)} is not a pull request address (https://github.com/<owner>/<repo>/pull/<number>)` };
   const state = readState(url);
   const at = head ?? state?.head ?? null;
   if (at === null) return { code: 1, out: `ticket:review: ${url} could not be read, so it has no head to review` };
   const word = state === null ? null : reviewWordAt(state.reviews, at);
   if (state !== null && reviewPostedAt(state.reviews, at)) return { code: 0, out: `ticket:review: already reviewed at ${at.slice(0, 8)}: ${word ?? "dismissed"}, so nothing is started for ${url}` };
-  if (port.live({ pr: url, head: at })) return { code: 0, out: `ticket:review: a reviewer is already working on ${url} at ${at.slice(0, 8)}` };
+  if (await port.live({ pr: url, head: at })) return { code: 0, out: `ticket:review: a reviewer is already working on ${url} at ${at.slice(0, 8)}` };
   if (started.has(`${url}@${at}`)) return { code: 0, out: `ticket:review: a reviewer was already started for ${url} at ${at.slice(0, 8)}, so none is started again` };
-  const launched = port.start({ pr: url, head: at });
+  const launched = await port.start({ pr: url, head: at });
   if ("refusal" in launched) return { code: 1, out: `ticket:review: ${launched.refusal}` };
   // The look is what this start was made against (A11-235): the pool re-reviews the head when the body, or a reply after this time, answers a block. It is started with no brief, so the decisions it was told are unknown, and the head is not re-reviewed for them (A11-250).
   record(launched.label, `${url}@${at}`, at, launched.unclaimed, { at: now(), body: String(state?.view.body ?? "") });
@@ -94,7 +94,7 @@ if (import.meta.url === pathToFileURL(process.argv[1] ? realpathSync(process.arg
   const codeHost = active.codeHost();
   // Read before `reviewOnDemand`, which judges what it is given: the code host answers a promise (contract 2.0), and only this command waits for it.
   const read = PULL_URL.test(url) ? await codeHost.readReviewState(url) : null;
-  const { code, out } = reviewOnDemand({ url, head, port, readState: () => read, started: memory.started, record: (label, key, at, unclaimed, look) => {
+  const { code, out } = await reviewOnDemand({ url, head, port, readState: () => read, started: memory.started, record: (label, key, at, unclaimed, look) => {
     const latest = readReviewerMemory(path).memory;
     latest.started.add(key);
     latest.heads.set(label, at);
