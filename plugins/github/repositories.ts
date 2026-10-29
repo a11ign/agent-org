@@ -93,14 +93,16 @@ function cloneAs(gh: Gh, fullName: string, path: string): string | null {
 }
 
 /** The `repositories` group of the GitHub code host (contract 1.14). */
-export function createRepositories(deps: Pick<PluginDeps, "exec" | "execAsync">): CodeHostRepositories {
+export function createRepositories(deps: Pick<PluginDeps, "exec"> & Partial<Pick<PluginDeps, "execAsync">>): CodeHostRepositories {
   const gh = ghRunner(deps);
-  const asking = asyncGhRunner(deps);
+  // A caller that gives no asynchronous exec (a CLI command's) gets no asynchronous read, and its caller reads through the synchronous one.
+  const { execAsync } = deps;
+  const asking = execAsync === undefined ? undefined : asyncGhRunner({ execAsync });
   const cloning = ghRunner(deps, {}, { timeoutMs: CLONE_TIMEOUT_MS });
   return {
     readOwners: () => readOwners(gh),
     readRepositories: (owner) => readRepositories(owner, gh),
-    readRepositoriesAsync: (owner) => readRepositoriesAsync(owner, asking),
+    ...(asking === undefined ? {} : { readRepositoriesAsync: (owner: RepositoryOwner) => readRepositoriesAsync(owner, asking) }),
     repositoryOfRemote,
     cloneCommand,
     cloneRepository: (fullName, path) => cloneAs(cloning, fullName, path),

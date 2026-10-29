@@ -80,6 +80,27 @@ function rowsRunners(deps: PluginDeps): RowsRunners {
   };
 }
 
+/** The two ways a write is run: it drops what was read of the `repositories` it touched, however it ended, so the next read of them is a fresh one. `writingAsync` is for a write that answers a promise (A11-282). */
+function invalidatingWrites(snapshots: Pick<ReturnType<typeof createPullSnapshots>, "invalidate">) {
+  const drop = (repositories: readonly string[]): void => { for (const repository of repositories) snapshots.invalidate(repository); };
+  return {
+    writing: <T>(repositories: readonly string[], write: () => T): T => {
+      try {
+        return write();
+      } finally {
+        drop(repositories);
+      }
+    },
+    writingAsync: async <T>(repositories: readonly string[], write: () => Promise<T>): Promise<T> => {
+      try {
+        return await write();
+      } finally {
+        drop(repositories);
+      }
+    },
+  };
+}
+
 /**
  * The GitHub code host, reading and moving pull requests through the plugin's `gh`. `settle` is how `armMerge` waits for a pull request that may have settled (a test gives none to wait for).
  * THE READS THE INSTANCE'S LOOP MAKES ON A SWEEP RUN THROUGH `deps.execAsync` (A11-356, contract 2.0), so the loop goes on while GitHub answers; `now` is the clock the shared answers are kept by.
@@ -96,22 +117,7 @@ export function createCodeHost(rawDeps: PluginDeps, settle: ArmMergeSeams = {}, 
   let ownLogin: string | null = null;
   /** The repository (`owner/name`) of the pull request at `url`, or none for an address that is no pull request. */
   const repositoriesOf = (url: string): string[] => { const pull = pullAt(url); return pull === null ? [] : [`${pull.owner}/${pull.repo}`]; };
-  /** Runs a write, and drops what was read of the `repositories` it touched, however it ended: the next read of them is a fresh one. */
-  const writing = <T>(repositories: readonly string[], write: () => T): T => {
-    try {
-      return write();
-    } finally {
-      for (const repository of repositories) snapshots.invalidate(repository);
-    }
-  };
-  /** {@link writing} for a write that answers a promise (A11-282). */
-  const writingAsync = async <T>(repositories: readonly string[], write: () => Promise<T>): Promise<T> => {
-    try {
-      return await write();
-    } finally {
-      for (const repository of repositories) snapshots.invalidate(repository);
-    }
-  };
+  const { writing, writingAsync } = invalidatingWrites(snapshots);
   /** The repositories of the runs the addresses of failing checks name: a rerun changes the checks of the heads it reruns. */
   const rerunRepositories = (detailsUrls: readonly string[]): string[] => runsOf(detailsUrls).map(({ repo }) => repo);
   return {

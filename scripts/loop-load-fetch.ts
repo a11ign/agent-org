@@ -24,12 +24,14 @@ globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
 }) as typeof fetch;
 
 const LOOPBACK = new Set(["127.0.0.1", "localhost", "[::1]"]);
+/** Whether a request is for a host this process must not reach: any address but loopback. */
+const isRefused = (url: URL | null): url is URL => url !== null && !LOOPBACK.has(url.hostname);
 const realHttps = https.request;
 (https as { request: unknown }).request = (...args: Parameters<typeof https.request>) => {
   const [first, ...rest] = args;
   const url = first instanceof URL ? first : typeof first === "string" ? new URL(first) : null;
   const address = refusing.address();
-  if (url === null || LOOPBACK.has(url.hostname) || address === null || typeof address === "string") return realHttps(...args);
+  if (!isRefused(url) || address === null || typeof address === "string") return realHttps(...args);
   return http.request(new URL(`${url.pathname}${url.search}`, `http://127.0.0.1:${address.port}`), ...(rest as [http.RequestOptions?]));
 };
 syncBuiltinESMExports();
