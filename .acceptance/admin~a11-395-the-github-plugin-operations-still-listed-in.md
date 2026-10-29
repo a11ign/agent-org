@@ -18,6 +18,7 @@ Acceptance:
 set -e
 npm run typecheck
 test -z "$(git grep -nE 'ghRunner\(|githubRepositoriesOf\(' -- plugins/github/merge-flow-checks.ts)"
-P=$(mktemp -d); cp -r src/packaging/fixtures/project-tree/. "$P"; sed -i "s|@@PROJECT@@|$P|" "$P/.agent-org/host.json"; git -C "$P" init -q; git -C "$P" add -A; git -C "$P" -c user.name=ci -c user.email=ci@localhost commit -q -m fixture
-AGENT_ORG_HOST="$P/.agent-org/host.json" npm exec -- rstest run --config scripts/rstest/rstest.config.ts plugins/github/event-operations-async.test.ts plugins/github/merge-flow-checks.test.ts plugins/github/merge-flow.test.ts plugins/github/merge-queue.test.ts plugins/github/closed-work.test.ts plugins/github/ticket-pulls.test.ts plugins/github/stack-merge.test.ts plugins/github/ci-run.test.ts plugins/github/check-runs.test.ts plugins/github/update-branch.test.ts plugins/github/close-pull.test.ts plugins/github/default-branch-checks.test.ts plugins/github/sync-gh-guard.test.ts plugins/github/index.test.ts
+npx rstest run --config scripts/rstest/rstest.config.ts plugins/github/event-operations-async.test.ts plugins/github/merge-flow-checks.test.ts plugins/github/merge-flow.test.ts plugins/github/merge-queue.test.ts plugins/github/closed-work.test.ts plugins/github/ticket-pulls.test.ts plugins/github/stack-merge.test.ts plugins/github/ci-run.test.ts plugins/github/check-runs.test.ts plugins/github/update-branch.test.ts plugins/github/close-pull.test.ts plugins/github/default-branch-checks.test.ts plugins/github/index.test.ts
 ```
+
+Consumer-declaration: none -- the async forms have no caller yet and doctor's row keeps its name, its detail and its fix text; no command, flag or file a host declares changes.
