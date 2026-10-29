@@ -1,6 +1,6 @@
-// no-token: gh -- the instance is this checkout's own `ticket:serve` on a throwaway host (`scripts/loop-load.ts`), with stand-ins first on PATH: a `herdr` whose `agent list` is held until the test opens its gate, a `gh` and a `tailscale` that log their arguments and exit 0; its tracker's `fetch` is offline
+// no-token: gh -- the instance is this checkout's own `ticket:serve` on a throwaway host (`scripts/loop-load.ts`), with stand-ins first on PATH: a `systemctl` whose read of herdr's start is held until the test opens its gate, a `gh` and a `herdr` held the same way, and a `tailscale` that log their arguments and exit 0; its tracker's `fetch` is offline
 //
-// PROVED UNDER LOAD (A11-282), BY ORDER AND NOT BY A CLOCK (A11-297). The instance's sweeps run every second, and each one's synchronous `herdr agent list` holds the board thread (the GitHub plugin's `gh` is asynchronous since A11-356 and holds nothing). Here that call returns only
+// PROVED UNDER LOAD (A11-282), BY ORDER AND NOT BY A CLOCK (A11-297). The instance's tick runs every second, and its synchronous read of herdr's start from the service manager (`systemctl --user show`, `pool-resume.ts`) holds the board thread (the GitHub plugin's `gh` is asynchronous since A11-356, and the tick's herdr listings since A11-282, and they hold nothing). Here that call returns only
 // when the test says so: the test waits for a sweep's call to start, reads every route the request thread answers while it has not returned, and only then opens the gate. A read that
 // came back is therefore a read answered while the board thread was held, whatever the runner's speed; a request thread that waited on the board thread would never answer (the read
 // gives up after READ_TIMEOUT_MS and the test fails on it). Every `/api/health` read carrying the one board snapshot's reading shows the board thread posted nothing meanwhile.
@@ -12,7 +12,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { tmpDir } from "../lib/tmp-fixture.ts";
-import { BOARD_THREAD_ROUTES, type Health, ROUTES, startThrowawayInstance, timedRead, waitFor } from "../../scripts/loop-load.ts";
+import { BOARD_THREAD_ROUTES, type Health, ROUTES, startThrowawayInstance, SYSTEMCTL_LOG, timedRead, waitFor } from "../../scripts/loop-load.ts";
 import type { RequestHealthView } from "./health-route.ts";
 
 const ROUNDS = 3;
@@ -21,25 +21,30 @@ const LOCAL_ROUTES = ROUTES.filter((route) => !BOARD_THREAD_ROUTES.includes(rout
 const BIN = join(dirname(fileURLToPath(import.meta.url)), "..", "bin.ts");
 /** The `gh` calls the log at `log` holds, one line of arguments each: none before its file is written. */
 const callsIn = (log: string): string[] => (existsSync(log) ? readFileSync(log, "utf8").split("\n").filter(Boolean) : []);
-/** The sweep's synchronous `herdr agent list`, which the stand-in holds until the gate opens: since A11-356 the GitHub plugin's `gh` is asynchronous and holds no thread, so this is what holds the board thread. */
-const SWEEP_CALL = "agent list";
+/** The tick's synchronous read of herdr's start, which the stand-in `systemctl` holds until the gate opens: the GitHub plugin's `gh` and the tick's herdr listings are asynchronous and hold no thread, so this is what holds the board thread. If the tick stops making it, nothing holds the board thread and the snapshot assertion below fails, saying so. */
+const SWEEP_CALL = "ExecMainStartTimestampMonotonic";
+/** How long the tick lets that call run before it cuts it, in ms (`readHerdrStart`, `pool-resume.ts`): the test's reads are made inside it. */
+const HELD_CALL_LIMIT_MS = 5_000;
 
 test("while a synchronous call holds the board thread, every read the request thread answers is answered before that call returns, a write lands once it does, and the request thread spawns nothing synchronously", { timeout: 240_000 }, async () => {
   const instance = await startThrowawayInstance(tmpDir("request-thread-load-"), { gated: true });
   try {
-    await waitFor("a sweep's herdr call on the board thread", () => callsIn(instance.herdrLog).some((call) => call.includes(SWEEP_CALL)));
+    await waitFor("the tick's synchronous systemctl call on the board thread", () => callsIn(join(instance.dir, SYSTEMCTL_LOG)).some((call) => call.includes(SWEEP_CALL)));
     const healths: Health[] = [];
+    const heldAt = Date.now();
+    // Each round reads every route at once: the held call is cut after HELD_CALL_LIMIT_MS by the tick's own timeout (`readHerdrStart`), so the reads must fit well inside it.
     for (let round = 0; round < ROUNDS; round += 1) {
-      for (const route of LOCAL_ROUTES) {
-        const read = await timedRead(instance.port, route);
+      const reads = await Promise.all(LOCAL_ROUTES.map(async (route) => [route, await timedRead(instance.port, route)] as const));
+      for (const [route, read] of reads) {
         assert.notEqual(read.status, 0, `${route} was answered while the board thread was held`);
-        assert.deepEqual(callsIn(instance.ghDoneLog), [], `${route} was answered before any held call returned`);
         if (route === "/api/health") healths.push(JSON.parse(read.body) as Health);
       }
+      assert.deepEqual(callsIn(instance.ghDoneLog), [], `round ${round + 1} was answered before any held call returned`);
     }
+    assert.ok(Date.now() - heldAt < HELD_CALL_LIMIT_MS, `the reads took ${Date.now() - heldAt} ms, longer than the tick lets the held call run`);
     const split = healths as RequestHealthView[];
     assert.ok(split.every((health) => health.loop.requests !== undefined && health.loop.board !== undefined), "the health names both threads' loops");
-    assert.equal(new Set(split.map((health) => health.loop.board.at)).size, 1, "the board thread posted no snapshot while the reads were answered: every health carries the one snapshot's reading");
+    assert.equal(new Set(split.map((health) => health.loop.board.at)).size, 1, "the board thread posted no snapshot while the reads were answered (it was held by the tick's synchronous systemctl call: if the tick makes none now, nothing held it and this is where that shows): every health carries the one snapshot's reading");
     assert.deepEqual(split.map((health) => health.requestThreadSyncCalls).filter((calls) => calls !== 0), [], "no synchronous spawn on the request thread");
 
     // A write is the board thread's: it waits behind the held call, and lands once the gate opens.
@@ -58,6 +63,22 @@ test("while a synchronous call holds the board thread, every read the request th
     assert.equal(code, 1, stderr);
     assert.match(stderr, /the request thread cannot listen on 127\.0\.0\.1:\d+: listen EADDRINUSE/);
     assert.doesNotMatch(stderr, /started again/, "it is not started again");
+  } finally {
+    instance.stop();
+  }
+});
+
+test("A11-282: while the tick's herdr listing is held, the board thread goes on: a synchronous listing would have held it, and its snapshot would not move", { timeout: 240_000 }, async () => {
+  const instance = await startThrowawayInstance(tmpDir("request-thread-listing-"), { gated: true });
+  try {
+    await waitFor("the tick's herdr agent list", () => callsIn(instance.herdrLog).some((call) => call.includes("agent list")));
+    const snapshots = new Set<number>();
+    await waitFor("the board thread posting its snapshot again while the listing is held", async () => {
+      const health = JSON.parse((await timedRead(instance.port, "/api/health")).body) as RequestHealthView;
+      snapshots.add(health.loop.board.at);
+      return snapshots.size >= 3;
+    });
+    assert.deepEqual(callsIn(instance.ghDoneLog), [], "and the listing is still held: the board thread was free, not the listing done");
   } finally {
     instance.stop();
   }
