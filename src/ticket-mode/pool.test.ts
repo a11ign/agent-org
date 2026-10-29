@@ -444,7 +444,7 @@ test("after a restart, a run herdr no longer lists is lost and queued again, and
   const { pool, status, entry } = setup(2, ["NBF-1", "NBF-2"]);
   await pool.tick();
   status.set(herdrName("NBF-1"), "working");
-  pool.reconcile();
+  await pool.reconcile();
   assert.equal(entry("NBF-1").phase, "running");
   assert.deepEqual([entry("NBF-2").phase, entry("NBF-2").lostInRestart], ["queued", { at: 100 }], "A11-240: a run herdr no longer lists is lost in the restart, and queued again once because it had opened no pull request");
 });
@@ -505,7 +505,7 @@ test("an instance that starts up sends a live worker's pane nothing: no key, no 
   h.calls.length = 0;
   const next = restart();
   await next.ensureSession();
-  next.reconcile();
+  await next.reconcile();
   for (let i = 0; i < 3; i += 1) await next.tick();
   const touched = h.calls.filter((args) => ["send-keys", "prompt", "start", "create", "close"].some((verb) => args.includes(verb)));
   assert.deepEqual(touched, [], "only listings and reads reach herdr");
@@ -723,7 +723,7 @@ test("a retry's earlier outcome does not end it before it starts", async () => {
   status.set(herdrName("NBF-1"), "idle");
   await pool.tick();
   assert.deepEqual(entry("NBF-1").outcome, { kind: "no-outcome" });
-  pool.close("NBF-1");
+  await pool.close("NBF-1");
   writeFileSync(join(ticketDir(settings, "NBF-1"), "outcome.json"), JSON.stringify({ kind: "needs-human", reason: "stale" }));
   store.set(retry(store.get(), "NBF-1", 200));
   status.set(herdrName("NBF-1"), "idle");
@@ -1052,7 +1052,7 @@ const closes = (h: { calls: string[][] }, workspace: string) => h.calls.filter((
 /** A run that asked a person a question and parked, on a machine that moves its ticket to In Progress; its workspace is closed and a retry is queued. */
 async function retriedParked(tracker: TicketSource) {
   const parked = await endedOn({ kind: "needs-human", reason: "which colour?" }, 1, ["NBF-1"], { workingState: "In Progress" }, { source: tracker });
-  parked.pool.close("NBF-1");
+  await parked.pool.close("NBF-1");
   parked.store.set(retry(parked.store.get(), "NBF-1", 200));
   return parked;
 }
@@ -1091,10 +1091,10 @@ test("a parked run whose agent works again is resumed: its outcome is marked sta
 test("Close closes a parked run's workspace and keeps its outcome; a refused close leaves it parked and says why", async () => {
   const { pool, entry, h } = await endedOn({ kind: "needs-human", reason: "which colour?" });
   h.refused.add("close");
-  assert.throws(() => pool.close("NBF-1"), /herdr could not close NBF-1's workspace \(workspace_not_found\)/);
+  await assert.rejects(async () => pool.close("NBF-1"), /herdr could not close NBF-1's workspace \(workspace_not_found\)/);
   assert.equal(entry("NBF-1").workspace, "w1");
   h.refused.clear();
-  pool.close("NBF-1");
+  await pool.close("NBF-1");
   assert.deepEqual(h.calls.at(-1), ["--session", "tickets", "workspace", "close", "w1"]);
   assert.deepEqual([entry("NBF-1").workspace, entry("NBF-1").pane, entry("NBF-1").outcome?.kind], [undefined, undefined, "needs-human"]);
 });
@@ -1102,7 +1102,7 @@ test("Close closes a parked run's workspace and keeps its outcome; a refused clo
 test("Close does nothing to a run that is not parked", async () => {
   const { pool, entry, h } = setup(1, ["NBF-1"]);
   await pool.tick();
-  pool.close("NBF-1");
+  await pool.close("NBF-1");
   assert.equal(closes(h, "w1"), 0);
   assert.equal(entry("NBF-1").phase, "running");
 });
@@ -1119,7 +1119,7 @@ test("a parked run whose workspace is gone from two listings in a row is unparke
 test("after a restart, a parked run herdr no longer lists is unparked", async () => {
   const { pool, status, entry } = await endedOn({ kind: "needs-human", reason: "r" });
   status.delete(herdrName("NBF-1"));
-  pool.reconcile();
+  await pool.reconcile();
   assert.deepEqual([entry("NBF-1").workspace, entry("NBF-1").outcome?.kind], [undefined, "needs-human"]);
 });
 
@@ -1481,7 +1481,7 @@ test("a run a restart crashes puts its ticket back at the next tracker refresh, 
   store.set(replace(store.get(), "NBF-1", (e) => ({ ...e, lostInRestart: { at: 1 } })));
   status.delete(herdrName("NBF-1"));
   const restarted = restart();
-  restarted.reconcile();
+  await restarted.reconcile();
   await settled();
   assert.equal(entry("NBF-1").outcome?.kind, "crashed");
   assert.equal(current.get("NBF-1"), "In Progress", "nothing is put back until the tracker is asked again");
@@ -1510,7 +1510,7 @@ test("a run that hands its ticket back keeps the ticket In Progress while it is 
 test("a parked run that is closed keeps its ticket In Progress, and a refresh does not put it back: the run is still on the board", async () => {
   const { tracker, current } = stateTracker();
   const parked = await endedOn({ kind: "needs-human", reason: "which colour?" }, 1, ["NBF-1"], { workingState: "In Progress" }, { source: tracker });
-  parked.pool.close("NBF-1");
+  await parked.pool.close("NBF-1");
   await parked.pool.refreshTracker();
   assert.deepEqual([current.get("NBF-1"), parked.entry("NBF-1").phase, parked.entry("NBF-1").movedFrom?.from], ["In Progress", "finished", "Todo"]);
 });
@@ -1847,7 +1847,7 @@ test("a batch's run that hands back hands back every ticket on its one workspace
   writeFileSync(join(dir, "outcome.json"), JSON.stringify({ kind: "needs-human", reason: "still unsure" }));
   status.set(herdrName(BATCH), "idle");
   await pool.tick();
-  pool.close("NBF-2");
+  await pool.close("NBF-2");
   assert.deepEqual(["NBF-1", "NBF-2"].map((key) => [entry(key).workspace, entry(key).outcome?.kind]), [[undefined, "needs-human"], [undefined, "needs-human"]]);
   assert.equal(h.calls.filter((args) => args.includes("close")).length, 1, "the one workspace is closed once");
 });
@@ -1858,7 +1858,7 @@ test("only a batch's run is watched: its tickets without an agent are never cras
   await pool.tick();
   status.set(herdrName(BATCH), "working");
   for (let i = 0; i < 3; i += 1) await pool.tick();
-  pool.reconcile();
+  await pool.reconcile();
   assert.deepEqual(["NBF-1", "NBF-2"].map((key) => entry(key).phase), ["running", "running"], "no listing names NBF-2's own agent, and it lives on");
   status.delete(herdrName(BATCH));
   await pool.tick();
@@ -2560,7 +2560,8 @@ test("feedback from before the run's last round ended, from the workers' own acc
 test("a check that is red at the head commit starts a round naming it, and a run the board does not watch is never read", async () => {
   const gh = ghFor({ 1: feedbackPull({ checks: [{ __typename: "CheckRun", name: "typecheck", conclusion: "FAILURE", completedAt: at(400), isRequired: false }] }) });
   const { pool, entry } = await readyRun(gh);
-  await pool.watchFeedback();
+  // The round the watch starts is waited for: the pass it wakes must end before the test's directory is removed (A11-282 made a pass take more turns of the event loop).
+  await watchRound(pool);
   assert.equal(briefWithoutAdvice(entry("NBF-1").feedback), `typecheck failed on the head commit of ${approvedPr.url}; its log could not be read.`, "a check with no job page has no log to quote, and is named as such, and has no job to rerun: the round starts at once");
   const unwatched = ghFor({});
   const { pool: other } = setup(1, ["NBF-1"], {}, { gh: unwatched });
@@ -4864,10 +4865,10 @@ test("after a restart, a new-ticket run herdr still lists is adopted, and one it
   const { pool, status, name, run, restart } = writing({ id: "w5" });
   await pool.tick();
   status.set(name, "working");
-  restart().reconcile();
+  await restart().reconcile();
   assert.equal(run().phase, "running", "a run herdr lists is adopted, its agent sent no key");
   status.delete(name);
-  restart().reconcile();
+  await restart().reconcile();
   assert.deepEqual([run().phase, run().failure], ["finished", "the pool restarted while it was running"]);
 });
 
@@ -5399,7 +5400,7 @@ async function redRun(checks: unknown[], logs: Record<number, string>, make: (gh
 /** NBF-1 ended needs-human after a round, with its pull request open and its workspace closed: the run of the incident (A11-145). */
 async function needsHumanRun(gh: World) {
   const ctx = await parkedOnQuestion(gh);
-  ctx.pool.close("NBF-1");
+  await ctx.pool.close("NBF-1");
   ctx.status.delete(herdrName("NBF-1"));
   assert.deepEqual([ctx.entry("NBF-1").phase, ctx.entry("NBF-1").outcome?.kind, ctx.entry("NBF-1").workspace], ["finished", "needs-human", undefined]);
   return ctx;
@@ -7087,7 +7088,7 @@ test("Talk twice opens one pane", async () => {
 async function batchToTalkTo() {
   const made = await batchWithQuestions(4);
   saveBatchSession(made);
-  made.pool.close("NBF-3");
+  await made.pool.close("NBF-3");
   made.status.delete(herdrName(BATCH));
   return made;
 }
@@ -7115,7 +7116,7 @@ test("Talk on two tickets of one batch opens one pane for both", async () => {
 async function plannerToTalkTo() {
   const made = await endedOn({ kind: "needs-human", reason: "which colour?" }, 1, ["NBF-1"], BATCH_PLANNER, { planFirst: ["NBF-1"] });
   assert.equal(runStatus(made.entry("NBF-1")), "needs-you", "waiting for a person, before Talk");
-  made.pool.close("NBF-1");
+  await made.pool.close("NBF-1");
   made.status.delete(herdrName("NBF-1"));
   mkdirSync(join(made.root, "transcripts", "-Users-me-work"), { recursive: true });
   writeFileSync(join(made.root, "transcripts", "-Users-me-work", "session-t-nbf-1.jsonl"), "{}\n");
@@ -7142,7 +7143,7 @@ test("closing the pane of a talk session that waits for the person ends the sess
   const made = await plannerToTalkTo();
   const { pool, entry } = made;
   await talkUntilWaiting(made);
-  pool.close("NBF-1");
+  await pool.close("NBF-1");
   assert.deepEqual([entry("NBF-1").phase, entry("NBF-1").talk, entry("NBF-1").workspace], ["finished", undefined, undefined], "closing the pane ends the talk session");
   assert.equal(runStatus(entry("NBF-1")), "needs-you");
 });

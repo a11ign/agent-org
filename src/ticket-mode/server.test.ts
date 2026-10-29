@@ -34,7 +34,7 @@ function board(port = 4747, ticketSettings: Record<string, unknown> = {}, extra:
   const held: { now: { name: string; reason: string; since: number } | null } = { now: null };
   const pool = {
     held: () => held.now,
-    tick: async () => { ticks.push("tick"); }, stop: (key: string) => { ticks.push(`stop ${key}`); }, close: (key: string) => { ticks.push(`close ${key}`); },
+    tick: async () => { ticks.push("tick"); }, stop: (key: string) => { ticks.push(`stop ${key}`); }, close: async (key: string) => { ticks.push(`close ${key}`); },
     dismiss: async (key: string) => { ticks.push(`dismiss ${key}`); },
     applyEdit: async (key: string) => { ticks.push(`apply-edit ${key}`); },
     discardEdit: (key: string) => { ticks.push(`discard-edit ${key}`); },
@@ -51,7 +51,7 @@ function board(port = 4747, ticketSettings: Record<string, unknown> = {}, extra:
     },
     // The pool takes a queued run off, after putting its ticket back: here only the queue's part, which the board's store is asked for.
     remove: async (key: string) => { ticks.push(`remove ${key}`); made.store.set(removeQueued(made.store.get(), key)); },
-    reconcile: () => {}, ensureSession: async () => {}, refreshTracker: async () => {}, watchFeedback: () => {}, releaseReviewers: () => {}, retargetStacked: () => {}, rebaseStacked: async () => {}, reviewNewHeads: () => {},
+    reconcile: async () => {}, ensureSession: async () => {}, refreshTracker: async () => {}, watchFeedback: () => {}, releaseReviewers: () => {}, retargetStacked: () => {}, rebaseStacked: async () => {}, reviewNewHeads: () => {},
   };
   const made = createBoard({ settings, source, codeHost: createFakeCodeHost(), key: KEY, queuePath: join(dir, "queue.json"), choicePath: join(dir, "choice.json"), pool, now: () => 7, ...extra });
   return { ...made, ticks, dir, settings, hold: (now: typeof held.now) => { held.now = now; } };
@@ -96,7 +96,7 @@ test("/api/parents reads the parents of the person's tickets that are not the pe
     },
     download: async () => [],
   };
-  const pool = { tick: async () => {}, reviewNewHeads: () => {}, stopWriterRun: () => {}, stop: () => {}, close: () => {}, dismiss: async () => {}, remove: async () => {}, reconcile: () => {}, ensureSession: async () => {}, refreshTracker: async () => {}, watchFeedback: () => {}, releaseReviewers: () => {}, retargetStacked: () => {}, rebaseStacked: async () => {}, applyEdit: async () => {}, discardEdit: () => {}, respond: async () => {} };
+  const pool = { tick: async () => {}, reviewNewHeads: () => {}, stopWriterRun: () => {}, stop: () => {}, close: async () => {}, dismiss: async () => {}, remove: async () => {}, reconcile: async () => {}, ensureSession: async () => {}, refreshTracker: async () => {}, watchFeedback: () => {}, releaseReviewers: () => {}, retargetStacked: () => {}, rebaseStacked: async () => {}, applyEdit: async () => {}, discardEdit: () => {}, respond: async () => {} };
   const { api } = createBoard({ settings, source, codeHost: createFakeCodeHost(), key: KEY, queuePath: join(dir, "queue.json"), choicePath: join(dir, "choice.json"), pool, now: () => 7 });
   await api("GET", "/api/tickets", {});
   const [status, parents] = await api("GET", "/api/parents", {}) as [number, Ticket[]];
@@ -166,7 +166,7 @@ function planningBoard(attachPlan: TicketSource["attachPlan"] | null = async () 
     tickets: { plan: "-plan-[^/]*\\.md$", planner: { run, state: "Planned" } } });
   const planned = { ...ticket("NBF-1"), uploads: ["NBF-1-0001-plan-x.md"] };
   const source: TicketSource = { assigned: async () => [planned, ticket("NBF-2"), ticket("NBF-3")], read: async () => null, download: async () => [], ...(attachPlan ? { attachPlan } : {}) };
-  const pool = { tick: async () => {}, reviewNewHeads: () => {}, stopWriterRun: () => {}, stop: () => {}, close: () => {}, dismiss: async () => {}, remove: async () => {}, reconcile: () => {}, ensureSession: async () => {}, refreshTracker: async () => {}, watchFeedback: () => {}, releaseReviewers: () => {}, retargetStacked: () => {}, rebaseStacked: async () => {}, applyEdit: async () => {}, discardEdit: () => {}, respond: async () => {} };
+  const pool = { tick: async () => {}, reviewNewHeads: () => {}, stopWriterRun: () => {}, stop: () => {}, close: async () => {}, dismiss: async () => {}, remove: async () => {}, reconcile: async () => {}, ensureSession: async () => {}, refreshTracker: async () => {}, watchFeedback: () => {}, releaseReviewers: () => {}, retargetStacked: () => {}, rebaseStacked: async () => {}, applyEdit: async () => {}, discardEdit: () => {}, respond: async () => {} };
   return createBoard({ settings, source, codeHost: createFakeCodeHost(), key: KEY, queuePath: join(dir, "queue.json"), choicePath: join(dir, "choice.json"), pool, now: () => 7 });
 }
 

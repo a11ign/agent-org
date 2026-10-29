@@ -8,10 +8,11 @@
 // reviews, which the pool and the board's lines use. The reviewer posts as `a11ign-reviewer`, and its verdict is what the pool reads back to decide whether the worker goes round again.
 
 import { execFileSync } from "node:child_process";
-import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { repositoryOfClone } from "../declared-clone.ts";
 import { sandboxGitEnv } from "../lib/git-env.ts";
+import { realExecAsync } from "../plugins/real-seams.ts";
 import type { ReviewWord } from "./board-view/pull-review-state.ts";
 import type { Review, ReviewState } from "../plugins/contracts/code-host.ts";
 import type { ReviewJudge } from "../plugins/manifest.ts";
@@ -141,6 +142,26 @@ const ORIGIN_TIMEOUT_MS = 3000;
 /** How long a read origin is kept: the sweeps ask every few minutes, and a clone's remote does not change under them. */
 const ORIGIN_KEPT_MS = 300_000;
 const origins = new Map<string, { at: number; url: string | undefined }>();
+
+/**
+ * Read the `origin` of every clone whose kept answer is older than {@link ORIGIN_KEPT_MS}, together and without holding the loop, and keep each where {@link originOf} finds it (A11-282). The sweeps ask `originOf` for every clone
+ * at once, and each of those was a `git` the board thread waited on: a clone read every five minutes, on a host under load, was a hold of 100 ms and more for each. A sweep warms the answers first and then reads them
+ * from the cache. Never rejects: a clone it cannot read is kept as having none, as `originOf` keeps it.
+ */
+export async function warmOrigins(clones: Clones, now: () => number = Date.now): Promise<void> {
+  const stale = [...new Set(Object.values(clones))].filter((path) => {
+    const held = origins.get(path);
+    return held === undefined || now() - held.at >= ORIGIN_KEPT_MS;
+  });
+  const env = sandboxGitEnv();
+  const withoutEnv = Object.keys(process.env).filter((name) => !(name in env));
+  await Promise.all(stale.map(async (path) => {
+    // A clone that is not on this machine has no origin to read, and asking `git` for it would only wait for the answer `originOf` gives: none.
+    if (!existsSync(path)) return void origins.set(path, { at: now(), url: undefined });
+    const answer = await realExecAsync("git", ["-C", path, "remote", "get-url", "origin"], { env: Object.fromEntries(Object.entries(env).filter((pair): pair is [string, string] => pair[1] !== undefined)), withoutEnv, timeoutMs: ORIGIN_TIMEOUT_MS });
+    origins.set(path, { at: now(), url: answer.status === 0 ? answer.stdout.trim() : undefined });
+  }));
+}
 
 /** The `origin` URL of the clone at `path`, or undefined when it has none or is not a clone. */
 export function originOf(path: string, now: () => number = Date.now): string | undefined {

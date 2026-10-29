@@ -6,7 +6,8 @@ import { writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { tmpDir } from "../lib/tmp-fixture.ts";
-import { callSiteOf, createBlockingLedger, programOf, SLOW_MS } from "./blocking-ledger.ts";
+import { callSiteOf, createBlockingLedger, HOLD_MS, programOf } from "./blocking-ledger.ts";
+import { HOLD_MS as COUNTED_AT } from "./health-figures.ts";
 
 const CHECKOUT = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const LEDGER = join(CHECKOUT, "src", "ticket-mode", "blocking-ledger.ts");
@@ -49,19 +50,31 @@ test("a ledger that cannot count a call still answers, and throws, what the spaw
   const answered = unreadable.wrap("spawnSync", (() => "answered") as (...args: never[]) => unknown);
   assert.equal(answered(...(["gh"] as never[])), "answered", "a frame on another host is not a path the ledger can read");
   let clock = 0;
-  const silent = createBlockingLedger({ now: () => (clock += SLOW_MS), err: () => { throw new Error("EPIPE"); }, stack: () => stackOf(SWEEP) });
+  const silent = createBlockingLedger({ now: () => (clock += HOLD_MS), err: () => { throw new Error("EPIPE"); }, stack: () => stackOf(SWEEP) });
   const failure = new Error("Command failed: gh api");
   const failing = silent.wrap("execFileSync", (() => { throw failure; }) as (...args: never[]) => unknown);
   assert.throws(() => failing(...(["gh"] as never[])), (err) => err === failure, "a stderr that refuses the line");
 });
 
-test(`a call that holds the loop ${SLOW_MS} ms or more is said on one line as it returns, and a shorter one is not`, () => {
-  const slow = ledgerTiming(SLOW_MS);
+test(`a call that holds the loop ${HOLD_MS} ms or more is said on one line as it returns, and a shorter one is not`, () => {
+  const slow = ledgerTiming(HOLD_MS);
   slow.ledger.wrap("spawnSync", (() => null) as (...args: never[]) => unknown)(...(["gh"] as never[]));
-  assert.deepEqual(slow.said, ["ticket:serve: a synchronous gh held the loop 250 ms, at plugins/github/pull-feedback.ts:74\n"]);
-  const quick = ledgerTiming(SLOW_MS - 1);
+  assert.deepEqual(slow.said, [`ticket:serve: a synchronous gh held the loop ${HOLD_MS} ms, at plugins/github/pull-feedback.ts:74\n`]);
+  const quick = ledgerTiming(HOLD_MS - 1);
   quick.ledger.wrap("spawnSync", (() => null) as (...args: never[]) => unknown)(...(["gh"] as never[]));
   assert.deepEqual(quick.said, []);
+});
+
+test("every call the health figure counts as a hold is a line in the journal, and no shorter call is either", () => {
+  for (const ms of [COUNTED_AT - 1, COUNTED_AT, COUNTED_AT + 1, 250]) {
+    const counted: number[] = [];
+    let clock = 0;
+    let across = false;
+    const said: string[] = [];
+    const ledger = createBlockingLedger({ now: () => { clock += across ? ms : 0; across = !across; return clock; }, err: (line) => said.push(line), stack: () => stackOf(SWEEP), onCall: (call) => { if (call.ms >= COUNTED_AT) counted.push(call.ms); } });
+    ledger.wrap("spawnSync", (() => null) as (...args: never[]) => unknown)(...(["herdr"] as never[]));
+    assert.equal(said.length, counted.length, `a ${ms} ms call: counted ${counted.length} time(s), journaled ${said.length} line(s)`);
+  }
 });
 
 test("worst answers the sites with the most time in all, the worst first, as many as asked", () => {
@@ -143,6 +156,6 @@ test("installed at start, the ledger times a spawn made through a named import a
   assert.ok(site !== undefined, JSON.stringify(health.blocking));
   assert.equal(site.program, "sh");
   assert.equal(site.count, 1);
-  assert.ok(site.maxMs >= SLOW_MS, `held ${site.maxMs} ms`);
+  assert.ok(site.maxMs >= HOLD_MS, `held ${site.maxMs} ms`);
   assert.match(run.stderr, /^probe: a synchronous sh held the loop \d+ ms, at .*probe\.mjs:4$/m);
 });

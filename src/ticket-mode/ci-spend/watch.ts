@@ -148,7 +148,7 @@ async function warn(ctx: PoolContext, entry: Entry, weighted: number): Promise<v
  * Hold a run at `multiple` times the budget. A running run is stopped and queued again, as the update drain stops one, with the session its agent had; nothing is queued beside an agent that would not close, and the next sweep tries again. A
  * finished run is not stopped. A run still starting, or one a person is talking to, is left for a later sweep.
  */
-function hold(ctx: PoolContext, entry: Entry, weighted: number, multiple: number): void {
+async function hold(ctx: PoolContext, entry: Entry, weighted: number, multiple: number): Promise<void> {
   const { claudeSessions, now, settings } = ctx;
   const key = entry.ticket.key;
   const reason = holdReason(weighted, settings.ciBudgetMinutes, multiple);
@@ -157,7 +157,9 @@ function hold(ctx: PoolContext, entry: Entry, weighted: number, multiple: number
     update(ctx, (queue) => recordBudgetStep(tellFinishedRun(queue, key, reason), key, recorded));
     return log(`${key}: ${reason}; its next round carries the reason`);
   }
-  if (!actable(entry) || !closedOrGone(ctx, entry, "for its CI spend")) return;
+  if (!actable(entry) || !await closedOrGone(ctx, entry, "for its CI spend")) return;
+  // The close was asked without holding the loop: a run that ended or was stopped meanwhile is not queued again.
+  if (!actable(find(ctx.store.get(), key) ?? entry)) return;
   const session = entry.workspace === undefined ? undefined : claudeSessions.get(entry.workspace);
   forgetRun(ctx, runPlace(ctx, entry).name);
   update(ctx, (queue) => recordBudgetStep(requeueForCiHold(queue, key, reason, now(), session), key, recorded));
@@ -172,7 +174,7 @@ async function act(ctx: PoolContext, key: string): Promise<void> {
   const weighted = weightedOf(ctx, key);
   const step = budgetStep(weighted, ctx.settings.ciBudgetMinutes, queue.ciSpend?.[key]);
   if (step.kind === "warn") await warn(ctx, entry, weighted);
-  else if (step.kind === "hold") hold(ctx, entry, weighted, step.multiple);
+  else if (step.kind === "hold") await hold(ctx, entry, weighted, step.multiple);
 }
 
 /** The entries due to be read, with no more than {@link FIRST_READS_PER_SWEEP} of the tickets this board has not read in full since it started, the ones tried longest ago first. */

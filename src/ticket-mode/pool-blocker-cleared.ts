@@ -36,13 +36,13 @@ export function adoptNamedBlockers(ctx: PoolContext, read: ReadonlyMap<string, R
  * Close the workspace of each parked `needs-human` run, or run that stopped without an outcome (A11-274), whose pull requests all merged (`isReleasable`), so the sweeps after this one queue its next step or complete its ticket.
  * Herdr refusing the close is logged and leaves the run parked, and the next sweep asks again.
  */
-export function releaseMergedBlockers(ctx: PoolContext): void {
+export async function releaseMergedBlockers(ctx: PoolContext): Promise<void> {
   for (const entry of ctx.store.get().entries.filter(isReleasable)) {
     const key = entry.ticket.key;
     // A run that stopped without an outcome asked nothing, so no blocker cleared: its pull requests merged.
     const merged = `${entry.outcome?.kind === "needs-human" ? "the blocker cleared: " : ""}${mergedPullUrls(entry).map(pullLabel).join(", ")} merged`;
     try {
-      close(ctx, key);
+      await close(ctx, key);
       log(`${key}: ${merged}; its workspace was closed`);
     } catch (err) {
       log(`${key}: ${merged}, but its workspace could not be closed, and is tried again at the next refresh: ${messageOf(err)}`);

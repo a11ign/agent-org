@@ -11,13 +11,13 @@ import { withRunTmpMade } from "./run-isolation.ts";
 import { isPlanning, log, messageOf, phaseOf, publishPlace, runChoice, runPlace, update, updateEach, writerPlace } from "./pool-state.ts";
 import { BRIEF_FILE, firstPrompt, OUTCOME_FILE, PLANNING_DENY, STALE_OUTCOME_FILE, STOP_COUNT_FILE, PUBLISH_FILE, PUBLISHED_FILE, reviewPrompt, talkPrompt, workerFlags, WRITER_FILE, writerBriefText, writerPrompt, writerTools } from "./worker-files.ts";
 import { type RunPlace } from "./pool-paths.ts";
-import { agentTarget } from "./pool-resume.ts";
+import { agentTargetAsync } from "./pool-resume.ts";
 import { closesOut, closesSettled, closeWorkspaceLater } from "./pool-close.ts";
 import { plannedStepsOf } from "./pool-plan-steps.ts";
 import { recordPlannedSteps, type RunWorker } from "./queue/queue-run-detail.ts";
 // eslint-disable-next-line clean-code/no-duplication -- import list: the rule matches statement shape, and imports are not duplicated logic
 import { hostname } from "node:os";
-import { agentStartArgs, closedNoteAsync, openPaneAsync, readAgents, readAgentsAsync } from "../herdr-agents.ts";
+import { agentStartArgs, closedNoteAsync, openPaneAsync, readAgentsAsync } from "../herdr-agents.ts";
 import { defaultStartServer, herdrRefusal, herdrServiceOf } from "./pool-herdr.ts";
 import { defaultServiceDeps } from "../install/service.ts";
 import { finish, markPublishRunning, markPublishStarting, markRunning, markStarting, planDone, publishFailed, publishStarts, recordBlockers, recordHeads, recordPaths, recordPathsFailure, recordProjectRepos, recordStackBase, slotsHeld } from "./queue/queue-transitions.ts";
@@ -152,8 +152,25 @@ async function startAgent(ctx: PoolContext, place: RunPlace, env: Record<string,
 }
 
 /** Answer a start dialog on this run's pane, if one is showing and the run has answers left. True when it answered. The agent is reached by its pane, never its name (A11-279). */
-export function answerStartDialog(ctx: PoolContext, place: RunPlace): boolean {
-  const { answered, herdr, settings, startedHere } = ctx;
+export async function answerStartDialog(ctx: PoolContext, place: RunPlace): Promise<boolean> {
+  const { name } = place;
+  const answering = dialogsBeingAnswered.get(ctx) ?? new Set<string>();
+  dialogsBeingAnswered.set(ctx, answering);
+  // One answer at a time for a run: the settling after a start and the watch can both reach its dialog, and the pane is read and the keys sent without holding the loop (A11-282).
+  if (answering.has(name)) return false;
+  answering.add(name);
+  try {
+    return await answerOnce(ctx, place);
+  } finally {
+    answering.delete(name);
+  }
+}
+
+/** The runs whose start dialog is being answered, by pool. */
+const dialogsBeingAnswered = new WeakMap<PoolContext, Set<string>>();
+
+async function answerOnce(ctx: PoolContext, place: RunPlace): Promise<boolean> {
+  const { answered, herdrCall, settings, startedHere } = ctx;
   const { name, folder } = place;
   if (!startedHere.has(name)) return false;
   const count = answered.get(name) ?? 0;
@@ -161,14 +178,21 @@ export function answerStartDialog(ctx: PoolContext, place: RunPlace): boolean {
   let screen: string;
   let target: string;
   try {
-    target = agentTarget(ctx, place);
-    screen = herdr(["--session", settings.herdrSession, "agent", "read", target, "--source", "visible"]);
+    target = await agentTargetAsync(ctx, place);
+    screen = await herdrCall(["--session", settings.herdrSession, "agent", "read", target, "--source", "visible"], START_READ_MS);
   } catch {
     return false;
   }
   if (!isStartDialog(screen, folder)) return false;
-  herdr(["--session", settings.herdrSession, "agent", "send-keys", target, "down", "enter"]);
+  // The pane was read without holding the loop (A11-282), so the settling after a start and the watch can both have read this dialog: only the one that still finds the count it started from answers.
+  if ((answered.get(name) ?? 0) !== count) return false;
   answered.set(name, count + 1);
+  try {
+    await herdrCall(["--session", settings.herdrSession, "agent", "send-keys", target, "down", "enter"], START_READ_MS);
+  } catch (err) {
+    answered.set(name, count);
+    throw err;
+  }
   return true;
 }
 
@@ -186,7 +210,7 @@ export async function settleStart(ctx: PoolContext, started: RunPlace): Promise<
       startedHere.delete(place.name);
       return;
     }
-    answerStartDialog(ctx, place);
+    await answerStartDialog(ctx, place);
   }
 }
 
@@ -486,7 +510,8 @@ export async function fill(ctx: PoolContext): Promise<void> {
   // The workspaces the watch just asked herdr to close are closed first, so the listing below never reads one that is closing as a leftover or an agent that holds a name (A11-282).
   if (closesOut(ctx)) await closesSettled(ctx);
   // A round or a talk session never starts beside an agent that holds its Claude session or its name (A11-154): one that works holds it back, a leftover is closed.
-  settleSessions(ctx);
+  const settling = settleSessions(ctx);
+  if (settling !== null) await settling;
   // What the overlap hold decides on is brought up to date from the queue alone, and a stack whose base is done is cleared (A11-374).
   followOverlaps(ctx);
   // A batch is planned together only while this machine's planner plans batches: otherwise each of its tickets is planned alone.
@@ -871,15 +896,16 @@ async function startPublish(ctx: PoolContext): Promise<void> {
  * and survives every restart of it. Only a machine with no herdr service (a hand-run `ticket:serve`) spawns the server itself.
  */
 export async function ensureSession(ctx: PoolContext): Promise<void> {
-  const { deps, herdr, session, settings, wait } = ctx;
-  const run = (args: string[]) => herdr(args);
-  if (readAgents(run, session) !== null) return;
+  const { deps, herdrCall, session, settings, wait } = ctx;
+  // The listing is asked without holding the loop (A11-282): an instance checks the session at every start, and a herdr that is slow to answer held the board thread for each of up to twenty tries.
+  const run = (args: string[]): Promise<string> => herdrCall(args, START_READ_MS);
+  if (await readAgentsAsync(run, session) !== null) return;
   const service = deps.herdrService ?? (deps.startServer === undefined ? herdrServiceOf(defaultServiceDeps()) : undefined);
   if (service?.registered()) service.start();
   else (deps.startServer ?? defaultStartServer)(settings.herdrSession);
   for (let attempt = 0; attempt < 20; attempt += 1) {
     await wait(250);
-    if (readAgents(run, session) !== null) return;
+    if (await readAgentsAsync(run, session) !== null) return;
   }
   throw new Error(`herdr's ${settings.herdrSession} session did not start; start it with: herdr --session ${settings.herdrSession} server`);
 }

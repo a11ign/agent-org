@@ -546,7 +546,7 @@ async function queueActionRoute(board: Board, method: string, path: string, body
       process.stderr.write(`ticket:serve: ${key} starts anyway: a person overrode its overlap with ${store.get().entries.find((e) => e.ticket.key === key)?.overlapOverride?.holder ?? "a run"}\n`);
     }
     if (verb === "stop") pool.stop(key);
-    if (verb === "close") pool.close(key);
+    if (verb === "close") await pool.close(key);
     // The pool's, like Close: a parked run's workspace is closed before the run leaves the board.
     if (verb === "dismiss") await pool.dismiss(key);
     // The pool's: Apply re-reads the ticket before it writes, and Discard drops the proposal the queue holds (A11-91). Only a person's request does either.
@@ -827,7 +827,7 @@ async function serve(): Promise<void> {
     });
   }
   await board.pool.ensureSession();
-  board.pool.reconcile();
+  await board.pool.reconcile();
   // The HTTP server runs on the request thread (A11-282), so the pool's synchronous calls below hold no request. This thread stays the queue's one writer.
   health.counting(() => codeHost.readCallCounts?.() ?? null);
   thread = startBoardThread({ board, health: health.view, terminal: settings.terminal,

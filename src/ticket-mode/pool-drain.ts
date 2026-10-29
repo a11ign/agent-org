@@ -9,7 +9,7 @@ import { homedir } from "node:os";
 import { drainPath, readDrain, writeDrain, type Drain, type DrainRecord } from "../install/update-drain.ts";
 import { defaultServiceDeps, runAutoUpdateNow } from "../install/service.ts";
 import { herdrReason } from "../herdr-agents.ts";
-import { herdrRefusal } from "./pool-herdr.ts";
+import { HERDR_CALL_MS, herdrRefusal } from "./pool-herdr.ts";
 import { isLive, liveRunCount, LIVE, writerLive, type Entry, type Queue } from "./queue/queue-entries-and-outcomes.ts";
 import { requeueForUpdate } from "./queue/queue-pins.ts";
 import { writerFailed } from "./queue.ts";
@@ -48,10 +48,11 @@ export function isDraining(ctx: PoolContext): boolean {
  * Close a run's workspace, to stop it `forWhat` (the log's words: "for the update"). True when it is closed or already gone; false, said in the log, when herdr refuses for another reason: the agent may still be
  * running, so the run is not queued again beside it, and the next tick tries again.
  */
-export function closedOrGone(ctx: PoolContext, entry: Entry, forWhat: string): boolean {
+export async function closedOrGone(ctx: PoolContext, entry: Entry, forWhat: string): Promise<boolean> {
   if (entry.workspace === undefined) return true;
   try {
-    ctx.herdr(["--session", ctx.session.session, "workspace", "close", entry.workspace]);
+    // Asked without holding the loop (A11-282): a close takes 250 ms to 1 s, and the board thread answers every write meanwhile.
+    await ctx.herdrCall(["--session", ctx.session.session, "workspace", "close", entry.workspace], HERDR_CALL_MS);
     return true;
   } catch (err) {
     const why = `${herdrRefusal(err)} ${herdrReason(err)}`;
@@ -62,9 +63,11 @@ export function closedOrGone(ctx: PoolContext, entry: Entry, forWhat: string): b
 }
 
 /** Stop one live run's agent and record that it was stopped for the update: its workspace is closed, and the run is queued again with the session its agent had. False when the workspace would not close. */
-function stopEntry(ctx: PoolContext, entry: Entry, target: string): boolean {
+async function stopEntry(ctx: PoolContext, entry: Entry, target: string): Promise<boolean> {
   const { claudeSessions, now } = ctx;
-  if (!closedOrGone(ctx, entry, "for the update")) return false;
+  if (!await closedOrGone(ctx, entry, "for the update")) return false;
+  // The close was asked without holding the loop: a run that ended or was stopped meanwhile was not stopped for the update.
+  if (!ctx.store.get().entries.some((e) => e.ticket.key === entry.ticket.key && isLive(e))) return false;
   const id = entry.workspace === undefined ? undefined : claudeSessions.get(entry.workspace);
   forgetRun(ctx, runPlace(ctx, entry).name);
   update(ctx, (queue) => requeueForUpdate(queue, entry.ticket.key, target, now(), id));
@@ -72,11 +75,13 @@ function stopEntry(ctx: PoolContext, entry: Entry, target: string): boolean {
 }
 
 /** The keys of the tickets whose run is stopped, and the others stopped: the publish run and the new-ticket runs, which have no ticket to queue again. */
-function stopLiveRuns(ctx: PoolContext, target: string, at: string): string[] {
+async function stopLiveRuns(ctx: PoolContext, target: string, at: string): Promise<string[]> {
   const { store } = ctx;
   const stopped: string[] = [];
-  for (const entry of store.get().entries.filter(isLive)) {
-    if (stopEntry(ctx, entry, target)) stopped.push(entry.ticket.key);
+  for (const listed of store.get().entries.filter(isLive)) {
+    // Each close is asked without holding the loop, so the queue moves between two runs: a run that ended meanwhile is not stopped for the update.
+    const entry = store.get().entries.find((e) => e.ticket.key === listed.ticket.key);
+    if (entry !== undefined && isLive(entry) && await stopEntry(ctx, entry, target)) stopped.push(entry.ticket.key);
   }
   const { publish } = store.get();
   if (publish !== undefined && LIVE.has(publish.phase)) {
@@ -96,15 +101,19 @@ function stopLiveRuns(ctx: PoolContext, target: string, at: string): string[] {
  * With a drain record whose deadline has passed and a run still live, stops every live run and queues it again, records it in the drain record, and starts the update. Nothing happens before the deadline,
  * with no record, or with no live run. A record that cannot be read has no deadline to read, so it forces nothing.
  */
-export function forceDrain(ctx: PoolContext): void {
+export function forceDrain(ctx: PoolContext): Promise<void> | null {
   const { now, store } = ctx;
-  const drain = storeOf(ctx);
-  const read = drain.read();
-  if (read.kind !== "draining") return;
-  const { record } = read;
+  const read = storeOf(ctx).read();
+  if (read.kind !== "draining") return null;
   const live = store.get().entries.some(isLive) || (store.get().publish !== undefined && LIVE.has(store.get().publish!.phase)) || (store.get().writers ?? []).some(writerLive);
-  if (!live || now() < Date.parse(record.deadline)) return;
-  const stopped = stopLiveRuns(ctx, record.target, clockOf(now()));
+  // Null when nothing is due, so a pass with no update draining awaits nothing and takes no turn of the event loop (A11-282).
+  return !live || now() < Date.parse(read.record.deadline) ? null : stopForUpdate(ctx, read.record);
+}
+
+async function stopForUpdate(ctx: PoolContext, record: DrainRecord): Promise<void> {
+  const { now } = ctx;
+  const drain = storeOf(ctx);
+  const stopped = await stopLiveRuns(ctx, record.target, clockOf(now()));
   log(`stopping ${stopped.length} ${stopped.length === 1 ? "run" : "runs"} for the update to ${record.target} (${stopped.join(", ")}): the wait of the update ended at ${record.deadline}`);
   drain.write({ ...record, forcedAt: record.forcedAt ?? new Date(now()).toISOString(), stopped: [...new Set([...record.stopped, ...stopped])] });
   (ctx.deps.startUpdate ?? defaultStartUpdate)();

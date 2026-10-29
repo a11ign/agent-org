@@ -121,7 +121,7 @@ test("A11-279: on a new boot a run whose workspace is gone is queued again at th
   made.status.set(herdrName("NBF-2"), "working");
   clock += MIN;
   const next = made.restart({ restartReads: reads });
-  next.reconcile();
+  await next.reconcile();
   assert.deepEqual(made.store.get().entries.map((entry) => entry.ticket.key), ["NBF-1", "NBF-2", "NBF-3"], "the lost run is first, ahead of the one that was only queued");
   assert.deepEqual([made.entry("NBF-1").phase, made.entry("NBF-1").lostInRestart], ["queued", { at: clock }]);
   await next.tick();
@@ -212,22 +212,22 @@ test("A11-279: a resume prompt herdr refuses is on the card, is not counted as t
   assert.deepEqual([run.resumes("w1:p1").length, run.entry("NBF-1").resume?.refused, run.entry("NBF-1").resume?.after], [1, undefined, "idle"], "taken: now it is the run's one resume");
 });
 
-test("A11-279: the restart is read from the boot id and herdr's start: the instance's first pass, then each change once, and nothing in between", () => {
+test("A11-279: the restart is read from the boot id and herdr's start: the instance's first pass, then each change once, and nothing in between", async () => {
   const made = poolFixture();
   const { held, reads } = movableReads();
   const ctx = newPoolContext(made.store, { settings: made.settings, source: { assigned: async () => [], read: async () => { throw new Error("unused"); }, download: async () => [] }, codeHost: {} as never, hook: { node: "n", bin: "b" }, restartReads: reads });
-  assert.equal(readRestart(ctx), "instance");
-  assert.equal(readRestart(ctx), null);
+  assert.equal(await readRestart(ctx), "instance");
+  assert.equal(await readRestart(ctx), null);
   held.herdr = "2";
-  assert.equal(readRestart(ctx), "herdr");
-  assert.equal(readRestart(ctx), null);
+  assert.equal(await readRestart(ctx), "herdr");
+  assert.equal(await readRestart(ctx), null);
   held.boot = "boot-2";
   held.herdr = "3";
-  assert.equal(readRestart(ctx), "boot", "a boot starts herdr too: it is said as the boot");
+  assert.equal(await readRestart(ctx), "boot", "a boot starts herdr too: it is said as the boot");
   const unread: RestartReads = { bootId: () => null, herdrStart: () => null };
   const blind = newPoolContext(made.store, { ...ctx.deps, restartReads: unread });
-  assert.equal(readRestart(blind), "instance", "a new instance is a restart whatever it can read");
-  assert.equal(readRestart(blind), null, "a value that cannot be read is no change");
+  assert.equal(await readRestart(blind), "instance", "a new instance is a restart whatever it can read");
+  assert.equal(await readRestart(blind), null, "a value that cannot be read is no change");
 });
 
 test("A11-279: an agent is reached by its pane, or the root pane of the workspace herdr lists under its label, and never by its name", () => {
@@ -327,16 +327,16 @@ test("A11-279: a run whose workspace came back under a new id is reached at its 
   assert.equal(run.resumes("w31:p1").length, 1, "the resume reaches the agent where it is now");
 });
 
-test("A11-279: a restart read that fails once keeps the record, so the next good read is no restart", () => {
+test("A11-279: a restart read that fails once keeps the record, so the next good read is no restart", async () => {
   const made = poolFixture();
   let herdr: string | null = "1";
   const ctx = newPoolContext(made.store, { settings: made.settings, source: { assigned: async () => [], read: async () => { throw new Error("unused"); }, download: async () => [] }, codeHost: {} as never, hook: { node: "n", bin: "b" },
     restartReads: { bootId: () => "boot-1", herdrStart: () => herdr } });
-  assert.equal(readRestart(ctx), "instance");
+  assert.equal(await readRestart(ctx), "instance");
   herdr = null;
-  assert.equal(readRestart(ctx), null);
+  assert.equal(await readRestart(ctx), null);
   herdr = "1";
-  assert.equal(readRestart(ctx), null, "the service manager timed out once: herdr did not restart");
+  assert.equal(await readRestart(ctx), null, "the service manager timed out once: herdr did not restart");
 });
 
 /** The calls that opened a workspace, with the `--env` pairs each carried, in order. */

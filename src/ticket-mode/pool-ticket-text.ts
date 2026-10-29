@@ -16,8 +16,8 @@ import { openPulls } from "./board-view/view-types-and-filters.ts";
 import { type Learned, markTicketChanged, type PlannedAgainst, recordBlockerDeclared, recordLearned, recordTicketChange, replan, type TicketChange } from "./queue/queue-ticket-text.ts";
 import { declaredByBlockerPull } from "./queue/queue-declarations.ts";
 import { isPlanning, log, messageOf, runPlace, update } from "./pool-state.ts";
-import { agentTarget } from "./pool-resume.ts";
-import { herdrRefusal } from "./pool-herdr.ts";
+import { agentTargetAsync } from "./pool-resume.ts";
+import { HERDR_CALL_MS, herdrRefusal } from "./pool-herdr.ts";
 import { PLAN_FILE_BYTES } from "./pool-outcome.ts";
 import { parseStamp, urlsNamedIn } from "./plan-stamp.ts";
 import { planDecisionsOf } from "./plan-decisions.ts";
@@ -314,15 +314,17 @@ export async function followTicketTexts(ctx: PoolContext): Promise<void> {
   if (keys.length === 0) return;
   const texts = await source.texts(keys);
   // Read again now the await is over: a run may have started, been stopped or been planned again meanwhile.
-  for (const entry of store.get().entries.filter((e) => keys.includes(e.ticket.key))) {
-    const text = texts.get(entry.ticket.key);
-    if (text === undefined) continue;
+  for (const listed of store.get().entries.filter((e) => keys.includes(e.ticket.key))) {
+    // A live run is told without holding the loop (A11-282), so the queue moves between two runs: each is taken as the queue holds it now.
+    const entry = store.get().entries.find((e) => e.ticket.key === listed.ticket.key);
+    const text = texts.get(listed.ticket.key);
+    if (entry === undefined || text === undefined) continue;
     const read = ticketReadOf({ description: text.description, updatedAt: text.updatedAt }, ctx.now());
     // The Region of a ticket whose text changed is the one the overlap hold claims for it (A11-374).
     noteRegion(ctx, entry.ticket.key, read.description);
     if (entry.phase === "queued") markStale(ctx, entry, read);
     else if (entry.phase === "finished") followFinished(ctx, entry, read);
-    else tellLiveRun(ctx, entry, read);
+    else await tellLiveRun(ctx, entry, read);
   }
 }
 
@@ -378,8 +380,8 @@ ${to.description.trim() || "(no description)"}
  * Send a change in a live run's ticket to its worker (A11-167): the new text and the lines that differ are written to a file beside its brief, and the agent is prompted through herdr to read it. The change is
  * recorded once the prompt has gone, and the run is then briefed against the new text; a prompt herdr refuses is said, and tried again on the next refresh.
  */
-function tellLiveRun(ctx: PoolContext, entry: Entry, read: TicketRead): void {
-  const { herdr, settings, telling } = ctx;
+async function tellLiveRun(ctx: PoolContext, entry: Entry, read: TicketRead): Promise<void> {
+  const { herdrCall, settings, telling } = ctx;
   const before = entry.briefedAgainst;
   if (before === undefined || before.hash === read.hash || !isToldNow(ctx, entry)) return;
   telling.add(entry.ticket.key);
@@ -387,7 +389,7 @@ function tellLiveRun(ctx: PoolContext, entry: Entry, read: TicketRead): void {
     const place = runPlace(ctx, entry);
     const path = join(place.dir, `ticket-changed-${(entry.ticketChanges?.length ?? 0) + 1}.md`);
     writeFileSync(path, changeFile(before, read));
-    herdr(["--session", settings.herdrSession, "agent", "prompt", agentTarget(ctx, place), changeMessage(path)]);
+    await herdrCall(["--session", settings.herdrSession, "agent", "prompt", await agentTargetAsync(ctx, place), changeMessage(path)], HERDR_CALL_MS);
     update(ctx, (queue) => recordTicketChange(queue, entry.ticket.key, changeOf(ctx, before.description, read.description), read));
   } catch (err) {
     log(`${entry.ticket.key} could not be told its ticket changed: ${herdrRefusal(err)}`);

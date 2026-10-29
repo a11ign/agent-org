@@ -66,7 +66,9 @@ async function release(ctx: PoolContext, entry: Entry, asked: BlockerWait, cycle
   const wait = current === undefined || current.working?.at !== entry.working?.at ? null : blockerWaitOf(ctx, current, cycle);
   if (current === undefined || wait === null) return false;
   const behind = wait.keys.join(", ");
-  if (!closedOrGone(ctx, current, `to queue it behind ${behind}`)) return false;
+  if (!await closedOrGone(ctx, current, `to queue it behind ${behind}`)) return false;
+  // The close was asked without holding the loop: a run that ended or was stopped meanwhile is not queued behind its blockers.
+  if (find(store.get(), key)?.phase !== "running") return false;
   const session = current.workspace === undefined ? undefined : claudeSessions.get(current.workspace);
   forgetRun(ctx, runPlace(ctx, current).name);
   update(ctx, (queue) => requeueBehindBlocker(queue, key, { ...wait, session }, now()));

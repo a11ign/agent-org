@@ -42,7 +42,7 @@ test("a restart during `starting` with the pane alive re-adopts the run, sends i
   const made = await caughtStarting();
   made.status.set(NAME, "working");
   const next = made.restart({});
-  next.reconcile();
+  await next.reconcile();
   const entry = made.entry("NBF-1");
   assert.deepEqual([entry.phase, entry.workspace, entry.pane, entry.readopted], ["running", "w1", "w1:p1", { at: 100, from: "starting" }]);
   await next.tick();
@@ -56,7 +56,7 @@ test("a restart during `starting` with the pane alive re-adopts the run, sends i
 test("a run caught `starting` whose workspace herdr lists with no agent yet is adopted too, and a restart is not what ends it", async () => {
   const made = await caughtStarting();
   made.status.set(NAME, "unknown");
-  made.restart({}).reconcile();
+  await made.restart({}).reconcile();
   assert.deepEqual([made.entry("NBF-1").phase, made.entry("NBF-1").workspace], ["running", "w1"], "`unknown` cannot tell a seat still starting from an ended one");
 });
 
@@ -64,7 +64,7 @@ test("a batch caught `starting` with its run listed is adopted for every ticket,
   const made = await caughtStarting({ keys: ["NBF-1", "NBF-2"] });
   for (const key of ["NBF-1", "NBF-2"]) made.store.set(replace(made.store.get(), key, (entry) => ({ ...entry, batch: "b1" })));
   made.status.set(herdrName("b1"), "working");
-  made.restart({}).reconcile();
+  await made.restart({}).reconcile();
   assert.deepEqual(["NBF-1", "NBF-2"].map((key) => [made.entry(key).phase, made.entry(key).workspace, made.entry(key).readopted?.from]), Array(2).fill(["running", "w1", "starting"]));
   assert.deepEqual(touched(made), []);
 });
@@ -76,7 +76,7 @@ test("a run adopted from `starting` takes the steps its start was cut short of: 
   const made = await caughtStarting({ source });
   claims.length = 0;
   made.status.set(NAME, "working");
-  made.restart({}).reconcile();
+  await made.restart({}).reconcile();
   await Promise.resolve();
   assert.equal(claims.length, 1, "the claim the start would have made after its agent opened");
 });
@@ -86,7 +86,7 @@ test("a restart in a run's `starting` with no agent listed queues it again with 
   const made = await caughtStarting();
   const round = { review: [pr], feedback: "tighten the test", asked: true };
   made.store.set(replace(made.store.get(), "NBF-1", (entry) => ({ ...entry, ...round, startedAt: 90 })));
-  made.restart({}).reconcile();
+  await made.restart({}).reconcile();
   const queued = made.entry("NBF-1");
   assert.deepEqual([queued.phase, queued.outcome, queued.lostInRestart, queued.startedAt, queued.finishedAt], ["queued", undefined, undefined, undefined, undefined], "queued, not crashed");
   assert.deepEqual({ review: queued.review, feedback: queued.feedback, asked: queued.asked }, round, "the same round");
@@ -102,14 +102,14 @@ test("a run caught `running` with no workspace on record, and no agent listed, i
   const made = poolFixture();
   await made.pool.tick();
   made.store.set(replace(made.store.get(), "NBF-1", (entry) => ({ ...entry, phase: "running", workspace: undefined, pane: undefined })));
-  made.restart({}).reconcile();
+  await made.restart({}).reconcile();
   assert.deepEqual([made.entry("NBF-1").phase, made.entry("NBF-1").outcome, made.entry("NBF-1").lostInRestart], ["queued", undefined, undefined]);
 });
 
 test("a batch caught `starting` with nothing listed is queued again for every ticket", async () => {
   const made = await caughtStarting({ keys: ["NBF-1", "NBF-2"] });
   for (const key of ["NBF-1", "NBF-2"]) made.store.set(replace(made.store.get(), key, (entry) => ({ ...entry, batch: "b1" })));
-  made.restart({}).reconcile();
+  await made.restart({}).reconcile();
   assert.deepEqual(["NBF-1", "NBF-2"].map((key) => [made.entry(key).phase, made.entry(key).outcome, made.entry(key).lostInRestart, made.entry(key).batch]), Array(2).fill(["queued", undefined, undefined, "b1"]), "still one batch");
 });
 
@@ -117,18 +117,18 @@ test("a talk session caught `starting` keeps its version-folder pin; a work run'
   const made = await caughtStarting();
   const pinned = { toolRoot: "/tool/versions/v0.1.0", toolVersion: "v0.1.0", readopted: { at: 5, from: "starting" } as const };
   made.store.set(replace(made.store.get(), "NBF-1", (entry) => ({ ...entry, ...pinned, talk: true })));
-  made.restart({}).reconcile();
+  await made.restart({}).reconcile();
   assert.deepEqual([made.entry("NBF-1").toolRoot, made.entry("NBF-1").toolVersion, made.entry("NBF-1").readopted], ["/tool/versions/v0.1.0", "v0.1.0", undefined]);
   const work = await caughtStarting();
   work.store.set(replace(work.store.get(), "NBF-1", (entry) => ({ ...entry, ...pinned })));
-  work.restart({}).reconcile();
+  await work.restart({}).reconcile();
   assert.deepEqual([work.entry("NBF-1").toolRoot, work.entry("NBF-1").toolVersion], [undefined, undefined]);
 });
 
 test("a run lost in a restart once and caught `starting` by the next is queued again with its mark moved to this queueing, so its brief still says its worktree holds earlier work", async () => {
   const made = await caughtStarting();
   made.store.set(replace(made.store.get(), "NBF-1", (entry) => ({ ...entry, lostInRestart: { at: 50 } })));
-  made.restart({}).reconcile();
+  await made.restart({}).reconcile();
   const queued = made.entry("NBF-1");
   assert.equal(queued.phase, "queued");
   assert.equal(lostBeforeThisStart(queued), queued.queuedAt);
@@ -137,12 +137,12 @@ test("a run lost in a restart once and caught `starting` by the next is queued a
 test("a restart with the pane gone ends a run that had an agent `lost in a restart` and queues it again once; lost again, it ends", async () => {
   const made = poolFixture();
   await made.pool.tick();
-  made.restart({}).reconcile();
+  await made.restart({}).reconcile();
   assert.deepEqual([made.entry("NBF-1").phase, made.entry("NBF-1").lostInRestart], ["queued", { at: 100 }], "no pull request on record: queued again");
   await made.restart({}).tick();
   assert.equal(made.entry("NBF-1").phase, "running", "it starts again");
   assert.equal(made.entry("NBF-1").lostInRestart?.at, 100, "the mark rides the second start");
-  made.restart({}).reconcile();
+  await made.restart({}).reconcile();
   const entry = made.entry("NBF-1");
   assert.deepEqual([entry.phase, entry.outcome], ["finished", LOST], "lost a second time in the same chain: it ends, and is not queued");
 });
@@ -150,7 +150,7 @@ test("a restart with the pane gone ends a run that had an agent `lost in a resta
 test("a running run herdr no longer lists is lost the same way", async () => {
   const made = poolFixture();
   await made.pool.tick();
-  made.restart({}).reconcile();
+  await made.restart({}).reconcile();
   assert.deepEqual([made.entry("NBF-1").phase, made.entry("NBF-1").lostInRestart], ["queued", { at: 100 }]);
 });
 
@@ -158,7 +158,7 @@ test("a lost review round has its pull requests on record: it ends and is not qu
   const made = poolFixture();
   await made.pool.tick();
   made.store.set(replace(made.store.get(), "NBF-1", (entry) => ({ ...entry, review: [pr] })));
-  made.restart({}).reconcile();
+  await made.restart({}).reconcile();
   assert.deepEqual([made.entry("NBF-1").phase, made.entry("NBF-1").outcome, made.entry("NBF-1").lostInRestart], ["finished", LOST, undefined]);
 });
 
@@ -166,7 +166,7 @@ test("a talk session a restart loses ends and is not queued again: it is a perso
   const made = poolFixture();
   await made.pool.tick();
   made.store.set(replace(made.store.get(), "NBF-1", (entry) => ({ ...entry, talk: true })));
-  made.restart({}).reconcile();
+  await made.restart({}).reconcile();
   assert.deepEqual([made.entry("NBF-1").phase, made.entry("NBF-1").outcome?.kind], ["finished", "crashed"]);
 });
 
@@ -179,7 +179,7 @@ test("a listed workspace whose pane herdr no longer has is lost, and its leftove
     if (args.includes("pane") && args.includes("read")) throw Object.assign(new Error("herdr exited 1"), { stderr: JSON.stringify({ error: { code: "pane_not_found" } }) });
     return made.herdr.run(args);
   };
-  made.restart({ herdr: gone }).reconcile();
+  await made.restart({ herdr: gone }).reconcile();
   assert.equal(made.entry("NBF-1").phase, "queued");
   assert.equal(made.herdr.calls.filter((args) => args.includes("workspace") && args.includes("close") && args.includes("w1")).length, 1);
 });
@@ -237,21 +237,21 @@ test("a publish run and a new-ticket run caught `starting` are adopted when herd
   const publish = (phase: "starting" | "running") => ({ id: "p1", keys: ["NBF-1"], prs: [pr], phase, queuedAt: 0, startedAt: 1 });
   made.store.set({ ...made.store.get(), publish: publish("starting") });
   made.status.set(herdrName("publish-p1"), "working");
-  made.restart({}).reconcile();
+  await made.restart({}).reconcile();
   assert.deepEqual([made.store.get().publish?.phase, made.store.get().publish?.workspace], ["running", "w1"]);
   made.store.set({ ...made.store.get(), publish: publish("starting") });
   made.status.delete(herdrName("publish-p1"));
-  made.restart({}).reconcile();
+  await made.restart({}).reconcile();
   assert.deepEqual([made.store.get().publish?.phase, made.store.get().publish?.failure], ["finished", "the pool restarted while it was running"]);
 
   const writer = (phase: "starting") => ({ id: "w5", request: "r", mode: "quick" as const, placement: "auto" as const, form: {}, phase, queuedAt: 0, startedAt: 1, tickets: [] });
   made.store.set({ ...made.store.get(), writers: [writer("starting")] });
   made.status.set(herdrName("writer-w5"), "working");
-  made.restart({}).reconcile();
+  await made.restart({}).reconcile();
   assert.deepEqual([made.store.get().writers?.[0]?.phase, made.store.get().writers?.[0]?.workspace], ["running", "w5"]);
   made.store.set({ ...made.store.get(), writers: [writer("starting")] });
   made.status.delete(herdrName("writer-w5"));
-  made.restart({}).reconcile();
+  await made.restart({}).reconcile();
   assert.deepEqual([made.store.get().writers?.[0]?.phase, made.store.get().writers?.[0]?.failure], ["finished", "the pool restarted while it was running"]);
 });
 
@@ -272,7 +272,7 @@ test("A11-363: a restart keeps a RUNNING run running -- its agent is listed, so 
   assert.deepEqual([before.phase, before.workspace], ["running", "w1"]);
   made.herdr.calls.length = 0;
   const next = made.restart({});
-  next.reconcile();
+  await next.reconcile();
   await next.tick();
   const after = made.entry("NBF-1");
   assert.deepEqual([after.phase, after.workspace, after.pane, after.outcome, after.lostInRestart], ["running", "w1", "w1:p1", undefined, undefined], "still the same run in the same workspace, ended nothing");
@@ -286,7 +286,7 @@ test("A11-363: every live run is kept by one restart, whatever the pool's other 
   await made.pool.tick();
   made.status.set(herdrName("NBF-1"), "working");
   made.status.set(herdrName("NBF-2"), "idle");
-  made.restart({}).reconcile();
+  await made.restart({}).reconcile();
   assert.deepEqual(["NBF-1", "NBF-2"].map((key) => made.entry(key).phase), ["running", "running"]);
   assert.deepEqual(["NBF-1", "NBF-2"].flatMap((key) => logOf(made.store.get(), key).filter((event) => event.kind === "requeued")), []);
 });

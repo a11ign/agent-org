@@ -41,10 +41,11 @@ import { CONCLUDED, HANDED_BACK, RESULT_KINDS, pullsOf, type PullHead } from "./
 import { countTokens, findTranscript } from "./pool-transcripts.ts";
 import { isParked } from "./board-view/pull-status-and-notes.ts";
 import { settledByPulls } from "./board-view/pull-settled.ts";
+// eslint-disable-next-line clean-code/no-duplication -- import list: the rule matches statement shape, and imports are not duplicated logic
 import { stepNamed } from "./board-view/plan-steps.ts";
-import { herdrRefusal } from "./pool-herdr.ts";
+import { HERDR_CALL_MS, herdrRefusal } from "./pool-herdr.ts";
 import { reroute } from "./queue/queue-reroute.ts";
-import { cloneOnDemand, cloneOrNull, organisationOf, wrongRepoTarget } from "./pool-org-repos.ts";
+import { cloneOnDemand, cloneOrNull, movable, organisationOf, wrongRepoTarget } from "./pool-org-repos.ts";
 import { namedIn } from "./org-repos.ts";
 import { checkoutsOf, checkPush, claimsLostPush, isWorkersOwnRun, reasonWithGitError, wakeWorker } from "./pool-push-check.ts";
 // eslint-disable-next-line clean-code/no-duplication -- import list: the rule matches statement shape, and imports are not duplicated logic
@@ -124,11 +125,14 @@ export function settle(ctx: PoolContext, entry: Entry, outcome: WrittenOutcome):
 function settleWrongRepo(ctx: PoolContext, entry: Entry, outcome: Extract<Outcome, { kind: "wrong-repo" }>): void {
   // A clone under way holds the run: a tick that sees the same outcome file meanwhile asks nothing of the code host again.
   if (ctx.attaching.has(runPlace(ctx, entry).name)) return;
-  const target = wrongRepoTarget(ctx, entry, outcome.where);
-  if (target === null) return end(ctx, entry, outcome);
+  // A run the board may not move ends in this pass, as any other outcome does; the code host is asked, without holding the loop, only for one it may (A11-282).
+  if (!movable(ctx, entry)) return end(ctx, entry, outcome);
   void whileHolding(ctx, entry, async () => {
+    const target = await wrongRepoTarget(ctx, entry, outcome.where);
+    // Stopped, or stopped and started again, while the code host listed or the clone ran: the person's last word stands, and a newer run is not touched.
+    if (!sameRun(ctx, entry)) return;
+    if (target === null) return end(ctx, entry, outcome);
     const repo = await cloneOrNull(ctx, target);
-    // Stopped, or stopped and started again, while the clone ran: the person's last word stands, and a newer run is not touched.
     if (!sameRun(ctx, entry)) return;
     if (repo === null) end(ctx, entry, outcome);
     else finishRun(ctx, entry, { outcome, movedTo: repo });
@@ -711,7 +715,7 @@ type Placing = Readonly<{ refused: ReadonlyMap<string, string>; placed: Readonly
  */
 async function placeUncloned(ctx: PoolContext, order: Order): Promise<Placing> {
   const unknown = unknownRepos(order, Object.keys(ctx.settings.clones));
-  const organisation = unknown.size === 0 ? null : organisationOf(ctx);
+  const organisation = unknown.size === 0 ? null : await organisationOf(ctx);
   if (organisation === null || "unreadable" in organisation) return { refused: unknown, placed: new Map() };
   const refused = new Map(unknown);
   const placed = new Map<string, string>();
@@ -950,15 +954,22 @@ export async function restoreStranded(ctx: PoolContext): Promise<void> {
 const restoreAndLog = (ctx: PoolContext, key: string): Promise<void> => restoreWorkingState(ctx, key).catch((err) => log(messageOf(err)));
 
 /** Close a parked run's workspace. Its outcome and its worktrees stay. Throws with herdr's reason when herdr refuses, so the run stays parked. */
-export function close(ctx: PoolContext, key: string): void {
-  const { herdr, misses, settings, store } = ctx;
+export async function close(ctx: PoolContext, key: string): Promise<void> {
+  const { herdrCall, misses, settings, store } = ctx;
   const entry = store.get().entries.find((e) => e.ticket.key === key && isParked(e));
   if (entry?.workspace === undefined) return;
   try {
-    herdr(["--session", settings.herdrSession, "workspace", "close", entry.workspace]);
+    // Asked without holding the loop (A11-282): a close takes 250 ms to 1 s, and the board thread answers every write meanwhile.
+    await herdrCall(["--session", settings.herdrSession, "workspace", "close", entry.workspace], HERDR_CALL_MS);
   } catch (err) {
+    // A close asked beside this one (a double click, the watch unparking a run whose agent is gone) may have closed the workspace and unparked the run while herdr answered: there is nothing left to refuse.
+    if (!store.get().entries.some((e) => e.ticket.key === key && isParked(e))) return;
     throw new Error(`herdr could not close ${key}'s workspace (${herdrRefusal(err)})`);
   }
-  misses.delete(runPlace(ctx, entry).name);
-  updateEach(ctx, runMembers(ctx, entry), unpark);
+  // The run is read again once herdr has closed the workspace: a person may have dismissed or retried it meanwhile.
+  const parked = store.get().entries.find((e) => e.ticket.key === key && isParked(e));
+  if (parked === undefined) return;
+  misses.delete(runPlace(ctx, parked).name);
+  updateEach(ctx, runMembers(ctx, parked), unpark);
 }
+

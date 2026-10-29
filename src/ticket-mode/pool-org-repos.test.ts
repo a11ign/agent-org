@@ -57,6 +57,9 @@ function machine() {
 }
 
 /** A pool over the machine, with NBF-1 queued and started, and `write(outcome)` to have its worker end on `outcome`. */
+/** How many times the test waits for the reads and passes a move woke: each wait is several turns of the event loop. */
+const SETTLE_TURNS = 20;
+
 async function working(max = 1) {
   const m = machine();
   const made = poolFixture({ keys: [KEY], max, clones: m.clones });
@@ -74,7 +77,8 @@ async function working(max = 1) {
     utimesSync(file, new Date(written), new Date(written));
     made.status.set(herdrName(KEY), "idle");
     await pool.tick();
-    await settled();
+    // The move lists the organisation and clones beside the pass (A11-282 made the listing asynchronous too), and a clone is real file work: give it turns of the event loop, not one wait.
+    for (let turn = 0; turn < SETTLE_TURNS; turn += 1) await settled();
   };
   /** The queued run starts again, and its worker is up. */
   const starts = async () => {
@@ -337,4 +341,20 @@ test("A11-282: the clone sweep lists the organisation through the code host's as
   const ctx = { settings: { clones: m.clones }, codeHost, git: m.git, hostFile: m.hostFile, now: () => START, cloning: new Map(), cloneSweep: { busy: false } } as unknown as PoolContext;
   assert.equal(await cloneMissing(ctx), 2, "corpus and .github are cloned from the list the asynchronous read gave");
   assert.deepEqual(asked, ["acme"]);
+});
+
+test("A11-282: a run stopped while the organisation is listed for its wrong-repo is not moved, nor its repository cloned (CONTROL: left alone, it is)", async () => {
+  const movedWhen = async (stopsIt: boolean) => {
+    const run = await working();
+    const repositories = run.codeHost.repositories!;
+    const listed = repositories.readRepositories.bind(repositories);
+    // The code host lists beside the pass now: a person's Stop can land while it answers.
+    repositories.readRepositories = (owner) => { if (stopsIt) run.pool.stop(KEY); return listed(owner); };
+    await run.ends(wrongRepo("acme/corpus: the backups code lives there, not in this repository"));
+    return { cloned: run.calls.length, plannedRepo: run.entry(KEY).plannedRepo, phase: run.entry(KEY).phase };
+  };
+  assert.deepEqual(await movedWhen(false), { cloned: 1, plannedRepo: "corpus", phase: "running" }, "CONTROL: the board clones the named repository and moves the run there");
+  const stopped = await movedWhen(true);
+  assert.equal(stopped.cloned, 0, "the run was stopped while the organisation was listed, so nothing is cloned");
+  assert.equal(stopped.plannedRepo, undefined, "and it is not moved");
 });

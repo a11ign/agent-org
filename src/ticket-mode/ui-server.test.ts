@@ -44,7 +44,7 @@ async function instance(mintTerminal?: () => Promise<TerminalMint>, { queue, ter
   if (queue !== undefined) writeFileSync(join(stateDir, "queue.json"), JSON.stringify(queue));
   const key = boardKey(boardKeyPath(stateDir));
   const seen: IncomingMessage["headers"][] = [];
-  const pool = { tick: async () => {}, reviewNewHeads: () => {}, stopWriterRun: () => {}, retargetStacked: () => {}, rebaseStacked: async () => {}, stop: () => {}, close: () => {}, dismiss: async () => {}, remove: async () => {}, reconcile: () => {}, ensureSession: async () => {}, refreshTracker: async () => {}, watchFeedback: () => {}, releaseReviewers: () => {}, applyEdit: async () => {}, discardEdit: () => {}, respond: async () => {} };
+  const pool = { tick: async () => {}, reviewNewHeads: () => {}, stopWriterRun: () => {}, retargetStacked: () => {}, rebaseStacked: async () => {}, stop: () => {}, close: async () => {}, dismiss: async () => {}, remove: async () => {}, reconcile: async () => {}, ensureSession: async () => {}, refreshTracker: async () => {}, watchFeedback: () => {}, releaseReviewers: () => {}, applyEdit: async () => {}, discardEdit: () => {}, respond: async () => {} };
   const source: TicketSource = createFakeTracker([{ ...ticket("NBF-1"), labels: LABELS }]);
   const served = await listen((port) => {
     const settings = parseTicketSettings({ clones: { "nbl-ui-netbox": "/r/netbox" }, stateDir, tickets: { port, terminal } });

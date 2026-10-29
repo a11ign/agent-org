@@ -14,7 +14,7 @@ import { repoOf } from "./board-view/pull-status-and-notes.ts";
 import { type PoolContext } from "./pool-context.ts";
 import { hostFilePath } from "./settings.ts";
 import { isPlanning, log, messageOf } from "./pool-state.ts";
-import { cloneKeyOf, ensureCloned, namedIn, readOrganisation, readOrganisationAsync, unclonedOf, type OrgReading } from "./org-repos.ts";
+import { cloneKeyOf, ensureCloned, namedIn, readOrganisationAsync, unclonedOf, type OrgReading } from "./org-repos.ts";
 
 /** How much of a worker's `where` the log quotes. */
 const LOGGED_WHERE_CHARS = 80;
@@ -22,17 +22,8 @@ const LOGGED_WHERE_CHARS = 80;
 /** The most times the board moves one run to the repository its worker named. */
 export const REROUTE_LIMIT = 2;
 
-/** The organisation's live repositories as the code host lists them now, or why it could not. Never throws. */
-export function organisationOf(ctx: PoolContext): OrgReading {
-  try {
-    return readOrganisation(ctx.settings.clones, ctx.codeHost);
-  } catch (err) {
-    return { unreadable: messageOf(err).split("\n")[0] };
-  }
-}
-
-/** {@link organisationOf} without holding the board thread's loop while the code host lists (A11-282): the clone sweep's. Never rejects. */
-async function organisationOfAsync(ctx: PoolContext): Promise<OrgReading> {
+/** The organisation's live repositories as the code host lists them now, or why it could not, without holding the board thread's loop while the code host lists (A11-282). Never rejects. */
+export async function organisationOf(ctx: PoolContext): Promise<OrgReading> {
   try {
     return await readOrganisationAsync(ctx.settings.clones, ctx.codeHost);
   } catch (err) {
@@ -65,15 +56,15 @@ const movesOf = (ctx: PoolContext, entry: Entry): number => logOf(ctx.store.get(
  * Whether the board may move a run that ended `wrong-repo`: a worker's own work run that is still running (a finished run whose unreadable outcome was corrected has no worker to end), not a review round, a talk session or a
  * planner's.
  */
-const movable = (ctx: PoolContext, entry: Entry): boolean =>
+export const movable = (ctx: PoolContext, entry: Entry): boolean =>
   entry.phase === "running" && entry.review === undefined && entry.talk !== true && !isPlanning(ctx, entry) && !isCapPlanner(entry) && entry.standoff?.stage !== "planner";
 
 /**
  * The live repository of the organisation a `wrong-repo` outcome's `where` names, or null: it names none, the repository is archived or outside the organisation, or the organisation cannot be listed (said in the log). `where` is a worker's
- * sentence (`acme/corpus: the code lives there`), read by its first word. Synchronous: nothing is cloned.
+ * sentence (`acme/corpus: the code lives there`), read by its first word. Nothing is cloned.
  */
-export function organisationRepoNamed(ctx: PoolContext, where: string): HostRepository | null {
-  const organisation = organisationOf(ctx);
+export async function organisationRepoNamed(ctx: PoolContext, where: string): Promise<HostRepository | null> {
+  const organisation = await organisationOf(ctx);
   if ("unreadable" in organisation) {
     log(`a wrong-repo naming ${JSON.stringify(where.slice(0, LOGGED_WHERE_CHARS))} was not moved: ${organisation.unreadable}`);
     return null;
@@ -83,11 +74,11 @@ export function organisationRepoNamed(ctx: PoolContext, where: string): HostRepo
 
 /**
  * The repository the board moves `entry` to for its `wrong-repo`, or null when the run stays a person's: the run is not one {@link movable} allows, `where` names no repository of the organisation, or it names the one the run is placed in
- * already (a worker sent back where it started would go round for ever). Synchronous, so a `wrong-repo` the board will not move ends in the same pass as any other outcome.
+ * already (a worker sent back where it started would go round for ever). A run that is not {@link movable} is answered without asking the code host, so it ends in the same pass as any other outcome.
  */
-export function wrongRepoTarget(ctx: PoolContext, entry: Entry, where: string): HostRepository | null {
+export async function wrongRepoTarget(ctx: PoolContext, entry: Entry, where: string): Promise<HostRepository | null> {
   if (!movable(ctx, entry)) return null;
-  const named = organisationRepoNamed(ctx, where);
+  const named = await organisationRepoNamed(ctx, where);
   if (named === null) return null;
   const held = cloneKeyOf(named, ctx.settings.clones, ctx.codeHost);
   if (held !== null && held === repoOf(entry)) return null;
@@ -120,7 +111,7 @@ const swept = new WeakMap<PoolContext, Readonly<{ at: number; repositories: read
 async function sweptOrganisation(ctx: PoolContext): Promise<OrgReading> {
   const held = swept.get(ctx);
   if (held !== undefined && ctx.now() - held.at < ORGANISATION_SWEEP_MS) return { repositories: held.repositories };
-  const read = await organisationOfAsync(ctx);
+  const read = await organisationOf(ctx);
   if ("repositories" in read) swept.set(ctx, { at: ctx.now(), repositories: read.repositories });
   return read;
 }
@@ -150,8 +141,11 @@ export async function cloneMissing(ctx: PoolContext): Promise<number> {
   }
 }
 
-/** The names of the organisation's live repositories this machine holds no clone of, for a planner's brief; none when the organisation cannot be listed (the brief then offers the clones alone). */
-export function unclonedNames(ctx: PoolContext): readonly string[] {
-  const organisation = organisationOf(ctx);
+/**
+ * The names of the organisation's live repositories this machine holds no clone of, for a planner's brief; none when the organisation cannot be listed (the brief then offers the clones alone). The list is the clone sweep's, read
+ * within {@link ORGANISATION_SWEEP_MS}: a brief is written at every plan's start, and a `gh repo list` for each owner held the board's loop for a second each time (A11-282). A repository made since is offered at the next sweep.
+ */
+export async function unclonedNames(ctx: PoolContext): Promise<readonly string[]> {
+  const organisation = await sweptOrganisation(ctx);
   return "unreadable" in organisation ? [] : unclonedOf(organisation.repositories, ctx.settings.clones, ctx.codeHost).map(({ name }) => name);
 }

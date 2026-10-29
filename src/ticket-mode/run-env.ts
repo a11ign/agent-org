@@ -5,7 +5,7 @@
 // `gh pr create` as if it came from a session that is not a ticket's (`plugins/github/wrapper/gh`). A running process cannot be given variables, so a run that lacks them is started again where it is, with the
 // environment {@link runEnvOf} builds: the same function `start()` passes to `workspace create --env`, so "as the board set it at start" is true by construction.
 import { readFileSync } from "node:fs";
-import { type Herdr } from "./pool-herdr.ts";
+import { HERDR_CALL_MS, type HerdrAsync } from "./pool-herdr.ts";
 import { type Entry } from "./queue/queue-entries-and-outcomes.ts";
 import { runTmpDir, TMPDIR_ENV } from "../session-tmp.ts";
 import { TICKET_ENV } from "./worktree-command.ts";
@@ -25,8 +25,8 @@ export function runEnvOf({ hostFile, runTmpBase }: Readonly<{ hostFile: string |
   };
 }
 
-/** The environment of the Claude process in a pane, or null when it cannot be read: herdr names no Claude process there, or `/proc` refuses it. A read that fails says nothing about the run. */
-export type PaneEnv = (pane: string) => Readonly<Record<string, string>> | null;
+/** The environment of the Claude process in a pane, or null when it cannot be read: herdr names no Claude process there, or `/proc` refuses it. A read that fails says nothing about the run. The machine's own read asks herdr without holding the loop (A11-282). */
+export type PaneEnv = (pane: string) => Readonly<Record<string, string>> | null | Promise<Readonly<Record<string, string>> | null>;
 
 /** The pid of the foreground `claude` process herdr reports for a pane, or null. PURE. */
 export function claudePidOf(processInfo: string): number | null {
@@ -50,10 +50,10 @@ export function parseEnviron(text: string): Record<string, string> {
  * The machine's own read of a pane's environment: herdr names the pane's foreground `claude` process (`pane process-info`), and `/proc/<pid>/environ` (the same user's) holds the variables it started with.
  * Only reads. `readEnviron` is the seam for `/proc`.
  */
-export function livePaneEnv(herdr: Herdr, herdrSession: string, readEnviron: (pid: number) => string = (pid) => readFileSync(`/proc/${pid}/environ`, "utf8")): PaneEnv {
-  return (pane) => {
+export function livePaneEnv(herdr: HerdrAsync, herdrSession: string, readEnviron: (pid: number) => string = (pid) => readFileSync(`/proc/${pid}/environ`, "utf8")): PaneEnv {
+  return async (pane) => {
     try {
-      const pid = claudePidOf(herdr(["--session", herdrSession, "pane", "process-info", "--pane", pane]));
+      const pid = claudePidOf(await herdr(["--session", herdrSession, "pane", "process-info", "--pane", pane], HERDR_CALL_MS));
       return pid === null ? null : parseEnviron(readEnviron(pid));
     } catch {
       return null;

@@ -3,7 +3,7 @@
 //
 // HERDR 0.9.3 LISTS CLAUDE AGENTS WITH NO NAME, so `herdr agent prompt t-a11-270` answers `agent_not_found` even for a run herdr lists. On 2026-10-25 the host rebooted, herdr brought every session back
 // "Interrupted", and every prompt the board sent after it was refused by name, so the runs sat dead for up to 1h40m while their cards said running. Every `agent prompt | read | send-keys` of ticket mode
-// now goes through {@link agentTarget}: the run's pane, or the root pane of the workspace herdr lists under the run's label. Never the name.
+// now goes through {@link agentTargetAsync}: the run's pane, or the root pane of the workspace herdr lists under the run's label. Never the name.
 //
 // A RESTART IS READ, NOT GUESSED. `restarts.json` in the state folder keeps this boot's id and when herdr's service last started. A new boot id, a new herdr start, or this instance's first watch pass is a restart,
 // and in that same pass every live run whose agent is idle at a prompt, or whose pane shows it was interrupted, and that has written no outcome since, is sent {@link RESUME_PROMPT} once, and its card says so.
@@ -16,7 +16,7 @@
 // AN IDLE RUN IS NEVER SHOWN AS RUNNING. A running run whose agent has sat idle for {@link IDLE_RESUME_MS} with no outcome but a `working` note is resumed once, and its card says since when. Still idle as long
 // again after that, it ends `needs-human` with its pane kept, so the chairman's session can answer it there. A run on a declared wait still inside its `until`, or with background work running, is waiting, not idle; one the board already woke for its wait keeps A11-245's one wake and its stall.
 import { readFileSync, statSync, writeFileSync, mkdirSync, existsSync } from "node:fs";
-import { execFileSync } from "node:child_process";
+import { realExecAsync } from "../plugins/real-seams.ts";
 import { dirname, join } from "node:path";
 import { herdrReason, readAgents, readAgentsAsync, rootPaneOf, type ListedAgent } from "../herdr-agents.ts";
 import { HERDR_UNIT } from "../install/herdr-place.ts";
@@ -50,7 +50,7 @@ export const RESUME_PROMPT = "The agents host, herdr or the board restarted whil
 const INTERRUPTED = "Interrupted";
 
 /** What the board reads a restart from: this boot's id, and when herdr's service last started on it. Either is null where it cannot be read (no `/proc`, launchd, a hand-run herdr). */
-export type RestartReads = Readonly<{ bootId: () => string | null; herdrStart: () => string | null }>;
+export type RestartReads = Readonly<{ bootId: () => string | null | Promise<string | null>; herdrStart: () => string | null | Promise<string | null> }>;
 
 /** What `restarts.json` holds. */
 type RestartRecord = Readonly<{ bootId: string | null; herdrStartedAt: string | null }>;
@@ -67,15 +67,15 @@ function readBootId(): string | null {
   }
 }
 
-/** When `agent-org-herdr.service` last started, on the monotonic clock of this boot; null when it is not running under systemd, or the service manager cannot be asked. */
-function readHerdrStart(): string | null {
+/**
+ * When `agent-org-herdr.service` last started, on the monotonic clock of this boot; null when it is not running under systemd, or the service manager cannot be asked. It is asked on every watch pass, and a
+ * synchronous `systemctl` held the board thread for as long as the service manager took, 100 ms and more on a loaded host; it is asked beside the loop now (A11-282).
+ */
+async function readHerdrStart(): Promise<string | null> {
   if (process.platform !== "linux") return null;
-  try {
-    const started = execFileSync("systemctl", ["--user", "show", HERDR_UNIT.systemd, "-p", "ExecMainStartTimestampMonotonic", "--value"], { encoding: "utf8", timeout: 5_000, stdio: ["ignore", "pipe", "ignore"] }).trim();
-    return started === "" || started === "0" ? null : started;
-  } catch {
-    return null;
-  }
+  const answer = await realExecAsync("systemctl", ["--user", "show", HERDR_UNIT.systemd, "-p", "ExecMainStartTimestampMonotonic", "--value"], { timeoutMs: 5_000 });
+  const started = answer.status === 0 ? answer.stdout.trim() : "";
+  return started === "" || started === "0" ? null : started;
 }
 
 /** The machine's own reads: the kernel's boot id and the service manager's record of herdr's start. Both only read. */
@@ -103,11 +103,22 @@ function restartBetween(before: RestartRecord | null, now: RestartRecord): Resta
  * restart is seen once. A value that cannot be read this pass (the service manager timed out) keeps the one on record, so the next good read is no restart. A record that cannot be written is said, and the
  * next pass reads the restart again.
  */
-export function readRestart(ctx: PoolContext): Restart | null {
+export function readRestart(ctx: PoolContext): Restart | null | Promise<Restart | null> {
   const reads = ctx.deps.restartReads ?? LIVE_RESTART_READS;
   const path = join(ctx.settings.stateDir, "tickets", RESTARTS_FILE);
   const before = readRestartRecord(path);
-  const now: RestartRecord = { bootId: reads.bootId() ?? before?.bootId ?? null, herdrStartedAt: reads.herdrStart() ?? before?.herdrStartedAt ?? null };
+  const bootId = reads.bootId();
+  const herdrStartedAt = reads.herdrStart();
+  // A read that answers at once (the kernel's boot id, a test's) is worked on in this turn, as it was before the service manager was asked beside the loop: the pass adds no turn for it (A11-282).
+  if (!isPromise(bootId) && !isPromise(herdrStartedAt)) return recordRestart(ctx, path, before, bootId, herdrStartedAt);
+  return Promise.all([bootId, herdrStartedAt]).then(([boot, herdr]) => recordRestart(ctx, path, before, boot, herdr));
+}
+
+const isPromise = <T>(value: T | Promise<T>): value is Promise<T> => value instanceof Promise;
+
+/** The restart `bootId` and `herdrStartedAt` say against the record `before`, written as the new record when it changed. */
+function recordRestart(ctx: PoolContext, path: string, before: RestartRecord | null, bootId: string | null, herdrStartedAt: string | null): Restart | null {
+  const now: RestartRecord = { bootId: bootId ?? before?.bootId ?? null, herdrStartedAt: herdrStartedAt ?? before?.herdrStartedAt ?? null };
   const first = !ctx.restart.read;
   ctx.restart.read = true;
   const seen = restartBetween(before, now) ?? (first ? "instance" : null);
@@ -126,8 +137,8 @@ function writeRestartRecord(path: string, record: RestartRecord): void {
 }
 
 /**
- * The herdr target of a run's agent: its pane, or the root pane of the workspace herdr lists under the run's label. Throws when herdr lists no workspace for it, so a caller's refusal path says why.
- * Never the agent's name: herdr 0.9.3 answers `agent_not_found` to it.
+ * {@link agentTargetAsync} on the synchronous `herdr`: for the one prompt whose caller is the board's synchronous settling, a plan sent back to its planner (`pool-plan-send-back.ts`), which marks the run's file stale only
+ * once the prompt went and so cannot let a pass in between. It holds the loop for as long as herdr takes, and runs a few times a day at most; `board-thread-sync-guard.test.ts` lists it.
  */
 export function agentTarget(ctx: PoolContext, { name, pane }: Pick<RunPlace, "name" | "pane">): string {
   if (pane !== undefined) return pane;
@@ -148,8 +159,8 @@ const promptArgs = (ctx: PoolContext, target: string, text: string): string[] =>
 const PROMPT_MS = 30_000;
 
 /**
- * {@link agentTarget} without holding the loop (A11-282): the same pane, and the same refusal when herdr lists no workspace for the run, over `herdrCall`. A run that has its pane asks herdr nothing.
- * The prompts the board sends from inside an already asynchronous sweep use this one; a caller still on the synchronous pass keeps {@link agentTarget}.
+ * The herdr target of a run's agent: its pane, or the root pane of the workspace herdr lists under the run's label, asked over `herdrCall` so the board thread's loop goes on while herdr answers (A11-282). Throws when
+ * herdr lists no workspace for it, so a caller's refusal path says why. A run that has its pane asks herdr nothing. Never the agent's name: herdr 0.9.3 answers `agent_not_found` to it.
  */
 export async function agentTargetAsync(ctx: PoolContext, { name, pane }: Pick<RunPlace, "name" | "pane">): Promise<string> {
   if (pane !== undefined) return pane;
@@ -157,8 +168,8 @@ export async function agentTargetAsync(ctx: PoolContext, { name, pane }: Pick<Ru
 }
 
 /**
- * {@link sendToAgent} without holding the loop (A11-282): null when herdr took the prompt, or why it could not be sent. A prompt held the board thread for as long as herdr took, 300 ms and more, every time a worker
- * was told of a pull request, a budget or a wake; the board's other work goes on while herdr answers.
+ * Send `text` to a run's agent by its pane: null when herdr took it, or why it could not be sent. A prompt held the board thread for as long as herdr took, 300 ms and more, every time a worker was told of a pull request,
+ * a budget or a wake (A11-282); the board's other work goes on while herdr answers.
  */
 export async function sendToAgentAsync(ctx: PoolContext, place: Pick<RunPlace, "name" | "pane">, text: string): Promise<string | null> {
   try {
@@ -169,7 +180,7 @@ export async function sendToAgentAsync(ctx: PoolContext, place: Pick<RunPlace, "
   }
 }
 
-/** Send `text` to a run's agent by its pane: null when herdr took it, or why it could not be sent. */
+/** {@link sendToAgentAsync} on the synchronous `herdr`, for the one caller {@link agentTarget} names. */
 export function sendToAgent(ctx: PoolContext, place: Pick<RunPlace, "name" | "pane">, text: string): string | null {
   try {
     ctx.herdr(promptArgs(ctx, agentTarget(ctx, place), text));
@@ -180,9 +191,9 @@ export function sendToAgent(ctx: PoolContext, place: Pick<RunPlace, "name" | "pa
 }
 
 /** What a run's agent shows on screen now, or null when herdr cannot read it. */
-function readScreen(ctx: PoolContext, place: RunPlace): string | null {
+export async function readScreen(ctx: PoolContext, place: Pick<RunPlace, "name" | "pane">): Promise<string | null> {
   try {
-    return ctx.herdr(["--session", ctx.settings.herdrSession, "agent", "read", agentTarget(ctx, place), "--source", "visible"]);
+    return await ctx.herdrCall(["--session", ctx.settings.herdrSession, "agent", "read", await agentTargetAsync(ctx, place), "--source", "visible"], PROMPT_MS);
   } catch {
     return null;
   }
@@ -220,30 +231,45 @@ const recordResume = (queue: Queue, key: string, note: ResumeNote): Queue => rep
 /** A run the board may resume: a live ticket run with no person at its terminal. PURE. */
 const resumable = (entry: Entry): boolean => entry.phase === "running" && entry.talk !== true;
 
+/** Whether the run of `entry` is still one the board may resume, in the queue as it is now: a pane was read meanwhile without holding the loop, and the run may have ended. */
+const stillResumable = (ctx: PoolContext, entry: Entry): boolean => {
+  const held = ctx.store.get().entries.find((e) => e.ticket.key === entry.ticket.key);
+  return held !== undefined && resumable(held);
+};
+
 /**
  * After a restart, every running run whose agent is idle (or done) at a prompt, or whose pane shows it was interrupted, and that has written no outcome but a `working` note, is sent the resume prompt once, in the same
  * pass. A run working, on a dialog, that wrote its outcome, or that has a declined safety prompt it is about to be told of, is left to the watch. A refusal is on the card and in the log, and the idle watch tries
  * again. Returns the herdr names of the runs it prompted, which the rest of this pass neither ends for having no outcome nor prompts again: the status it read was taken before the prompt. On an instance's own start herdr
  * kept every session, so a run that was not interrupted and is waiting (on a declared wait inside its `until`, on background work, or stalled after the board woke it for its wait) is left as it is.
  */
-export function resumeAfterRestart(ctx: PoolContext, status: ReadonlyMap<string, string>): ReadonlySet<string> {
+export function resumeAfterRestart(ctx: PoolContext, status: ReadonlyMap<string, string>): ReadonlySet<string> | Promise<ReadonlySet<string>> {
   const restart = readRestart(ctx);
+  if (restart instanceof Promise) return restart.then((read) => (read === null ? new Set<string>() : promptAfter(ctx, status, read)));
+  // No restart, which is nearly every pass: nothing is asked of herdr and the pass takes no turn of the event loop (A11-282).
+  return restart === null ? new Set<string>() : promptAfter(ctx, status, restart);
+}
+
+async function promptAfter(ctx: PoolContext, status: ReadonlyMap<string, string>, restart: Restart): Promise<ReadonlySet<string>> {
   const prompted = new Set<string>();
-  if (restart === null) return prompted;
-  for (const entry of ctx.store.get().entries.filter(resumable)) {
+  for (const listed of ctx.store.get().entries.filter(resumable)) {
+    // Each pane is read without holding the loop, so the queue moves between two runs: each is taken as the queue holds it now.
+    if (!stillResumable(ctx, listed)) continue;
+    const entry = ctx.store.get().entries.find((e) => e.ticket.key === listed.ticket.key)!;
     const place = runPlace(ctx, entry);
     if (prompted.has(place.name) || !awaitsOutcome(entry, place.dir) || untoldDecline(ctx, entry)) continue;
     const seen = status.get(place.name);
     const sitting = seen === "idle" || seen === "done";
-    if (seen === "working") noteLostEnvironment(ctx, entry, place);
+    if (seen === "working") await noteLostEnvironment(ctx, entry, place);
     // herdr may not read an interrupted session's state: an `unknown` agent is resumed when its pane says it was interrupted. A working one, or one on a dialog, is not.
     if (!sitting && seen !== "unknown") continue;
-    const screen = readScreen(ctx, place);
+    const screen = await readScreen(ctx, place);
     const interrupted = screen?.includes(INTERRUPTED) === true;
     if (!sitting && !interrupted) continue;
     if (restart === "instance" && !interrupted && keptWaiting(ctx, entry, screen)) continue;
+    if (!stillResumable(ctx, entry)) continue;
     prompted.add(place.name);
-    resumeOrReseat(ctx, entry, place, { at: ctx.now(), after: "restart" });
+    await resumeOrReseat(ctx, entry, place, { at: ctx.now(), after: "restart" });
   }
   return prompted;
 }
@@ -271,10 +297,10 @@ const notIdle = (ctx: PoolContext, entry: Entry, dir: string, seen: string): boo
  * The keys of the run's environment that its pane's Claude process lacks or holds with another value, read now. None when the process holds them all, and none when the read fails (no Claude process herdr names, `/proc`
  * refuses it, no pane): a working agent is never started again on a failed read, and the log says it was not checked.
  */
-function lostEnvironment(ctx: PoolContext, entry: Entry, place: RunPlace): readonly string[] {
+async function lostEnvironment(ctx: PoolContext, entry: Entry, place: RunPlace): Promise<readonly string[]> {
   let held: Readonly<Record<string, string>> | null = null;
   try {
-    held = ctx.paneEnv(agentTarget(ctx, place));
+    held = await ctx.paneEnv(await agentTargetAsync(ctx, place));
   } catch {
     held = null;
   }
@@ -287,8 +313,8 @@ const lostEnvironmentAtPrompt = (ctx: PoolContext, entry: Entry, dir: string, se
   ctx.envLost.has(runPlace(ctx, entry).name) && (seen === "idle" || seen === "done") && awaitsOutcome(entry, dir) && !untoldDecline(ctx, entry);
 
 /** A run that is working after a restart and lacks its environment is noted, and started again when its agent first sits at a prompt ({@link watchIdle}): a working agent is not interrupted. */
-function noteLostEnvironment(ctx: PoolContext, entry: Entry, place: RunPlace): void {
-  const lost = lostEnvironment(ctx, entry, place);
+async function noteLostEnvironment(ctx: PoolContext, entry: Entry, place: RunPlace): Promise<void> {
+  const lost = await lostEnvironment(ctx, entry, place);
   if (lost.length === 0) return;
   ctx.envLost.set(place.name, lost);
   log(`${entry.batch ?? entry.ticket.key} is working but its pane lost ${lost.join(", ")}; it is started again with them when its agent first sits at a prompt`);
@@ -298,8 +324,10 @@ function noteLostEnvironment(ctx: PoolContext, entry: Entry, place: RunPlace): v
  * Resume a run at a prompt: send it the resume prompt where it is, or, when its pane lacks the environment the board set at start ({@link lostEnvironment}), queue it for `reseatRuns`, which starts it again with the
  * environment and the prompt. A run restarted is not prompted twice.
  */
-function resumeOrReseat(ctx: PoolContext, entry: Entry, place: RunPlace, note: ResumeNote): void {
-  const lost = lostEnvironment(ctx, entry, place);
+async function resumeOrReseat(ctx: PoolContext, entry: Entry, place: RunPlace, note: ResumeNote): Promise<void> {
+  const lost = await lostEnvironment(ctx, entry, place);
+  // The environment was read without holding the loop: a run stopped meanwhile is neither prompted nor started again.
+  if (!stillResumable(ctx, entry)) return;
   if (lost.length === 0) return resumeRun(ctx, entry, place, note);
   ctx.envLost.delete(place.name);
   ctx.reseating.set(place.name, { key: entry.ticket.key, note });
@@ -307,9 +335,9 @@ function resumeOrReseat(ctx: PoolContext, entry: Entry, place: RunPlace, note: R
 }
 
 /** Send a run the resume prompt and record it on its card: the time, why, and herdr's refusal when it would not take it. */
-export function resumeRun(ctx: PoolContext, entry: Entry, place: RunPlace, note: ResumeNote): void {
+export async function resumeRun(ctx: PoolContext, entry: Entry, place: RunPlace, note: ResumeNote): Promise<void> {
   const who = entry.batch ?? entry.ticket.key;
-  const refused = sendToAgent(ctx, place, resumePrompt(entry));
+  const refused = await sendToAgentAsync(ctx, place, resumePrompt(entry));
   updateEach(ctx, runMembers(ctx, entry), (queue, key) => recordResume(queue, key, refused === null ? note : { ...note, refused }));
   const what = note.after === "restart" ? `after a restart at ${utcClock(note.at)}` : `idle since ${utcClock(note.idleSince ?? note.at)}, at ${utcClock(note.at)}`;
   log(refused === null ? `${who} was sent the resume prompt ${what}` : `${who} could not be prompted ${what}: ${refused}`);
@@ -330,12 +358,13 @@ const spentResume = (resume: ResumeNote | undefined): resume is ResumeNote => re
  * {@link IDLE_RESUME_MS} after it, so a run that went on is resumed again the next time it sits idle. A resume herdr refused is not one: it is tried again, at most once a minute. A run on a declared wait inside its
  * `until`, or one the board already woke for its wait, with background work running, or with a safety prompt's decline it was not yet told of, is not idle.
  */
-export function watchIdle(ctx: PoolContext, entry: Entry, seen: string): void {
+export async function watchIdle(ctx: PoolContext, entry: Entry, seen: string): Promise<void> {
   const current = ctx.store.get().entries.find((e) => e.ticket.key === entry.ticket.key);
   if (current === undefined || !resumable(current)) return;
   const place = runPlace(ctx, current);
   const now = ctx.now();
-  if (lostEnvironmentAtPrompt(ctx, current, place.dir, seen) && !backgroundRuns(ctx, place)) {
+  if (lostEnvironmentAtPrompt(ctx, current, place.dir, seen) && !(await backgroundRuns(ctx, place))) {
+    if (!stillResumable(ctx, current)) return;
     ctx.envLost.delete(place.name);
     return resumeOrReseat(ctx, current, place, { at: now, after: "restart" });
   }
@@ -347,7 +376,9 @@ export function watchIdle(ctx: PoolContext, entry: Entry, seen: string): void {
   const resume = ctx.store.get().entries.find((e) => e.ticket.key === current.ticket.key)?.resume;
   const spent = spentResume(resume);
   const from = Math.max(since, spent ? resume.at : 0);
-  if (now - from < IDLE_RESUME_MS || refusedJustNow(resume, now) || backgroundRuns(ctx, place)) return;
+  if (now - from < IDLE_RESUME_MS || refusedJustNow(resume, now) || (await backgroundRuns(ctx, place))) return;
+  // The pane was read without holding the loop (A11-282): the run may have ended or been stopped while herdr answered.
+  if (!stillResumable(ctx, current)) return;
   if (!spent) return resumeOrReseat(ctx, current, place, { at: now, after: "idle", idleSince: since });
   end(ctx, current, { kind: "needs-human", reason: escalationReason(undefined, `idle at a prompt since ${utcClock(since)}; the board's resume prompt at ${utcClock(resume.at)} did not start it`) });
 }
@@ -366,8 +397,8 @@ function showsBackground(screen: string): boolean {
 }
 
 /** Whether a run's pane shows background work running. A pane that cannot be read shows none. */
-function backgroundRuns(ctx: PoolContext, place: RunPlace): boolean {
-  const screen = readScreen(ctx, place);
+async function backgroundRuns(ctx: PoolContext, place: RunPlace): Promise<boolean> {
+  const screen = await readScreen(ctx, place);
   return screen !== null && showsBackground(screen);
 }
 

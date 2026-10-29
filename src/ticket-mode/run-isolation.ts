@@ -20,7 +20,7 @@
 // base skips only what was modified in the last minutes, and neither knows the queue.
 import { lstatSync, readdirSync, unlinkSync, utimesSync } from "node:fs";
 import { join } from "node:path";
-import { readAgents } from "../herdr-agents.ts";
+import { readAgentsAsync } from "../herdr-agents.ts";
 import { requirePrivate } from "../private-tmp.ts";
 import { makeRunTmp, RUN_TMP_PREFIX, runTmpName } from "../session-tmp.ts";
 import { type Budget, removeWithin } from "./bounded-removal.ts";
@@ -28,6 +28,7 @@ import { sweepLegacyTmp } from "./legacy-tmp.ts";
 import { type PoolContext } from "./pool-context.ts";
 import { isLive } from "./queue/queue-entries-and-outcomes.ts";
 import { log } from "./pool-state.ts";
+import { HERDR_CALL_MS } from "./pool-herdr.ts";
 
 export { makeRunTmp, RUN_TMP_PREFIX, runTmpDir, runTmpName } from "../session-tmp.ts";
 
@@ -62,8 +63,9 @@ const queuedNames = (ctx: PoolContext): Set<string> => new Set(ctx.store.get().e
  * The names of the directories of the sessions herdr lists in the board's session (A11-303): a reviewer, a new-ticket run or a publish run is no queue entry, and its workspace is what says it is still there. Null when herdr
  * could not be listed, which says nothing of what is there, so no directory is taken for it.
  */
-function liveSessionNames(ctx: PoolContext): Set<string> | null {
-  const agents = readAgents((args) => ctx.herdr(args), { session: ctx.settings.herdrSession, say: () => {} });
+async function liveSessionNames(ctx: PoolContext): Promise<Set<string> | null> {
+  // Asked without holding the loop (A11-282): the sweep runs every pass, and a synchronous listing held the board thread for as long as herdr took.
+  const agents = await readAgentsAsync((args) => ctx.herdrCall(args, HERDR_CALL_MS), { session: ctx.settings.herdrSession, say: () => {} });
   return agents === null ? null : new Set(agents.map((agent) => runTmpName(agent.label)));
 }
 
@@ -100,21 +102,14 @@ function removeEnded(ctx: PoolContext, base: string, name: string, budget: Budge
 type Fate = "ended" | "listed" | "unknown";
 
 /** The fate of the directory `name`: a queue entry that holds nothing is over without asking herdr; any other name is a session, and herdr's listing says whether it is still there. */
-function fateOf(name: string, queued: ReadonlySet<string>, sessions: () => ReadonlySet<string> | null): Fate {
+function fateOf(name: string, queued: ReadonlySet<string>, listed: ReadonlySet<string> | null): Fate {
   if (queued.has(name)) return "ended";
-  const listed = sessions();
   if (listed === null) return "unknown";
   return listed.has(name) ? "listed" : "ended";
 }
 
-/** `read`, run the first time the answer is asked for and remembered after: herdr is asked once a pass, and only when a directory is there that no queue entry owns. */
-function once<T>(read: () => T): () => T {
-  let answer: { value: T } | undefined;
-  return () => (answer ??= { value: read() }).value;
-}
-
 /** The run directories under the base nobody holds any more, removed within `budget`. */
-function sweepRunDirs(ctx: PoolContext, base: string, budget: Budget): void {
+async function sweepRunDirs(ctx: PoolContext, base: string, budget: Budget): Promise<void> {
   let names: string[];
   try {
     names = readdirSync(base).filter((name) => name.startsWith(RUN_TMP_PREFIX));
@@ -122,10 +117,11 @@ function sweepRunDirs(ctx: PoolContext, base: string, budget: Budget): void {
     if ((err as NodeJS.ErrnoException).code !== "ENOENT") log(`the private temp directories under ${base} could not be listed: ${(err as Error).message.split("\n")[0]}`);
     return;
   }
+  // herdr is asked once a pass, and only when a directory is there that no queue entry owns. The queue is read again after the answer: it moved while herdr listed.
+  const sessions = names.some((name) => !queuedNames(ctx).has(name)) ? await liveSessionNames(ctx) : null;
   const held = heldNames(ctx);
   for (const name of held) keepHeld(ctx, base, name);
   const queued = queuedNames(ctx);
-  const sessions = once(() => liveSessionNames(ctx));
   for (const name of names.filter((each) => !held.has(each))) {
     const fate = fateOf(name, queued, sessions);
     if (fate === "listed") keepHeld(ctx, base, name);
@@ -144,8 +140,9 @@ function sweepRunDirs(ctx: PoolContext, base: string, budget: Budget): void {
  * directory when the pool gives runs no private directory (`ctx.runTmpBase` unset: every test, and an instance started without one), and nothing in `/tmp` when it names none. A directory that cannot be read or removed
  * is said, and tried at the next pass. Never throws.
  */
-export function sweepRunTmp(ctx: PoolContext): void {
+export function sweepRunTmp(ctx: PoolContext): Promise<void> | void {
   const budget: Budget = { left: MAX_REMOVALS_PER_PASS };
-  if (ctx.runTmpBase !== undefined) sweepRunDirs(ctx, ctx.runTmpBase, budget);
-  sweepLegacyTmp(ctx, budget);
+  // A pool with no private base has no run directory to list herdr for: its pass takes no turn of the event loop for this (A11-282).
+  if (ctx.runTmpBase === undefined) return sweepLegacyTmp(ctx, budget);
+  return sweepRunDirs(ctx, ctx.runTmpBase, budget).then(() => sweepLegacyTmp(ctx, budget));
 }
