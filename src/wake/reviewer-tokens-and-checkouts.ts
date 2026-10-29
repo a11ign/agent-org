@@ -1,4 +1,3 @@
-import { tokenNeedsRefresh } from "../app-token-cache.ts";
 import type { AppIdentity } from "../host-config.ts";
 import { execFileSync, spawnSync } from "node:child_process";
 import { readFileSync, writeFileSync, mkdirSync, mkdtempSync, renameSync, existsSync, readdirSync, lstatSync, readlinkSync, symlinkSync, rmSync } from "node:fs";
@@ -16,7 +15,8 @@ import { recordRemoval } from "../worktree-removal.ts";
 import { sandboxGitEnv } from "../lib/git-env.ts";
 import { cloneOfKey } from "../claim-stall/stall-causes-and-claim-readings.ts";
 import { firstLine, herdrReason, herdrStartRefusal, openPane, closedNote } from "../herdr-agents.ts";
-import { APP_TOKEN_MINT_TIMEOUT_MS, APP_TOKEN_SCRIPT, REVIEWER_CAUSES, REVIEWER_TOKEN_REFRESH_SECONDS, REVIEW_CHECKOUT_ROOT, reviewCheckoutPath, reviewedRepositoryOf, reviewerEnvironment, reviewerTokenDir, spawnInvocation, type ReviewerApp, type ReviewerEntry } from "./pull-request-spawn-orders.ts";
+import { OUTSIDE_CHECKOUT_NOTE, REVIEW_GIT, checkoutMismatch, checkoutRefusal, linkedCheckout, mintEnvironment, mintRefusal, mintedRefusal, removalLine, tokenCacheRefusal, tokenIsStale, TREE_INSTALL_TIMEOUT_MS, GIT_TIMEOUT_MS } from "./reviewer-start-steps.ts";
+import { APP_TOKEN_MINT_TIMEOUT_MS, APP_TOKEN_SCRIPT, REVIEWER_CAUSES, REVIEW_CHECKOUT_ROOT, reviewCheckoutPath, reviewedRepositoryOf, reviewerEnvironment, reviewerTokenDir, spawnInvocation, type ReviewerApp, type ReviewerEntry } from "./pull-request-spawn-orders.ts";
 import { codeRepositoryOf, defaultRun, route } from "./exit-and-limits.ts";
 
 /** The mint for a reviewer's token in `tree`: {@link ensureReviewerToken}, or the reason it cannot be asked when the app is unknown. */
@@ -25,7 +25,7 @@ export function reviewerTokenMinter(app: ReviewerApp): (tree: string) => string 
 }
 
 /**
- * Make sure the reviewer's token in `tree` lasts past {@link REVIEWER_TOKEN_REFRESH_SECONDS}, minting one when it does not. The minter writes into a
+ * Make sure the reviewer's token in `tree` lasts past `REVIEWER_TOKEN_REFRESH_SECONDS`, minting one when it does not. The minter writes into a
  * SCRATCH directory that is renamed over the token only when it succeeds, so a failed refresh keeps the token there is. Its key is passed to the
  * minter's environment and to nothing else: the reviewer's environment names the token directory and never the key.
  * A filesystem failure in the cache (a checkout that is a file, a read-only disk) is a named reason too, not a throw: the tick must not die on it.
@@ -35,21 +35,19 @@ export function ensureReviewerToken(tree: string, app: AppIdentity | null, { now
   if (app === null) return null;
   const dir = reviewerTokenDir(tree);
   try {
-    if (!tokenNeedsRefresh({ cacheDir: dir, role: "reviewer", now: now / 1000, marginSeconds: REVIEWER_TOKEN_REFRESH_SECONDS })) return null;
+    if (!tokenIsStale(dir, now)) return null;
     mkdirSync(dir, { recursive: true, mode: 0o700 });
     const scratch = mkdtempSync(join(dir, "mint-"));
     try {
-      const minted = spawnSync(process.execPath, [script, "reviewer"], { encoding: "utf8", timeout: APP_TOKEN_MINT_TIMEOUT_MS, stdio: ["ignore", "ignore", "pipe"],
-        env: { PATH: process.env.PATH ?? "", A11Y_APP_ID: app.appId, A11Y_APP_KEY_PATH: app.keyPath, A11Y_APP_TOKEN_DIR: scratch,
-          ...(app.installationId === undefined ? {} : { A11Y_APP_INSTALLATION_ID: app.installationId }) } });
-      if (minted.status !== 0) return `the reviewer's app token could not be minted: ${firstLine(minted.stderr || minted.error || "no reason was given")}`;
+      const minted = spawnSync(process.execPath, [script, "reviewer"], { encoding: "utf8", timeout: APP_TOKEN_MINT_TIMEOUT_MS, stdio: ["ignore", "ignore", "pipe"], env: mintEnvironment(app, scratch) });
+      if (minted.status !== 0) return mintRefusal(minted.stderr || minted.error);
       renameSync(join(scratch, "reviewer.token"), join(dir, "reviewer.token"));
       return null;
     } finally {
       rmSync(scratch, { recursive: true, force: true });
     }
   } catch (cause) {
-    return `the reviewer's token cache at ${dir} could not be refreshed: ${firstLine(cause instanceof Error ? cause.message : String(cause))}`;
+    return tokenCacheRefusal(dir, cause);
   }
 }
 
@@ -198,7 +196,7 @@ export const REPO_ROOT = HOME_CHECKOUT;
  * pull request's commit.
  * ANOTHER REPOSITORY'S pull request 7 is a different ref, so removing one instance's never deletes the other's (#2618).
  */
-const reviewRef = (pr: number, key: string = "") => (key === "" ? `refs/review/pr-${pr}` : `refs/review/${key}/pr-${pr}`);
+export const reviewRef = (pr: number, key: string = "") => (key === "" ? `refs/review/pr-${pr}` : `refs/review/${key}/pr-${pr}`);
 
 /**
  * #2969: WHERE A DECLARED KEY'S CLONE LIVES, from `host.json`'s `clones`, or why it cannot be said. The reading moved to `claim-stall.ts`'s
@@ -214,7 +212,7 @@ export function reviewCloneOf(key: string, from?: Parameters<typeof cloneOfKey>[
  * the declared clone for a keyed one whose key the project declares AND the host gives a clone, and a refusal otherwise. THE KEY
  * MUST BE DECLARED TOO: a clone the host names for a repository the project does not declare is a clone the gate never reads.
  */
-function reviewRepoRootOf(session: string): { repoRoot: string; } | { refusal: string; } {
+export function reviewRepoRootOf(session: string): { repoRoot: string; } | { refusal: string; } {
   const instance = reviewerInstance(session);
   if (instance === null || instance.key === "") return { repoRoot: REPO_ROOT };
   const declared = codeRepositoryOf(instance.key);
@@ -233,11 +231,17 @@ function reviewRepoRootOf(session: string): { repoRoot: string; } | { refusal: s
  * ref a pull request's head is fetched into (keyed for a keyed instance), and the dependency step -- or why no tree can be made.
  */
 function reviewTreeSource(session: string, given: string | undefined, link: CheckoutDeps["link"]): { repoRoot: string; ref: (pr: number) => string; linkDependencies: NonNullable<CheckoutDeps["link"]>; } | { refusal: string; } {
+  const where = reviewTreeLocation(session, given);
+  if ("refusal" in where) return where;
+  return { repoRoot: where.repoRoot, ref: where.ref, linkDependencies: link ?? (where.keyed ? linkKeyedDependencies : linkReviewDependencies) };
+}
+
+/** Where `session`'s tree is fetched from and into, without the dependency step (`reviewer-start-async.ts` brings its own): `keyed` says which of the two default link steps applies. */
+export function reviewTreeLocation(session: string, given: string | undefined): { repoRoot: string; ref: (pr: number) => string; keyed: boolean; } | { refusal: string; } {
   const where = given === undefined ? reviewRepoRootOf(session) : { repoRoot: given };
   if ("refusal" in where) return where;
   const key = reviewerInstance(session)?.key ?? "";
-  return { repoRoot: where.repoRoot, ref: (pr) => reviewRef(pr, key),
-    linkDependencies: link ?? (key === "" ? linkReviewDependencies : linkKeyedDependencies) };
+  return { repoRoot: where.repoRoot, ref: (pr) => reviewRef(pr, key), keyed: key !== "" };
 }
 
 /**
@@ -267,7 +271,7 @@ function namedList(names: string[]): string {
  * the author ran), `--no-lockfile` when it has none (`a11ign/agent-org` has none, so a frozen install cannot run there, #113). `--ignore-scripts`
  * because a review tree runs nobody's `postinstall`.
  */
-function installArgs(fs: LinkFs, path: string): string[] {
+export function installArgs(fs: LinkFs, path: string): string[] {
   return ["install", fs.existsSync(`${path}/pnpm-lock.yaml`) ? "--frozen-lockfile" : "--no-lockfile", "--ignore-scripts"];
 }
 
@@ -292,9 +296,6 @@ function supplyCommand({ fs, path, repoRoot }: { fs: LinkFs; path: string; repoR
     + "and the old `node_modules` is removed first because `mv` or `cp` into one that is there nests or refuses)";
 }
 
-/** How long a tree's install may run: the tick waits on it, so a registry that hangs must end in a refusal, not a stalled tick. */
-const TREE_INSTALL_TIMEOUT_MS = 300_000;
-
 /** The one real install: `pnpm` in `cwd`, which throws on a non-zero exit with the child's stderr on the error. */
 const defaultInstall: TreeInstall = ({ cwd, args }) => {
   const pnpm = pnpmCliInvocation(args);
@@ -311,7 +312,7 @@ const defaultInstall: TreeInstall = ({ cwd, args }) => {
  * network failure, a lockfile mismatch, a version the registry does not hold (`ERR_PNPM_NO_MATCHING_VERSION`) or a 404 for a name the tree does
  * not declare is still a refusal, because the tree would not be reviewable for a reason `checks` cannot make up for.
  */
-function unpublishedDeclared(err: unknown, declared: string[]): string[] | null {
+export function unpublishedDeclared(err: unknown, declared: string[]): string[] | null {
   const e = (err as any);
   const text = [e?.stdout, e?.stderr, e?.message].map((part) => (part === undefined || part === null ? "" : String(part))).join("\n");
   const codes = text.match(/ERR_PNPM_[A-Z0-9_]+/g) ?? [];
@@ -359,23 +360,47 @@ function clearDanglingLinks(fs: LinkFs, modules: string): void {
  * link of a partial tree: after the install every declared package must be at `<tree>/node_modules/<name>`.
  */
 function installIntoTree({ fs, path, repoRoot, declared, missing, install }: { fs: LinkFs; path: string; repoRoot: string; declared: string[]; missing: string[]; install: TreeInstall; }): LinkResult {
-  const lacks = `${repoRoot}/node_modules lacks ${namedList(missing)}, which ${path}/package.json declares; supply `
-    + `${missing.length === 1 ? "it" : "them"} with ${supplyCommand({ fs, path, repoRoot })}`;
-  try {
-    clearDanglingLinks(fs, `${path}/node_modules`);
-  } catch (err) {
-    return `could not clear the dangling links in ${path}/node_modules before installing: ${firstLine(err)}`;
-  }
+  const facts = { fs, path, repoRoot, declared, missing };
+  const cleared = clearedBeforeInstall(fs, path);
+  if (cleared !== null) return cleared;
   try {
     install({ cwd: path, args: installArgs(fs, path) });
   } catch (err) {
-    const unpublished = unpublishedDeclared(err, declared);
-    if (unpublished !== null) return startWithoutThem({ fs, path, repoRoot, unpublished });
-    return `\`pnpm install\` in ${path} failed (${herdrReason(err)}); ${lacks}`;
+    return installFailed(facts, err);
   }
-  const absent = declared.filter((name) => !fs.existsSync(`${path}/node_modules/${name}`));
-  return absent.length === 0 ? null : `\`pnpm install\` in ${path} finished without ${namedList(absent)}; ${lacks}`;
+  return installFinished(facts);
 }
+
+/** The shared facts of {@link installIntoTree} and its async form: the tree, the clone it takes packages from, what the tree declares and what the clone lacks. */
+export type TreeInstallFacts = { fs: LinkFs; path: string; repoRoot: string; declared: string[]; missing: string[]; };
+
+/** The refusal when the tree's dangling links could not be cleared before the install, else `null`. */
+export function clearedBeforeInstall(fs: LinkFs, path: string): string | null {
+  try {
+    clearDanglingLinks(fs, `${path}/node_modules`);
+    return null;
+  } catch (err) {
+    return `could not clear the dangling links in ${path}/node_modules before installing: ${firstLine(err)}`;
+  }
+}
+
+/** The answer when `pnpm install` threw `err`: the tree starts without packages no registry holds, or the install is refused naming the hand remedy. */
+export function installFailed({ fs, path, repoRoot, declared, missing }: TreeInstallFacts, err: unknown): LinkResult {
+  const unpublished = unpublishedDeclared(err, declared);
+  if (unpublished !== null) return startWithoutThem({ fs, path, repoRoot, unpublished });
+  return `\`pnpm install\` in ${path} failed (${herdrReason(err)}); ${lacksText({ fs, path, repoRoot, missing })}`;
+}
+
+/** The answer when `pnpm install` ran: `null` when every declared package is in the tree, else the refusal naming those it finished without. */
+export function installFinished({ fs, path, repoRoot, declared, missing }: TreeInstallFacts): LinkResult {
+  const absent = declared.filter((name) => !fs.existsSync(`${path}/node_modules/${name}`));
+  return absent.length === 0 ? null : `\`pnpm install\` in ${path} finished without ${namedList(absent)}; ${lacksText({ fs, path, repoRoot, missing })}`;
+}
+
+/** What the clone lacks and how to supply it, the tail of every install refusal. */
+const lacksText = ({ fs, path, repoRoot, missing }: { fs: LinkFs; path: string; repoRoot: string; missing: string[]; }): string =>
+  `${repoRoot}/node_modules lacks ${namedList(missing)}, which ${path}/package.json declares; supply `
+  + `${missing.length === 1 ? "it" : "them"} with ${supplyCommand({ fs, path, repoRoot })}`;
 
 /** pnpm's store, `.bin`'s own referent: its shims compute `basedir` from `$0` without following the symlink, so a linked `.bin` without it points at nothing (#3728). */
 const PNPM_STORE = ".pnpm";
@@ -392,17 +417,23 @@ const PNPM_STORE = ".pnpm";
  * THE CLONE IS NEVER WRITTEN: the objection to the tick fetching from a registry was to a clone every reviewer shares, and the tree is not one.
  */
 export function linkKeyedDependencies({ path, repoRoot, fs = REAL_LINK_FS, install = defaultInstall }: { path: string; repoRoot: string; fs?: LinkFs; install?: TreeInstall; }): LinkResult {
+  const plan = keyedPlan(fs, path, repoRoot);
+  if ("answer" in plan) return plan.answer;
+  if (plan.missing.length > 0) return installIntoTree({ fs, path, repoRoot, declared: plan.names, missing: plan.missing, install });
+  return linkCloneEntries({ fs, path, modules: plan.modules });
+}
+
+/** What {@link linkKeyedDependencies} does before it installs or links: the answer when the manifest cannot be read, else the names the tree declares and those the clone lacks. */
+export function keyedPlan(fs: LinkFs, path: string, repoRoot: string): { answer: LinkResult; } | { names: string[]; missing: string[]; modules: string; } {
   const modules = `${repoRoot}/node_modules`;
   const declared = declaredPackages(fs, path);
-  if ("unreadable" in declared) return declared.unreadable;
+  if ("unreadable" in declared) return { answer: declared.unreadable };
   const names = Object.keys(declared.packages);
-  const missing = names.filter((name) => !fs.existsSync(`${modules}/${name}`));
-  if (missing.length > 0) return installIntoTree({ fs, path, repoRoot, declared: names, missing, install });
-  return linkCloneEntries({ fs, path, modules });
+  return { names, missing: names.filter((name) => !fs.existsSync(`${modules}/${name}`)), modules };
 }
 
 /** Link every entry of the clone's `node_modules` into the tree's, but for its dotfiles ({@link PNPM_STORE} and `.bin` excepted); `null` when it has none. */
-function linkCloneEntries({ fs, path, modules }: { fs: LinkFs; path: string; modules: string; }): string | null {
+export function linkCloneEntries({ fs, path, modules }: { fs: LinkFs; path: string; modules: string; }): string | null {
   if (!fs.existsSync(modules)) return null;
   try {
     fs.mkdirSync(`${path}/node_modules`, { recursive: true });
@@ -432,7 +463,7 @@ export type CheckoutDeps = {git?: (cmd: string, args: string[], opts?: object) =
  * The filesystem calls {@link linkReviewDependencies} makes, so a test can hand it a fake; the default is the real one.
  */
 export type LinkFs = Pick<typeof import("node:fs"), "existsSync" | "readFileSync" | "mkdirSync" | "readdirSync" | "lstatSync" | "readlinkSync" | "symlinkSync" | "rmSync">;
-const REAL_LINK_FS: LinkFs = { existsSync, readFileSync, mkdirSync, readdirSync, lstatSync, readlinkSync, symlinkSync, rmSync };
+export const REAL_LINK_FS: LinkFs = { existsSync, readFileSync, mkdirSync, readdirSync, lstatSync, readlinkSync, symlinkSync, rmSync };
 
 /**
  * Make `link` a symlink to `target`: nothing when it already is one, a replacement for anything else. Only ever called with a
@@ -683,29 +714,22 @@ export function prepareReviewCheckout({ pr, session, trust = INSIDE, git = defau
   const { repoRoot, ref: refOf, linkDependencies } = where;
   const ref = refOf(pr);
   try {
-    git("git", ["-C", repoRoot, "fetch", "--quiet", "origin", `+refs/pull/${pr}/head:${ref}`]);
-    const head = git("git", ["-C", repoRoot, "rev-parse", "--verify", ref]).trim();
-    if (exists(path)) git("git", ["-C", path, "checkout", "--quiet", "--detach", head]);
+    git("git", ["-C", repoRoot, ...REVIEW_GIT.fetch(pr, ref)]);
+    const head = git("git", ["-C", repoRoot, ...REVIEW_GIT.head(ref)]).trim();
+    if (exists(path)) git("git", ["-C", path, ...REVIEW_GIT.detach(head)]);
     // `worktree add` makes the missing parents of `path`, so the first tree needs no directory made for it.
-    else git("git", ["-C", repoRoot, "worktree", "add", "--quiet", "--force", "--detach", path, head]);
-    const at = git("git", ["-C", path, "rev-parse", "HEAD"]).trim();
-    if (at !== head || !exists(path)) return { refusal: `no review checkout: ${path} is at ${at || "nothing"}, not PR #${pr}'s head ${head}` };
+    else git("git", ["-C", repoRoot, ...REVIEW_GIT.add(path, head)]);
+    const at = git("git", ["-C", path, ...REVIEW_GIT.at()]).trim();
+    const moved = checkoutMismatch({ pr, path, head, at, present: () => exists(path) });
+    if (moved !== null) return moved;
     // #1311: AN OUTSIDE TREE GETS NO DEPENDENCIES. `linkDependencies` puts the host's `node_modules` under the tree, and a stranger's pull request
     // has no business being run against them: the outside reviewer reads the text and runs nothing, so nothing here is linked for it.
     if (trust === OUTSIDE) return { path, head, note: OUTSIDE_CHECKOUT_NOTE };
-    const unlinked = linkDependencies({ path, repoRoot });
-    if (typeof unlinked === "string") return { refusal: `no review dependencies for PR #${pr} at ${path} (${unlinked})` };
-    return unlinked === null ? { path, head } : { path, head, note: unlinked.note };
+    return linkedCheckout({ pr, path, head }, linkDependencies({ path, repoRoot }));
   } catch (err) {
-    return { refusal: `no review checkout for PR #${pr} at ${path} (${firstLine(err)})` };
+    return checkoutRefusal(pr, path, err);
   }
 }
-
-/**
- * What an outside reviewer's checkout says in its prompt in place of the dependencies line: nothing is linked and nothing is run, so the
- * Acceptance is read for what it asks, and not run (#1311).
- */
-const OUTSIDE_CHECKOUT_NOTE = "Nothing is linked in this checkout and nothing in it is run: the pull request is read, so the Acceptance is read for what it asks and is not run.";
 
 /**
  * #2827: {@link removeReviewCheckout}'s one `git worktree remove`, WITH its line -- `removing` BEFORE the delete, `removed` or
@@ -719,10 +743,10 @@ function removeLoggedCheckout({ path, session, git, repoRoot, record }: {
         path: string; session: string; git: NonNullable<CheckoutDeps["git"]>; repoRoot: string;
         record: typeof recordRemoval;
     }) {
-  const line = { path, caller: "wake.ts removeReviewCheckout", reason: `the reviewer instance ${session} ended (#2401)` };
+  const line = removalLine(path, session);
   record({ ...line, event: "removing" });
   try {
-    git("git", ["-C", repoRoot, "worktree", "remove", "--force", path]);
+    git("git", ["-C", repoRoot, ...REVIEW_GIT.remove(path)]);
   } catch (cause) {
     record({ ...line, event: "failed", detail: firstLine(cause) });
     throw cause;
@@ -746,7 +770,7 @@ export function removeReviewCheckout({ pr, session, key = "", git = defaultGit, 
   try {
     if (exists(path)) removeLoggedCheckout({ path, session, git, repoRoot, record });
     if (exists(path)) return `${path} is still there after \`git worktree remove\``;
-    git("git", ["-C", repoRoot, "update-ref", "-d", reviewRef(pr, key)]);
+    git("git", ["-C", repoRoot, ...REVIEW_GIT.dropRef(reviewRef(pr, key))]);
     return null;
   } catch (err) {
     return `could not remove ${path} (${firstLine(err)})`;
@@ -846,36 +870,60 @@ export function spawnReviewer(order: { session: string; cause?: string; causeKey
         registry?: Record<string, ReviewerEntry>; codexConfig?: () => string | null; token?: (tree: string) => string | null;
     }): { label: string; workspace: string; profile: { kind: string; model: string; effort: string; }; } |
 { refusal: string; } {
-  // #1311: AN ORDER THAT DOES NOT SAY WHETHER ITS PULL REQUEST IS INSIDE IS NOT STARTED. The trust is decided where the order is made (`review-trust.ts`);
-  // a spawn that found it missing would be deciding it itself, and it must not be the default.
-  if (order.trust !== INSIDE && order.trust !== OUTSIDE) return { refusal: `no reviewer spawn for "${order.session}": the order does not say whether its pull request is inside the org` };
-  const reviewer = spawnableReviewer(order, agents, registry);
-  if ("refusal" in reviewer) return reviewer;
+  const start = reviewerToStart(order, agents, registry);
+  if ("refusal" in start) return start;
+  const reviewer = start;
   const outside = order.trust === OUTSIDE;
   // agent-org#1348: THE TOKEN IS IN THE TREE BEFORE THE PANE OPENS, so the reviewer reads it and never the key. An outside reviewer has no app.
   const minted = outside || token === undefined ? null : token(cwd);
-  if (minted !== null) return { refusal: `no reviewer spawn for "${reviewer.session}": ${minted}` };
-  const pane = openPane(run, reviewer.session, outside ? outsideReviewerEnvironment(reviewer.session, reviewedRepositoryOf(reviewer.session))
-    : reviewerEnvironment(reviewer.session, env, cwd), cwd, { tmpBase });
+  if (minted !== null) return mintedRefusal(reviewer.session, minted);
+  const pane = openPane(run, reviewer.session, paneEnvironment(reviewer.session, order.trust, env, cwd), cwd, { tmpBase });
   if ("refusal" in pane) return pane;
-  // #4888: THE DEPTH SETS THE EFFORT the reviewer is started with; absent, the cause's own profile is what it was.
-  const effort = depthEffort(order.reviewDepth);
-  const invocation = spawnInvocation({ ...order, cause: String(order.cause) }, reviewer.session, pane.pane, effort === undefined ? {} : { effort });
+  const invocation = startInvocation(order, reviewer.session, pane.pane);
   if ("refusal" in invocation) return { refusal: `${invocation.refusal}${closedNote(run, pane.workspace)}` };
-  // #1311: AN OUTSIDE REVIEWER IS STARTED IN A READ-ONLY SANDBOX, and only codex has the sandbox pair `outsideReviewArgs` replaces. A profile that is not
-  // codex, or one with no sandbox to replace, is refused here rather than started with the sandbox it came with.
-  const sandboxed = invocation.args.some((arg) => arg.startsWith("sandbox_mode="));
-  if (outside && (invocation.profile.kind !== "codex" || !sandboxed)) {
-    return { refusal: `no outside reviewer for "${reviewer.session}": its profile (${invocation.profile.kind}) cannot be started read-only${closedNote(run, pane.workspace)}` };
-  }
   try {
-    run(outside ? outsideReviewArgs(invocation.args) : invocation.args);
+    run(invocation.args);
   } catch (err) {
-    return { refusal: `${herdrStartRefusal(reviewer.session, err)}${codexTrustNote(reviewer.session, err, codexConfig)}`
-      + closedNote(run, pane.workspace) };
+    return { refusal: `${startRefusal(reviewer.session, err, codexConfig)}${closedNote(run, pane.workspace)}` };
   }
   return { label: reviewer.session, workspace: pane.workspace, profile: invocation.profile };
 }
+
+/**
+ * The first half of a reviewer's start, shared with the async form: the session to start, or the refusal. PURE but for the registry read.
+ * #1311: AN ORDER THAT DOES NOT SAY WHETHER ITS PULL REQUEST IS INSIDE IS NOT STARTED. The trust is decided where the order is made (`review-trust.ts`);
+ * a spawn that found it missing would be deciding it itself, and it must not be the default.
+ */
+export function reviewerToStart(order: { session: string; cause?: string; causeKey?: string; trust?: ReviewTrust; }, agents: { label: string; status: string; }[], registry?: Record<string, ReviewerEntry>): { session: string; } | { refusal: string; } {
+  if (order.trust !== INSIDE && order.trust !== OUTSIDE) return { refusal: `no reviewer spawn for "${order.session}": the order does not say whether its pull request is inside the org` };
+  const reviewer = spawnableReviewer(order, agents, registry);
+  return reviewer;
+}
+
+/** The environment the reviewer's pane opens with: the outside reviewer's own, or the inside one's with the checkout. */
+export const paneEnvironment = (session: string, trust: ReviewTrust | undefined, env: Record<string, string> | undefined, cwd: string): Record<string, string> =>
+  (trust === OUTSIDE ? outsideReviewerEnvironment(session, reviewedRepositoryOf(session)) : reviewerEnvironment(session, env, cwd));
+
+/**
+ * The `agent start` call for the pane just opened, or the refusal (without the clause that names the workspace it closed, which the caller appends).
+ * #4888: THE DEPTH SETS THE EFFORT the reviewer is started with; absent, the cause's own profile is what it was.
+ * #1311: AN OUTSIDE REVIEWER IS STARTED IN A READ-ONLY SANDBOX, and only codex has the sandbox pair `outsideReviewArgs` replaces. A profile that is not
+ * codex, or one with no sandbox to replace, is refused here rather than started with the sandbox it came with.
+ */
+export function startInvocation(order: { cause?: string; reviewDepth?: Depth; session: string; causeKey?: string; trust?: ReviewTrust; }, session: string, pane: string): { args: string[]; profile: { kind: string; model: string; effort: string; }; } | { refusal: string; } {
+  const effort = depthEffort(order.reviewDepth);
+  const invocation = spawnInvocation({ ...order, cause: String(order.cause) }, session, pane, effort === undefined ? {} : { effort });
+  if ("refusal" in invocation) return invocation;
+  const sandboxed = invocation.args.some((arg) => arg.startsWith("sandbox_mode="));
+  const outside = order.trust === OUTSIDE;
+  if (outside && (invocation.profile.kind !== "codex" || !sandboxed)) {
+    return { refusal: `no outside reviewer for "${session}": its profile (${invocation.profile.kind}) cannot be started read-only` };
+  }
+  return { args: outside ? outsideReviewArgs(invocation.args) : invocation.args, profile: invocation.profile };
+}
+
+/** The refusal when herdr would not start the agent, with codex's trust note when that is the cause. */
+export const startRefusal = (session: string, err: unknown, codexConfig?: () => string | null): string => `${herdrStartRefusal(session, err)}${codexTrustNote(session, err, codexConfig)}`;
 
 /** Where codex reads its trust entries: `$CODEX_HOME/config.toml`, else `~/.codex/config.toml`. */
 const codexConfigPath = () => join(process.env.CODEX_HOME ?? join(homedir(), ".codex"), "config.toml");
@@ -1020,4 +1068,4 @@ export function registerReviewer(paths: { registry: string; }, session: string, 
 export const REVIEWER_DEAD_AFTER_TICKS = 3;
 
 export const defaultGit = (cmd: string, args: string[], opts?: object) =>
-  execFileSync(cmd, args, { encoding: "utf8", timeout: 30_000, ...opts, env: sandboxGitEnv() });
+  execFileSync(cmd, args, { encoding: "utf8", timeout: GIT_TIMEOUT_MS, ...opts, env: sandboxGitEnv() });

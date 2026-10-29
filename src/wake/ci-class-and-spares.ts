@@ -146,8 +146,14 @@ export function spareWorktrees({ role, rows, repoRoot, run = defaultGit }: { rol
  * It throws when git cannot read the tree, so a caller that removes a tree never removes one it could not inspect.
  */
 export function uncommittedPathsOf(path: string, git: (cmd: string, args: string[], opts?: object) => string = defaultGit): string[] {
-  return git("git", ["-C", path, "status", "--porcelain"]).split("\n").filter((line) => line !== "").map((line) => line.slice(3));
+  return uncommittedPathsIn(git("git", ["-C", path, ...UNCOMMITTED_STATUS]));
 }
+
+/** The `git` arguments that list a tree's uncommitted paths, after `-C <tree>`: shared with the async form (`reviewer-start-async.ts`). */
+export const UNCOMMITTED_STATUS = ["status", "--porcelain"];
+
+/** The paths `git status --porcelain` names. PURE. */
+export const uncommittedPathsIn = (porcelain: string): string[] => porcelain.split("\n").filter((line) => line !== "").map((line) => line.slice(3));
 
 /**
  * The facts `endFinishedSpares` reads through, every one injected so the tick's teardown is tested without a host. `heldRows` and `rowState` answer `null` when GitHub could not be asked -- never `[]`, never a state.

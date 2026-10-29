@@ -6,7 +6,8 @@
 // git-env scrubber and `claim-labels.ts` only, so `work-gate.ts` -- which runs before any `pnpm install` -- and
 // `wake.ts` can both import it without one importing the other). `wake.ts` is not importable from a leaf: it
 // already imports `claim-stall.ts` (line 76 there), and a leaf that imported its own importer would be a cycle.
-// So this file is the shared home instead: `node:*` and the pure `derived-name.ts` (itself `node:*` only) only, importable from both.
+// So this file is the shared home instead: `node:*`, the pure `derived-name.ts` (itself `node:*` only) and, for the async forms (A11-379), `plugins/real-seams.ts` (which reaches `node:*` and two leaf modules, `private-tmp.ts` and
+// `ticket-mode/call-outcomes.ts`) only, importable from both.
 //
 // THE CALLS THAT OPEN A WORKSPACE, START AN AGENT IN IT AND CLOSE IT LIVE HERE TOO (`openPane`, `agentStartArgs`, `closedNote`, with the
 // `herdrReason` they quote a failure through), moved out of `wake.ts` unchanged so that ticket mode (`src/ticket-mode/`) runs the same
@@ -19,6 +20,8 @@
 // package, not copied in from outside it), so it sits beside `claim-labels.ts` and `project-vocabulary.ts` instead.
 import { execFileSync } from "node:child_process";
 import { HERDR_AGENT_RULE, derivedName } from "./derived-name.ts";
+import type { ExecResult } from "./plugins/manifest.ts";
+import { realExecAsync } from "./plugins/real-seams.ts";
 import { privateTmpEnv, TMPDIR_ENV } from "./session-tmp.ts";
 
 /** The herdr session the org runs in, and the default of every call in this file. */
@@ -51,8 +54,34 @@ export function herdrRun(args: string[], timeout: number = 30_000): string {
   }
 }
 
+/**
+ * {@link herdrRun} without holding the loop (A11-379): the same program, bound and stderr rule, run through `realExecAsync` so the event loop goes on while herdr answers. It resolves stdout. A non-zero exit, a
+ * timeout or a herdr that cannot start rejects with {@link programFailure}'s error, and a refusal's stderr is written to this process's stderr unless it holds a {@link GONE_CODES} code.
+ */
+export async function herdrRunAsync(args: string[], timeout: number = 30_000): Promise<string> {
+  const answer = await realExecAsync("herdr", args, { timeoutMs: timeout });
+  if (answer.status === 0) return answer.stdout;
+  const failure = programFailure("herdr", args, answer);
+  const stderr = failure.stderr ?? "";
+  if (stderr && !GONE_CODES.some((code) => stderr.includes(code))) process.stderr.write(stderr);
+  throw failure;
+}
+
+/**
+ * The error a program that did not succeed is rejected with, in the shape `execFileSync` throws it. A non-zero exit, or an end by a signal, is `Command failed: <argv>` and then the child's stderr, with `status`, `stdout`
+ * and `stderr` on the error. A program that could not start, or was cut at its bound, has the reason ALONE as its message (`spawn herdr ETIMEDOUT`) and no `stderr` property, as the synchronous form's error has none:
+ * the callers that quote a reason (`herdrReason`, `firstLine`, the door's `err.stderr ?? err.message`) then quote the reason and not the argv. PURE.
+ */
+export function programFailure(file: string, args: readonly string[], answer: ExecResult): Error & { status: number | null; stdout: string; stderr?: string; } {
+  if (answer.spawnError !== undefined) return Object.assign(new Error(answer.spawnError), { status: answer.status, stdout: answer.stdout });
+  return Object.assign(new Error(`Command failed: ${file} ${args.join(" ")}\n${answer.stderr}`), { status: answer.status, stdout: answer.stdout, stderr: answer.stderr });
+}
+
 /** @param {string[]} args */
 const defaultRun = (args: string[]) => herdrRun(args);
+
+/** The default of the async reads, the way {@link defaultRun} is the default of the synchronous ones. */
+const defaultRunAsync = (args: string[]) => herdrRunAsync(args);
 
 /** Where the paneless line goes by default: the stderr the gate's own `GATE:` lines go to. */
 const defaultSay = (line: string) => process.stderr.write(`${line}\n`);
@@ -81,24 +110,51 @@ const panelessSaid = new WeakMap<(line: string) => void, string>();
 export function readAgents(run: (args: string[]) => string = defaultRun, { session = ORG_SESSION, say = defaultSay }: SessionOption & { say?: (line: string) => void; } = {}): ListedAgent[] | null {
   let raw;
   try {
-    raw = run(["--session", session, "workspace", "list"]);
+    raw = run(listArgs(session));
   } catch {
     return null;
   }
-  let agents: ListedAgent[];
-  let panes: Map<string, string>;
-  try {
-    const parsed = JSON.parse(raw);
-    const workspaces = parsed?.result?.workspaces;
-    if (!Array.isArray(workspaces)) return null;
-    agents = workspaces.map((w) => ({ label: String(w.label ?? ""), status: String(w.agent_status ?? "unknown"), ...(typeof w?.workspace_id === "string" ? { workspace: w.workspace_id } : {}) }));
-    panes = new Map(workspaces.flatMap((w): [string, string][] => (typeof w?.workspace_id === "string" ? [[String(w.label ?? ""), rootPaneOf(w.workspace_id)]] : [])));
-  } catch {
-    return null;
-  }
+  const listing = parseListing(raw);
+  if (listing === null) return null;
+  const { agents, panes } = listing;
   if (agents.some((a) => a.status === "unknown")) markPaneless(agents, panes, run, session);
   sayPaneless(agents.filter((a) => a.paneless === true), say);
   return agents;
+}
+
+/**
+ * {@link readAgents} without holding the loop (A11-379): the same answers (`null` and `[]` kept distinct, `paneless` marked, the paneless line said once per change), over an async runner.
+ * The parsing and the marking rule are the synchronous form's own; only the awaited calls are written twice. The pane reads go one after another, as they do there.
+ */
+export async function readAgentsAsync(run: (args: string[]) => Promise<string> = defaultRunAsync, { session = ORG_SESSION, say = defaultSay }: SessionOption & { say?: (line: string) => void; } = {}): Promise<ListedAgent[] | null> {
+  let raw;
+  try {
+    raw = await run(listArgs(session));
+  } catch {
+    return null;
+  }
+  const listing = parseListing(raw);
+  if (listing === null) return null;
+  const { agents, panes } = listing;
+  if (agents.some((a) => a.status === "unknown")) await markPanelessAsync(agents, panes, run, session);
+  sayPaneless(agents.filter((a) => a.paneless === true), say);
+  return agents;
+}
+
+/** The arguments of the one listing call. */
+const listArgs = (session: string) => ["--session", session, "workspace", "list"];
+
+/** Herdr's `workspace list` answer as the agents it lists and each one's root pane, or `null` when it is not a listing. PURE. */
+function parseListing(raw: string): { agents: ListedAgent[]; panes: Map<string, string> } | null {
+  try {
+    const workspaces = JSON.parse(raw)?.result?.workspaces;
+    if (!Array.isArray(workspaces)) return null;
+    const agents = workspaces.map((w) => ({ label: String(w.label ?? ""), status: String(w.agent_status ?? "unknown"), ...(typeof w?.workspace_id === "string" ? { workspace: w.workspace_id } : {}) }));
+    const panes = new Map(workspaces.flatMap((w): [string, string][] => (typeof w?.workspace_id === "string" ? [[String(w.label ?? ""), rootPaneOf(w.workspace_id)]] : [])));
+    return { agents, panes };
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -144,15 +200,39 @@ function markPaneless(agents: ListedAgent[], panes: Map<string, string>, run: (a
   }
 }
 
+/** {@link markPaneless} over an async runner: the same agents, the same rule, one read at a time. */
+async function markPanelessAsync(agents: ListedAgent[], panes: Map<string, string>, run: (args: string[]) => Promise<string>, session: string): Promise<void> {
+  for (const agent of agents) {
+    const pane = panes.get(agent.label);
+    if (agent.status === "unknown" && pane !== undefined && await paneNotFoundAsync(run, pane, session)) agent.paneless = true;
+  }
+}
+
+/** The arguments of the one pane read that tells a pane is gone. */
+const paneReadArgs = (pane: string, session: string) => ["--session", session, "pane", "read", pane, "--source", "visible"];
+
 /** Whether `herdr pane read` says the pane does not exist. Anything else (readable, or herdr failing for another reason) is `false`. */
 function paneNotFound(run: (args: string[]) => string, pane: string, session: string): boolean {
   try {
-    run(["--session", session, "pane", "read", pane, "--source", "visible"]);
+    run(paneReadArgs(pane, session));
     return false;
   } catch (err) {
-    return `${(err as any)?.stderr ?? ""}${(err as any)?.stdout ?? ""}${(err as any)?.message ?? ""}`.includes("pane_not_found");
+    return refusesPane(err);
   }
 }
+
+/** {@link paneNotFound} over an async runner. */
+async function paneNotFoundAsync(run: (args: string[]) => Promise<string>, pane: string, session: string): Promise<boolean> {
+  try {
+    await run(paneReadArgs(pane, session));
+    return false;
+  } catch (err) {
+    return refusesPane(err);
+  }
+}
+
+/** Whether a failed `pane read` named `pane_not_found` in its stderr, stdout or message. */
+const refusesPane = (err: unknown): boolean => `${(err as any)?.stderr ?? ""}${(err as any)?.stdout ?? ""}${(err as any)?.message ?? ""}`.includes("pane_not_found");
 
 /**
  * Each listed agent's CLAUDE SESSION ID by name (`herdr agent list`: `name`, and `agent_session.value`, which is a new id after a restart), or `null`
@@ -291,23 +371,53 @@ export function agentStartArgs(name: string, kind: string, pane: string, agentTa
  * @param [cwd] the directory the pane's shell starts in
  */
 export function openPane(run: (args: string[]) => string, label: string, env: Record<string, string>, cwd?: string, { session = ORG_SESSION, tmpBase }: PaneOption = {}): { pane: string; workspace: string; } | { refusal: string; } {
-  const tmp = env[TMPDIR_ENV] === undefined ? privateTmpEnv(tmpBase, label) : { env: {} };
-  if (tmp.refusal !== undefined) defaultSay(`${label} was started without a private TMPDIR: ${tmp.refusal}`);
+  const create = paneCreateArgs(label, env, cwd, { session, tmpBase });
   let created;
   try {
-    created = JSON.parse(run(["--session", session, "workspace", "create", "--label", label, "--no-focus",
-      ...(cwd === undefined ? [] : ["--cwd", cwd]),
-      ...Object.entries({ ...env, ...tmp.env }).flatMap(([key, value]) => ["--env", `${key}=${value}`])]));
+    created = JSON.parse(run(create));
   } catch (err) {
-    return { refusal: `herdr could not open a pane for "${label}" (${herdrReason(err)})` };
+    return paneRefusal(label, err);
   }
+  const opened = openedPane(created, label);
+  if (!("refusal" in opened)) return opened;
+  return { refusal: `${opened.refusal}${opened.workspace === undefined ? "" : closedNote(run, opened.workspace, { session })}` };
+}
+
+/** {@link openPane} without holding the loop (A11-379): the same call, the same answers, over an async runner. */
+export async function openPaneAsync(run: (args: string[]) => Promise<string>, label: string, env: Record<string, string>, cwd?: string, { session = ORG_SESSION, tmpBase }: PaneOption = {}): Promise<{ pane: string; workspace: string; } | { refusal: string; }> {
+  const create = paneCreateArgs(label, env, cwd, { session, tmpBase });
+  let created;
+  try {
+    created = JSON.parse(await run(create));
+  } catch (err) {
+    return paneRefusal(label, err);
+  }
+  const opened = openedPane(created, label);
+  if (!("refusal" in opened)) return opened;
+  return { refusal: `${opened.refusal}${opened.workspace === undefined ? "" : await closedNoteAsync(run, opened.workspace, { session })}` };
+}
+
+/** The `workspace create` call for `label`: the pane's private `TMPDIR` is made here (said on stderr when it cannot be), and named in the pane's environment. */
+function paneCreateArgs(label: string, env: Record<string, string>, cwd: string | undefined, { session, tmpBase }: { session: string; tmpBase?: string }): string[] {
+  const tmp = env[TMPDIR_ENV] === undefined ? privateTmpEnv(tmpBase, label) : { env: {} };
+  if (tmp.refusal !== undefined) defaultSay(`${label} was started without a private TMPDIR: ${tmp.refusal}`);
+  return ["--session", session, "workspace", "create", "--label", label, "--no-focus",
+    ...(cwd === undefined ? [] : ["--cwd", cwd]),
+    ...Object.entries({ ...env, ...tmp.env }).flatMap(([key, value]) => ["--env", `${key}=${value}`])];
+}
+
+/** The refusal for a `workspace create` herdr would not answer. */
+const paneRefusal = (label: string, err: unknown) => ({ refusal: `herdr could not open a pane for "${label}" (${herdrReason(err)})` });
+
+/**
+ * What `workspace create` answered: the pane and workspace, or a refusal. A WORKSPACE WITH NO PANE ID IS STILL A WORKSPACE, so the refusal names it (`workspace`) for the caller to close rather than leave behind: an
+ * unreadable answer is the one case where the thing to clean up is the thing we cannot describe. PURE.
+ */
+function openedPane(created: any, label: string): { pane: string; workspace: string; } | { refusal: string; workspace?: string; } {
   const pane = created?.result?.root_pane?.pane_id;
   const workspace = created?.result?.workspace?.workspace_id;
-  // A WORKSPACE WITH NO PANE ID IS STILL A WORKSPACE, so it is closed rather than left behind: an
-  // unreadable answer is the one case where the thing to clean up is the thing we cannot describe.
   if (typeof pane !== "string" || typeof workspace !== "string") {
-    return { refusal: `herdr's workspace for "${label}" named no pane`
-      + `${workspace ? closedNote(run, String(workspace), { session }) : ""}` };
+    return { refusal: `herdr's workspace for "${label}" named no pane`, ...(workspace ? { workspace: String(workspace) } : {}) };
   }
   return { pane, workspace };
 }
@@ -338,12 +448,26 @@ export function openPane(run: (args: string[]) => string, label: string, env: Re
 export function closedNote(run: (args: string[]) => string, workspace: string, { session = ORG_SESSION }: SessionOption = {}): string {
   try {
     run(["--session", session, "workspace", "close", workspace]);
-    return ` -- the workspace it opened (${workspace}) was closed`;
+    return closedClause(workspace);
   } catch (err) {
-    return ` -- AND the workspace it opened (${workspace}) could NOT be closed (${herdrReason(err)}): close `
-      + "it by hand, or that role reads `unknown` to every tick and is never woken again";
+    return notClosedClause(workspace, err);
   }
 }
+
+/** {@link closedNote} over an async runner. NEVER REJECTS, for the same reason. */
+export async function closedNoteAsync(run: (args: string[]) => Promise<string>, workspace: string, { session = ORG_SESSION }: SessionOption = {}): Promise<string> {
+  try {
+    await run(["--session", session, "workspace", "close", workspace]);
+    return closedClause(workspace);
+  } catch (err) {
+    return notClosedClause(workspace, err);
+  }
+}
+
+const closedClause = (workspace: string) => ` -- the workspace it opened (${workspace}) was closed`;
+
+const notClosedClause = (workspace: string, err: unknown) => ` -- AND the workspace it opened (${workspace}) could NOT be closed (${herdrReason(err)}): close `
+  + "it by hand, or that role reads `unknown` to every tick and is never woken again";
 
 /** Why herdr refused: it answers a refusal as JSON on stdout (`{"error":{"message":...}}`), which {@link herdrReason} (stderr) does not read. */
 export function herdrRefusal(err: unknown): string {
