@@ -44,6 +44,31 @@ export function saysNothingRemains(words: string): boolean {
   return clauses.some((clause) => NOTHING_REMAINS.has(clause)) && clauses.every((clause) => NOTHING_REMAINS.has(clause) || SAYS_DONE.has(clause));
 }
 
+/** A clause that says the ticket completes once pull requests have merged: `the ticket completes when both have merged`. */
+const COMPLETES_ON_MERGE = /^the ticket (?:completes|is complete|is completed|closes|is done|is finished) (?:when|once) .*\b(?:have|has|are|is) merged$/;
+/** A pull request's web address in a `Partial:` line: its dots are not clause breaks. */
+const PULL_URL = /https?:\/\/github\.com\/([\w.-]+\/[\w.-]+)\/pull\/(\d+)/gi;
+const PULL_REFERENCE = /(?<![\w/.#-])([\w.-]+\/[\w.-]+)#(\d+)\b/g;
+/** A `#<n>` that names no repository: it can be no recorded address, so a line that names one is never read as complete. */
+const BARE_REFERENCE = /(?<![\w.-])#\d+\b/g;
+
+/**
+ * Whether the words of a `Partial:` line say that the ticket completes once pull requests have merged (A11-394): `The ticket completes when both have merged.` describes the run's own pull requests, which is no work for
+ * a later run. A clause of the line (lower-cased, emphasis stripped, cut at each break, a pull request's address read whole) must say it; the other clauses do not change the answer. PURE.
+ */
+export function saysCompletesOnMerge(words: string): boolean {
+  const plain = words.toLowerCase().replace(/[*_`]/g, "").replace(/https?:\/\/[^\s,;()]*[^\s,;().]/g, "a pull request");
+  return plain.split(CLAUSE_END).some((clause) => COMPLETES_ON_MERGE.test(clause.trim()));
+}
+
+/** The addresses of the pull requests a `Partial:` line names, lower-cased: `https://github.com/<owner>/<repo>/pull/<n>` for a web address or an `<owner>/<repo>#<n>` reference, and a bare `#<n>` as it is. PURE. */
+export function pullsNamedIn(words: string): string[] {
+  const named = [...words.matchAll(PULL_URL)].map(([, repository, number]) => `https://github.com/${repository}/pull/${number}`);
+  const referenced = [...words.matchAll(PULL_REFERENCE)].map(([, repository, number]) => `https://github.com/${repository}/pull/${number}`);
+  const bare = words.match(BARE_REFERENCE) ?? [];
+  return [...new Set([...named, ...referenced, ...bare].map((url) => url.toLowerCase()))];
+}
+
 /** What a pull request's body declares of its ticket (A11-181): that it leaves `remains` to do, or that it completes the ticket. */
 export type Declaration = Readonly<{ kind: "partial"; remains: string } | { kind: "closes" }>;
 
