@@ -17,16 +17,16 @@ const PER_PULL_READ = /"pr",\s*"(?:view|list|diff)"|pullRequest\(number|\/pulls\
 
 /**
  * The modules that may, and why. A WRITE IS NOT A READ AND NEEDS NO LINE HERE (a line that edits, closes, merges or creates, or sends a method, is left out of the match). What is named is what reads a pull request by itself and cannot be the snapshot's:
- * the snapshot itself, the head's file behind `PullSnapshots.headHoldsMergeBot`, a merged pull request's diff (content, not state; REST, conditional), and the four operations the contract keeps SYNCHRONOUS (A11-356, `sync-gh-guard.test.ts`
- * lists them as `STILL_SYNCHRONOUS` and why: done on an event, not on every sweep), which a promise-answering snapshot cannot serve.
+ * the snapshot itself, the head's file behind `PullSnapshots.headHoldsMergeBot`, a merged pull request's diff (content, not state; REST, conditional), and the operations the board makes on an event, not on every sweep (A11-356, A11-395: they answer a promise
+ * from code host 4.0, each read of a pull request by itself, once), which a snapshot of the whole repository cannot serve.
  */
 const ALLOWED: Readonly<Record<string, string>> = {
   "pull-snapshot.ts": "the snapshot: the one query per repository, and the read by number of a pull request that is not open or was opened since, remembered",
   "merge-flow.ts": "the merge bot's file on a head (`refs/pull/<n>/head`), asked through `PullSnapshots.headHoldsMergeBot`, which asks once per head",
   "merged-findings.ts": "the diff of a merged pull request: the REST read of `pulls/<n>` asked for a diff, through the conditional reads, so it costs nothing after the first (a diff is content, not state, and is not in a snapshot)",
-  "closed-work.ts": "`readClosedWork`, synchronous in the contract (`STILL_SYNCHRONOUS`): read once for a pull request that was closed",
-  "stack-merge.ts": "`stackMergeFactsOf`, synchronous in the contract (`STILL_SYNCHRONOUS`): read for the approved and green pull requests of a stack",
-  "stack-retarget.ts": "`sweepRetargets`, synchronous in the contract (`STILL_SYNCHRONOUS`): read for the finished runs stacked on a blocker's branch",
+  "closed-work.ts": "`readClosedWork`, done on an event: read once for a pull request that was closed",
+  "stack-merge.ts": "`stackMergeFactsOf`, done on an event: read for the approved and green pull requests of a stack",
+  "stack-retarget.ts": "`sweepRetargets`, done on an event: read for the finished runs stacked on a blocker's branch",
   "stack-live-check.ts": "the live check of the stacked retarget, a command a person runs on a real repository, which reads back the pull requests it just made",
 };
 

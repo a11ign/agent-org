@@ -1,7 +1,7 @@
 // no-token: none -- the sync and the async form of each operation run over the same canned `gh` answers: no GitHub CLI runs
 //
 // A11-395: the operations the board makes on an event (a merge queue removal, a red check, a branch that fell behind, a stack to merge, a pull request to close) each gain an async form that runs `gh` through
-// `deps.execAsync`. Until the code host hands them out (the contract major of step 2) nothing calls them, so what holds them to the sync form is this file: for every pair, the same `gh` calls in the same order,
+// `deps.execAsync`. The code host hands them out from contract 4.0 (step 2) and the synchronous forms keep the unit tests of each module, so what holds the two to one another is this file: for every pair, the same `gh` calls in the same order,
 // and the same answer (or the same refusal), for the success and for each refusal or `null` the sync form's own tests cover.
 import { test } from "node:test";
 import assert from "node:assert/strict";

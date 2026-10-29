@@ -212,7 +212,7 @@ test("A11-300: the test a failing check names is the first failing test of its l
 
 // A check red elsewhere (A11-179) beside the code's own: the rerun's record is not replaced by the hold.
 const FOREIGN_JOB = "https://github.com/a11ign/agent-org/actions/runs/40382975999/job/9";
-const onMain: ForeignReds = () => ({ names: new Set(["ui"]), onMain: new Set(["ui"]), mainPassing: null, mainPending: null, mainBranch: "main" });
+const onMain: ForeignReds = async () => ({ names: new Set(["ui"]), onMain: new Set(["ui"]), mainPassing: null, mainPending: null, mainBranch: "main" });
 
 test("A11-300: a rerun still under way keeps its record when only a check red on main is red meanwhile, so the rerun is neither made again nor forgotten", async () => {
   const { host, ctx, entry, recorded, clock } = world();

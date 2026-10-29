@@ -142,7 +142,7 @@ test("A11-291: what the host last said of a repository's flow is kept when a lat
   await watchAt({ clock, pool }, 16);
   const reason = "a11ign/plugin has no merge flow: auto-merge is not allowed, no .github/workflows/auto-arm.yml";
   assert.equal(entry().pullHeads?.[PR]?.notMerging, reason);
-  host.readMergeFlow = () => null;
+  host.readMergeFlow = async () => null;
   await watchAt({ clock, pool }, 30);
   assert.equal(entry().pullHeads?.[PR]?.notMerging, reason, "a read that fails keeps what was known");
   host.readMergeFlow = () => { throw new Error("gh hung"); };

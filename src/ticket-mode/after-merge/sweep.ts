@@ -142,7 +142,7 @@ async function ciFailures(ctx: PoolContext, repository: string, workflow: string
     const key = `${repository}#${run.id}`;
     let read = known.get(key);
     if (read === undefined) {
-      const ci = codeHost.readCiRun(repository, run.id);
+      const ci = await codeHost.readCiRun(repository, run.id);
       if (ci === null) return null;
       read = { name: ci.name, failure: ci.conclusion === "failure" ? { id: key, at: Date.parse(run.createdAt), text: `${ci.name} run ${ci.url} failed on ${branch ?? "main"}` } : null };
       known.set(key, read);
@@ -186,7 +186,9 @@ async function observeFacts(ctx: PoolContext, file: ChecksFile): Promise<Observe
   const doctor = sources.has("doctor") ? await hostDoctor(ctx) : null;
   // The code host answers a promise (contract 2.0) and the readers of the facts are pure, so what the open checks name is read here, once, before they look.
   const reviews = new Map(await Promise.all(watchedReviewUrls(file).map(async (url) => [url, await reviewOn(codeHost, url)] as const)));
-  const failures = new Map(await Promise.all(watchedCiHistories(file, installedReader(ctx)).map(async ({ repository, workflow, branch }) => [ciKey(repository, workflow, branch), await ciFailuresSaid(ctx, repository, workflow, branch)] as const)));
+  // One watch after another: they share what was read of a run, and a run is read once.
+  const failures = new Map<string, readonly Sighting[] | null>();
+  for (const { repository, workflow, branch } of watchedCiHistories(file, installedReader(ctx))) failures.set(ciKey(repository, workflow, branch), await ciFailuresSaid(ctx, repository, workflow, branch));
   return {
     dependencyTickets: watchesSweep(file) ? dependencyTickets(join(dirname(afterMergeChecksPath(settings.stateDir)), DEPENDENCY_TICKETS_FILE)) : null,
     queue: store.get(),

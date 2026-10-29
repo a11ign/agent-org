@@ -84,6 +84,16 @@ const BASE_ROWS_OPERATIONS = ["ticketAdapter", "latestApprovals", "approvalFacts
 const ROWS_OPERATIONS: readonly string[] = [...BASE_ROWS_OPERATIONS, ...TAIL_OPERATIONS];
 
 const OPERATIONS = ["repoViewArgs", "repoCloneArgs", "readOwnLogin", "readPullFeedback", "readReplies", "readReviewState", "readPullState", "openPullUrlsOf", "sweepRetargets", "readCheckLog", "rerunFailedChecks", "readReviewClaims", "writeReviewClaim", "readChange", "requestReview", "armMerge", "subscribe"] as const;
+/** Whether the call REJECTS, or throws before it answers a promise: how an operation of contract 4.0 refuses what it cannot do. */
+async function rejects(call: () => Promise<unknown>): Promise<boolean> {
+  try {
+    await call();
+    return false;
+  } catch {
+    return true;
+  }
+}
+
 const PULL_STATES = ["OPEN", "MERGED", "CLOSED"];
 
 const ALWAYS: Readonly<Record<string, (subject: Subject) => unknown>> = {
@@ -137,21 +147,21 @@ const ALWAYS: Readonly<Record<string, (subject: Subject) => unknown>> = {
     expect(Array.isArray(urls) && urls.every(isString), `openPullUrlsOf(${probe.repository}) must be a list of addresses`);
     expect(urls.includes(probe.pull), `openPullUrlsOf(${probe.repository}) must list the open pull request ${probe.pull}`);
   },
-  "sweepRetargets keeps the note of a pull request it cannot read": ({ host, probe }) => {
+  "sweepRetargets keeps the note of a pull request it cannot read": async ({ host, probe }) => {
     const note = "Needs retarget: kept from the last sweep";
-    const notes = host.sweepRetargets({ urls: [probe.missing], previous: { [probe.missing]: note }, stacked: new Set(["feature/base"]), defaults: new Map(), log: () => undefined });
+    const notes = await host.sweepRetargets({ urls: [probe.missing], previous: { [probe.missing]: note }, stacked: new Set(["feature/base"]), defaults: new Map(), log: () => undefined });
     expect(notes[probe.missing] === note, "sweepRetargets must keep the note a pull request had when it cannot be read, and ask again on the next sweep");
   },
-  "sweepRetargets with no pull requests has no notes": ({ host }) => {
-    const notes = host.sweepRetargets({ urls: [], previous: {}, stacked: new Set(), defaults: new Map(), log: () => undefined });
+  "sweepRetargets with no pull requests has no notes": async ({ host }) => {
+    const notes = await host.sweepRetargets({ urls: [], previous: {}, stacked: new Set(), defaults: new Map(), log: () => undefined });
     expect(isObject(notes) && Object.keys(notes).length === 0, "sweepRetargets of no pull requests must have no notes");
   },
-  "readCheckLog answers null for an address that names no job": ({ host }) => {
-    expect(host.readCheckLog("https://example.invalid/checks/not-a-job") === null, "readCheckLog must answer null for an address that names no job: null is never 'the log is empty'");
+  "readCheckLog answers null for an address that names no job": async ({ host }) => {
+    expect(await host.readCheckLog("https://example.invalid/checks/not-a-job") === null, "readCheckLog must answer null for an address that names no job: null is never 'the log is empty'");
   },
-  "rerunFailedChecks of no checks reruns nothing and says so": ({ host }) => {
-    expect(host.rerunFailedChecks([]) === null, "rerunFailedChecks of no addresses must answer null: there is nothing to refuse");
-    expect(host.rerunFailedChecks(["https://example.invalid/checks/not-a-job"]) === null, "rerunFailedChecks must leave out an address that names no run");
+  "rerunFailedChecks of no checks reruns nothing and says so": async ({ host }) => {
+    expect(await host.rerunFailedChecks([]) === null, "rerunFailedChecks of no addresses must answer null: there is nothing to refuse");
+    expect(await host.rerunFailedChecks(["https://example.invalid/checks/not-a-job"]) === null, "rerunFailedChecks must leave out an address that names no run");
   },
   "readReviewClaims answers the entries of a head, or why it could not": async ({ host, probe }) => {
     const read = await host.readReviewClaims(probe.repository, "0".repeat(40));
@@ -447,8 +457,8 @@ const CONDITIONAL: Readonly<Record<string, Conditional<Subject>>> = {
     expect(rows.queueEjectionOf({ ...queued("failed_checks"), mergeQueueEntry: { state: "QUEUED" } })?.ejected === false, "a pull request in the queue now is not ejected, whatever the history says");
     expect(rows.queueEjectionOf({}) === null && rows.queueEjectionOf(null) === null, "an answer with no history is null, never 'not ejected'");
   }),
-  "readCheckLog reads the log behind a failing check": withCheck("no check's log is read", ({ host, check }) => {
-    const log = host.readCheckLog(check.detailsUrl);
+  "readCheckLog reads the log behind a failing check": withCheck("no check's log is read", async ({ host, check }) => {
+    const log = await host.readCheckLog(check.detailsUrl);
     expect(isString(log) && log.includes(check.log), `readCheckLog(${check.detailsUrl}) must read the log the host holds`);
   }),
   "a claim written on a head is read back from it": withClaim("no claim is written", async ({ host, claim }) => {
@@ -482,12 +492,12 @@ const CONDITIONAL: Readonly<Record<string, Conditional<Subject>>> = {
   "readClosedWork answers null for a pull request it cannot read or that is open, and reads what a closed one still held": {
     applies: ({ host }) => typeof host.readClosedWork === "function",
     reason: "the code host has no readClosedWork, which is optional (contract 1.20)",
-    run: ({ host, probe }) => {
-      expect(host.readClosedWork!(probe.missing) === null, "readClosedWork must answer null for what it cannot read: null is never 'it held nothing'");
-      expect(host.readClosedWork!(probe.pull) === null, "readClosedWork must answer null for a pull request that is open, whose work is not final");
-      if (probe.merged !== undefined) expect(host.readClosedWork!(probe.merged) === null, "readClosedWork must answer null for a pull request that merged, whose work is on its base");
+    run: async ({ host, probe }) => {
+      expect(await host.readClosedWork!(probe.missing) === null, "readClosedWork must answer null for what it cannot read: null is never 'it held nothing'");
+      expect(await host.readClosedWork!(probe.pull) === null, "readClosedWork must answer null for a pull request that is open, whose work is not final");
+      if (probe.merged !== undefined) expect(await host.readClosedWork!(probe.merged) === null, "readClosedWork must answer null for a pull request that merged, whose work is on its base");
       if (probe.closed === undefined) return;
-      const held = host.readClosedWork!(probe.closed);
+      const held = await host.readClosedWork!(probe.closed);
       expect(isObject(held) && Number.isInteger(held.number) && held.url === probe.closed && isString(held.base) && isString(held.branch) && isString(held.head) && Array.isArray(held.commits) && Array.isArray(held.files) && typeof held.filesComplete === "boolean",
         `readClosedWork(${probe.closed}) must read { number, url, base, branch, head, commits, files, filesComplete }`);
       expect(held.commits.length > 0 && held.commits.every((commit) => isString(commit.sha) && isString(commit.subject)), "each commit must be { sha, subject }, and the probe's closed pull request holds one");
@@ -497,20 +507,20 @@ const CONDITIONAL: Readonly<Record<string, Conditional<Subject>>> = {
   "readDefaultBranchRed answers the checks failing on a default branch's head, and null for a repository it cannot read": {
     applies: ({ host }) => typeof host.readDefaultBranchRed === "function",
     reason: "the code host has no readDefaultBranchRed, which is optional (contract 1.13)",
-    run: ({ host, probe }) => {
-      const red = host.readDefaultBranchRed!(probe.repository);
+    run: async ({ host, probe }) => {
+      const red = await host.readDefaultBranchRed!(probe.repository);
       expect(red === null || (isObject(red) && isString(red.branch) && isString(red.head) && Array.isArray(red.failing) && red.failing.every(isString) && (red.passing === undefined || (Array.isArray(red.passing) && red.passing.every(isString)))), `readDefaultBranchRed(${probe.repository}) must read { branch, head, failing, passing? } or be null`);
-      expect(host.readDefaultBranchRed!("not a repository") === null, "readDefaultBranchRed must answer null for what it cannot read: null is never 'nothing is red'");
+      expect(await host.readDefaultBranchRed!("not a repository") === null, "readDefaultBranchRed must answer null for what it cannot read: null is never 'nothing is red'");
     },
   },
   "readQueueFailure answers null for what it cannot read, and reads the failing job behind a removal": {
     applies: ({ host }) => typeof host.readQueueFailure === "function",
     reason: "the code host has no readQueueFailure, which is optional (contract 1.21)",
-    run: ({ host, probe }) => {
-      expect(host.readQueueFailure!(probe.missing, "0".repeat(40)) === null, "readQueueFailure must answer null for what it cannot read: null is never 'no job failed'");
-      expect(host.readQueueFailure!(probe.pull, "0".repeat(40)) === null, "readQueueFailure must answer null for a merge group it holds no run of");
+    run: async ({ host, probe }) => {
+      expect(await host.readQueueFailure!(probe.missing, "0".repeat(40)) === null, "readQueueFailure must answer null for what it cannot read: null is never 'no job failed'");
+      expect(await host.readQueueFailure!(probe.pull, "0".repeat(40)) === null, "readQueueFailure must answer null for a merge group it holds no run of");
       if (probe.queueFailure === undefined) return;
-      const failure = host.readQueueFailure!(probe.pull, probe.queueFailure.groupCommit);
+      const failure = await host.readQueueFailure!(probe.pull, probe.queueFailure.groupCommit);
       expect(isObject(failure) && Number.isInteger(failure.runId) && isString(failure.runUrl) && Array.isArray(failure.jobs), `readQueueFailure(${probe.pull}) must read { runId, runUrl, jobs }`);
       expect(failure.jobs.every((job) => isString(job.name) && (job.step === null || isString(job.step)) && isString(job.detailsUrl)), "each job must be { name, step, detailsUrl }");
       expect(failure.jobs.some((job) => job.name === probe.queueFailure!.job), `readQueueFailure(${probe.pull}) must list the failing job ${probe.queueFailure.job}`);
@@ -519,41 +529,41 @@ const CONDITIONAL: Readonly<Record<string, Conditional<Subject>>> = {
   "holdFromQueue puts the hold on a pull request and takes it off, and throws for one it cannot read": {
     applies: ({ host }) => typeof host.holdFromQueue === "function",
     reason: "the code host has no holdFromQueue, which is optional (contract 1.21)",
-    run: ({ host, probe }) => {
-      expect(host.holdFromQueue!(probe.pull, true) === true, "holdFromQueue(url, true) must answer true once the hold is on");
-      expect(host.holdFromQueue!(probe.pull, false) === true, "holdFromQueue(url, false) must answer true once the hold is off");
-      expect(host.holdFromQueue!(probe.pull, false) === true, "taking off a hold that is not there must be done, not a refusal");
-      expect(throws(() => host.holdFromQueue!(probe.missing, true)), "holdFromQueue must throw for a pull request it cannot read, never answer as if the hold were on");
+    run: async ({ host, probe }) => {
+      expect(await host.holdFromQueue!(probe.pull, true) === true, "holdFromQueue(url, true) must answer true once the hold is on");
+      expect(await host.holdFromQueue!(probe.pull, false) === true, "holdFromQueue(url, false) must answer true once the hold is off");
+      expect(await host.holdFromQueue!(probe.pull, false) === true, "taking off a hold that is not there must be done, not a refusal");
+      expect(await rejects(() => host.holdFromQueue!(probe.missing, true)), "holdFromQueue must reject for a pull request it cannot read, never answer as if the hold were on");
     },
   },
   "updateBranch refuses an address that is no pull request, and never throws": {
     applies: ({ host }) => typeof host.updateBranch === "function",
     reason: "the code host has no updateBranch, which is optional (contract 1.15)",
-    run: ({ host }) => {
-      const answer = host.updateBranch!("not a pull request", "0".repeat(40));
-      expect(isObject(answer) && answer.kind === "refused" && isString(answer.reason) && answer.reason !== "", "updateBranch must answer { kind: \"refused\", reason } for what is no pull request of the host, not throw or say it updated");
+    run: async ({ host }) => {
+      const answer = await host.updateBranch!("not a pull request", "0".repeat(40));
+      expect(isObject(answer) && answer.kind === "refused" && isString(answer.reason) && answer.reason !== "", "updateBranch must answer { kind: \"refused\", reason } for what is no pull request of the host, not reject or say it updated");
     },
   },
   "closePull throws for an address that is no pull request, so no caller reads a refusal as a close": {
     applies: ({ host }) => typeof host.closePull === "function",
     reason: "the code host has no closePull, which is optional (contract 1.22)",
-    run: ({ host }) => {
-      expect(throws(() => host.closePull!("not a pull request", "closed by the conformance suite")), "closePull must throw for what is no pull request of the host, not answer as if it had closed it");
+    run: async ({ host }) => {
+      expect(await rejects(() => host.closePull!("not a pull request", "closed by the conformance suite")), "closePull must reject for what is no pull request of the host, not answer as if it had closed it");
     },
   },
   "commentOnPull throws for an address that is no pull request, so no caller reads a refusal as a post": {
     applies: ({ host }) => typeof host.commentOnPull === "function",
     reason: "the code host has no commentOnPull, which is optional (contract 1.26)",
-    run: ({ host }) => {
-      expect(throws(() => host.commentOnPull!("not a pull request", "posted by the conformance suite")), "commentOnPull must throw for what is no pull request of the host, not answer as if it had posted");
+    run: async ({ host }) => {
+      expect(await rejects(() => host.commentOnPull!("not a pull request", "posted by the conformance suite")), "commentOnPull must reject for what is no pull request of the host, not answer as if it had posted");
     },
   },
   "stackMergeFactsOf answers null for a pull request it cannot read, and says a pull request in no stack is not stacked": {
     applies: ({ host }) => typeof host.stackMergeFactsOf === "function",
     reason: "the code host has no stackMergeFactsOf, which is optional (contract 1.16)",
-    run: ({ host, probe }) => {
-      expect(host.stackMergeFactsOf!(probe.missing) === null, "stackMergeFactsOf must answer null for a pull request it cannot read: null is never 'it is not in a stack'");
-      const facts = host.stackMergeFactsOf!(probe.pull);
+    run: async ({ host, probe }) => {
+      expect(await host.stackMergeFactsOf!(probe.missing) === null, "stackMergeFactsOf must answer null for a pull request it cannot read: null is never 'it is not in a stack'");
+      const facts = await host.stackMergeFactsOf!(probe.pull);
       expect(isObject(facts) && facts.stacked === false && isString(facts.base) && isString(facts.defaultBranch) && isString(facts.head) && facts.settled === null && facts.refusal === null,
         `stackMergeFactsOf(${probe.pull}) must read { stacked: false, base, defaultBranch, head, settled: null, refusal: null } for an open pull request in no stack`);
     },
@@ -561,9 +571,9 @@ const CONDITIONAL: Readonly<Record<string, Conditional<Subject>>> = {
   "stackMergeFactsOf reads the refusal of the stack merge that the arm bot left on a stacked pull request": {
     applies: ({ host, probe }) => typeof host.stackMergeFactsOf === "function" && probe.stackRefusal !== undefined,
     reason: "the code host has no stackMergeFactsOf (optional, contract 1.16) or the probe names no stacked pull request with a refusal",
-    run: ({ host, probe }) => {
+    run: async ({ host, probe }) => {
       const { pull, head, reason } = probe.stackRefusal!;
-      const facts = host.stackMergeFactsOf!(pull);
+      const facts = await host.stackMergeFactsOf!(pull);
       expect(isObject(facts) && facts.stacked === true && facts.settled === null, `stackMergeFactsOf(${pull}) must read an open pull request in a stack as stacked and not settled`);
       expect(isObject(facts.refusal) && facts.refusal.head === head && isString(facts.refusal.reason) && facts.refusal.reason.includes(reason), `stackMergeFactsOf(${pull}) must read the refusal at ${head} with GitHub's reason`);
     },
@@ -571,19 +581,19 @@ const CONDITIONAL: Readonly<Record<string, Conditional<Subject>>> = {
   "requestStackMerge throws when the request is refused, so no caller reads it as made": {
     applies: ({ host, probe }) => typeof host.requestStackMerge === "function" && probe.stackRequestRefused !== undefined,
     reason: "the code host has no requestStackMerge (optional, contract 1.16) or the probe names no request it refuses",
-    run: ({ host, probe }) => expect(throws(() => host.requestStackMerge!(probe.stackRequestRefused!)), "requestStackMerge must throw for a request the host refuses: a hand-back that was not made is never done"),
+    run: async ({ host, probe }) => expect(await rejects(() => host.requestStackMerge!(probe.stackRequestRefused!)), "requestStackMerge must reject for a request the host refuses: a hand-back that was not made is never done"),
   },
   "readCiRun answers null for a run it cannot read": {
     applies: ({ host }) => typeof host.readCiRun === "function",
     reason: "the code host has no readCiRun, which is optional (contract 1.17)",
-    run: ({ host, probe }) => expect(host.readCiRun!(probe.repository, MISSING_RUN_ID) === null, "readCiRun must answer null for a run it cannot read: null is never 'it has not finished'"),
+    run: async ({ host, probe }) => expect(await host.readCiRun!(probe.repository, MISSING_RUN_ID) === null, "readCiRun must answer null for a run it cannot read: null is never 'it has not finished'"),
   },
   "readCiRun reads a workflow run's status, conclusion, address, name and jobs": {
     applies: ({ host, probe }) => typeof host.readCiRun === "function" && probe.ciRun !== undefined,
     reason: "the code host has no readCiRun (optional, contract 1.17) or the probe names no workflow run",
-    run: ({ host, probe }) => {
+    run: async ({ host, probe }) => {
       const { repository, runId } = probe.ciRun!;
-      const run = host.readCiRun!(repository, runId);
+      const run = await host.readCiRun!(repository, runId);
       expect(isObject(run) && CI_STATUSES.includes(run.status) && isString(run.url) && isString(run.name), `readCiRun(${repository}, ${runId}) must read { status: queued | in_progress | completed, conclusion, url, name, jobs }`);
       expect((run.status === "completed") === (isString(run.conclusion) && run.conclusion !== ""), "a run has a conclusion once it has completed, and has none before");
       expect(run.jobs === null || (isObject(run.jobs) && Number.isInteger(run.jobs.done) && Number.isInteger(run.jobs.total) && run.jobs.done >= 0 && run.jobs.done <= run.jobs.total && run.jobs.total >= 1), "jobs must be null (none listed) or { done, total } with done no more than total, and at least one job");
@@ -614,14 +624,14 @@ const CONDITIONAL: Readonly<Record<string, Conditional<Subject>>> = {
   "pullsNaming answers null for a repository it cannot read": {
     applies: ({ host }) => typeof host.pullsNaming === "function",
     reason: "the code host has no pullsNaming, which is optional (contract 1.18)",
-    run: ({ host, probe }) => expect(host.pullsNaming!("ZZZ-1", [probe.repository, MISSING_REPOSITORY]) === null, "pullsNaming must answer null when any repository cannot be read: null is never 'none names it'"),
+    run: async ({ host, probe }) => expect(await host.pullsNaming!("ZZZ-1", [probe.repository, MISSING_REPOSITORY]) === null, "pullsNaming must answer null when any repository cannot be read: null is never 'none names it'"),
   },
   "pullsNaming lists the pull requests that name a key, with their state": {
     applies: ({ host, probe }) => typeof host.pullsNaming === "function" && probe.named !== undefined,
     reason: "the code host has no pullsNaming (optional, contract 1.18) or the probe names no pull request that names a key",
-    run: ({ host, probe }) => {
+    run: async ({ host, probe }) => {
       const { key, repository, url, state } = probe.named!;
-      const found = host.pullsNaming!(key, [repository]);
+      const found = await host.pullsNaming!(key, [repository]);
       expect(Array.isArray(found), `pullsNaming(${key}, [${repository}]) must read a list`);
       const pull = found!.find((candidate) => candidate.url === url);
       expect(isObject(pull) && pull.repo === repository && pull.state === state && isString(pull.body), `pullsNaming(${key}, [${repository}]) must list ${url} as { url, repo: ${repository}, state: ${state}, body }`);

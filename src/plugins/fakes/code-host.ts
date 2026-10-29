@@ -64,7 +64,7 @@ function readsOf(pulls: Pulls, repositories: Set<string>, defaultBranches: Map<s
       return { state: pull.state, feedbackAt: null, failing: [], failures: [], failedAt: null, conflicting: false, mergeable: pull.merge.mergeable === true, head: pull.head, approvedAtHead,
         base: pull.base, files: pull.files, filesComplete: true, reviewDecision: null, verdictAtHead: verdictAtHead(pull, self), pendingRequired: [], body: pull.body ?? "", ...(pull.queue === undefined ? {} : { queue: pull.queue }), ...pull.feedback, authors };
     },
-    readDefaultBranchRed(repository) {
+    async readDefaultBranchRed(repository) {
       calls.push(`readDefaultBranchRed ${repository}`);
       return defaultBranches.get(repository) ?? null;
     },
@@ -103,7 +103,7 @@ function readsOf(pulls: Pulls, repositories: Set<string>, defaultBranches: Map<s
       return inRepository.flatMap(([url, pull]) => (pull.state === "open" && pull.dependency?.author === DEPENDENCY_PULL_AUTHOR
         ? [{ url, number: pull.number, title: pull.dependency.title, headRefName: pull.dependency.headRefName, headSha: pull.head, author: DEPENDENCY_PULL_AUTHOR, body: pull.body ?? "" }] : []));
     },
-    pullsNaming(key, repos) {
+    async pullsNaming(key, repos) {
       calls.push(`pullsNaming ${key} ${repos.join(",")}`);
       // A repository the fake was given neither a pull request nor a `seedRepository` of is one it cannot ask about, as in `openPullUrlsOf`.
       if (repos.some((repo) => ![...pulls.values()].some((pull) => pull.repository === repo) && !repositories.has(repo))) return null;
@@ -121,7 +121,7 @@ function readsOf(pulls: Pulls, repositories: Set<string>, defaultBranches: Map<s
 /** The read of whether a repository has a merge flow (contract 1.25) over what a test seeded: null for a repository it was never given, as a host answers one it cannot read. */
 function mergeFlowsOf(flows: Map<string, MergeFlow>, calls: string[]): Pick<CodeHost, "readMergeFlow"> {
   return {
-    readMergeFlow(repository) {
+    async readMergeFlow(repository) {
       calls.push(`readMergeFlow ${repository}`);
       return flows.get(repository) ?? null;
     },
@@ -131,7 +131,7 @@ function mergeFlowsOf(flows: Map<string, MergeFlow>, calls: string[]): Pick<Code
 /** The read of what a closed pull request still held (contract 1.20) over what a test seeded: null for a pull request that is open, merged or never given, as the contract says. */
 function closedWorkOf(pulls: Pulls, calls: string[]): Pick<CodeHost, "readClosedWork"> {
   return {
-    readClosedWork(url) {
+    async readClosedWork(url) {
       calls.push(`readClosedWork ${url}`);
       const pull = pulls.get(url);
       // An open or a merged pull request is not read: its work is not final, or it is on its base.
@@ -170,14 +170,14 @@ export type FakeChecksAndClaims = {
 function checksAndClaimsOf(state: FakeChecksAndClaims, calls: string[]): Pick<CodeHost, "readCheckLog" | "rerunFailedChecks" | "rerunRuns" | "readReviewClaims" | "writeReviewClaim"> {
   const keyOf = (repository: string, head: string): string => `${repository}@${head}`;
   /** A rerun of the runs the addresses name: refused with `rerunRefusal` when a test set it, and recorded in `record` otherwise. */
-  const rerunning = (name: string, record: string[][]) => (detailsUrls: readonly string[]): string | null => {
+  const rerunning = (name: string, record: string[][]) => async (detailsUrls: readonly string[]): Promise<string | null> => {
     calls.push(name);
     if (state.rerunRefusal !== null) return state.rerunRefusal;
     record.push([...detailsUrls]);
     return null;
   };
   return {
-    readCheckLog(detailsUrl) {
+    async readCheckLog(detailsUrl) {
       calls.push(`readCheckLog ${detailsUrl}`);
       return state.logs.get(detailsUrl) ?? null;
     },
@@ -208,7 +208,7 @@ export type FakeBranchUpdates = { answers: Map<string, UpdateBranchResult>; aske
 /** The update of a pull request's branch over what a test seeded. */
 function branchUpdatesOf(state: FakeBranchUpdates, pulls: Pulls, calls: string[]): Pick<CodeHost, "updateBranch"> {
   return {
-    updateBranch(url, expectedHead) {
+    async updateBranch(url, expectedHead) {
       calls.push(`updateBranch ${url} ${expectedHead}`);
       state.asked.push({ url, expectedHead });
       if (!pulls.has(url)) return { kind: "refused", reason: `fake code host: no pull request ${url}` };
@@ -219,14 +219,14 @@ function branchUpdatesOf(state: FakeBranchUpdates, pulls: Pulls, calls: string[]
 
 /**
  * What the fake does when asked to close a pull request (contract 1.23), and what a test sets: why it refuses a pull request (`refusals`, by address), and each close, in order (`closed`). A close sets the pull request's state to closed, so it reads `CLOSED`; a pull request
- * that is closed already is not an error, and its comment is not posted again. A pull request the fake does not hold throws, as a host does for an address that is no pull request of its own.
+ * that is closed already is not an error, and its comment is not posted again. A pull request the fake does not hold rejects, as a host does for an address that is no pull request of its own.
  */
 export type FakeCloses = { refusals: Map<string, string>; closed: { url: string; comment: string }[] };
 
 /** The close of a pull request over what a test seeded. */
 function closesOf(state: FakeCloses, pulls: Pulls, calls: string[]): Pick<CodeHost, "closePull"> {
   return {
-    closePull(url, comment) {
+    async closePull(url, comment) {
       calls.push(`closePull ${url}`);
       const pull = pulls.get(url);
       if (pull === undefined) throw new Error(`fake code host: no pull request ${url}`);
@@ -248,7 +248,7 @@ export type FakeComments = { refusals: Map<string, string>; posted: { url: strin
 /** The comment on a pull request over what a test seeded. */
 function commentsOf(state: FakeComments, pulls: Pulls, calls: string[], login: string | null): Pick<CodeHost, "commentOnPull"> {
   return {
-    commentOnPull(url, comment) {
+    async commentOnPull(url, comment) {
       calls.push(`commentOnPull ${url}`);
       const pull = pulls.get(url);
       if (pull === undefined) throw new Error(`fake code host: no pull request ${url}`);
@@ -269,13 +269,13 @@ export type FakeStackMerges = { facts: Map<string, Partial<StackMergeFacts>>; re
 /** The stack merge's reads and its request over what a test seeded. A pull request the fake does not hold cannot be read, and is null. */
 function stackMergesOf(state: FakeStackMerges, pulls: Pulls, calls: string[]): Pick<CodeHost, "stackMergeFactsOf" | "requestStackMerge"> {
   return {
-    stackMergeFactsOf(url) {
+    async stackMergeFactsOf(url) {
       calls.push(`stackMergeFactsOf ${url}`);
       const pull = pulls.get(url);
       if (pull === undefined) return null;
       return { stacked: false, base: pull.base, defaultBranch: "main", head: pull.head, settled: pull.state === "merged" ? "merged" : null, refusal: null, ...state.facts.get(url) };
     },
-    requestStackMerge(request) {
+    async requestStackMerge(request) {
       calls.push(`requestStackMerge ${request.repo}#${request.number}`);
       if (state.requestRefusal !== null) throw new Error(state.requestRefusal);
       state.requests.push(request);
@@ -291,7 +291,7 @@ export type FakeCiRuns = { runs: Map<string, CiRun>; asked: string[] };
 /** The read of a workflow run over what a test seeded. */
 function ciRunsOf(state: FakeCiRuns, calls: string[]): Pick<CodeHost, "readCiRun"> {
   return {
-    readCiRun(repository, runId) {
+    async readCiRun(repository, runId) {
       const key = `${repository}#${runId}`;
       calls.push(`readCiRun ${key}`);
       state.asked.push(key);
@@ -312,11 +312,11 @@ export const queueFailureKey = (url: string, groupCommit: string): string => `${
 /** The merge queue's failure read and the hold over what a test seeded. */
 function queuesOf(state: FakeQueues, pulls: Pulls, calls: string[]): Pick<CodeHost, "readQueueFailure" | "holdFromQueue"> {
   return {
-    readQueueFailure(url, groupCommit) {
+    async readQueueFailure(url, groupCommit) {
       calls.push(`readQueueFailure ${url} ${groupCommit}`);
       return pulls.has(url) ? state.failures.get(queueFailureKey(url, groupCommit)) ?? null : null;
     },
-    holdFromQueue(url, on) {
+    async holdFromQueue(url, on) {
       calls.push(`holdFromQueue ${url} ${on}`);
       if (!pulls.has(url)) throw new Error(`fake code host: no pull request ${url}`);
       if (state.holdRefusal !== null) throw new Error(state.holdRefusal);
@@ -333,7 +333,7 @@ const baseMerged = (pulls: Pulls, pull: FakePull): boolean => [...pulls.values()
 
 /** The stack retarget sweep: a stacked pull request whose base merged is moved to the default branch, and a pull request it cannot read keeps its note. */
 function sweepOf(pulls: Pulls, retargets: { url: string; base: string }[]): CodeHost["sweepRetargets"] {
-  return ({ urls, previous, stacked, defaults, log }: RetargetRequest) => {
+  return async ({ urls, previous, stacked, defaults, log }: RetargetRequest) => {
     const notes: Record<string, string> = {};
     for (const url of urls) {
       const pull = pulls.get(url);

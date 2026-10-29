@@ -19,15 +19,16 @@ test("a minor only adds and a major breaks: major 1 is read at 1.0 and at 1.7, a
   assert.equal(readsMajor([1, 2], "2.0"), true, "a release that reads two majors reads both");
 });
 
-test("this agent-org reads major 1 of every concern's contract but the code host's, which is major 3, and the reviewer's, which is major 2", () => {
-  assert.deepEqual(Object.fromEntries(CONCERNS.map((concern) => [concern, READ_MAJORS[concern]])), { tracker: [1], codeHost: [3], publisher: [1], reviewer: [2], exposure: [1], messaging: [1] });
+test("this agent-org reads major 1 of every concern's contract but the code host's, which is major 4, and the reviewer's, which is major 2", () => {
+  assert.deepEqual(Object.fromEntries(CONCERNS.map((concern) => [concern, READ_MAJORS[concern]])), { tracker: [1], codeHost: [4], publisher: [1], reviewer: [2], exposure: [1], messaging: [1] });
 });
 
-test("A11-379: a reviewer plugin of contract 1.x, whose calls answer the value, and a code host of 2.x, whose claim calls do, are refused", () => {
+test("A11-379, A11-395: a reviewer plugin of contract 1.x, whose calls answer the value, and a code host of 3.x, whose event operations do, are refused", () => {
   assert.equal(readsConcernContract("reviewer", "1.11"), false);
   assert.equal(readsConcernContract("reviewer", "2.0"), true);
   assert.equal(readsConcernContract("codeHost", "2.1"), false);
-  assert.equal(readsConcernContract("codeHost", "3.0"), true);
+  assert.equal(readsConcernContract("codeHost", "3.0"), false);
+  assert.equal(readsConcernContract("codeHost", "4.0"), true);
   assert.equal(unreadMajorRefusal("atomic", "reviewer", "1.11"), "plugin atomic implements reviewer contract 1.11; this agent-org reads reviewer 2.x: update agent-org, or use a plugin of a major it reads");
 });
 

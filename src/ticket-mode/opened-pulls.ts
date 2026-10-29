@@ -25,11 +25,11 @@ const keywordsOf = ({ source }: PoolContext): Keywords => source.keywords ?? DEF
  * The pull requests of the repositories the board reviews that are `key`'s, in any state, as the code host lists them. None when the host cannot be asked, and the reason is said in the log: the board must not
  * stop a start or a Respond for it.
  */
-function ticketPullsOf(ctx: PoolContext, key: string): readonly NamingPull[] {
+async function ticketPullsOf(ctx: PoolContext, key: string): Promise<readonly NamingPull[]> {
   const { codeHost, settings } = ctx;
   if (codeHost.pullsNaming === undefined) return [];
   try {
-    const found = codeHost.pullsNaming(key, reviewedRepositoriesOf(settings.clones));
+    const found = await codeHost.pullsNaming(key, reviewedRepositoriesOf(settings.clones));
     if (found === null) {
       log(`${key}: the pull requests that name it could not be listed, so none is told to its worker or answered by Respond`);
       return [];
@@ -76,7 +76,7 @@ async function readOpened(ctx: PoolContext, entry: Entry): Promise<readonly Open
   const { codeHost, feedbackIgnores } = ctx;
   const key = entry.ticket.key;
   const keywords = keywordsOf(ctx);
-  const candidates = candidatesOf(entry, ticketPullsOf(ctx, key));
+  const candidates = candidatesOf(entry, await ticketPullsOf(ctx, key));
   if (candidates.some(({ state }) => state === "open")) ctx.ownLogin.value ??= await codeHost.readOwnLogin();
   const self = ctx.ownLogin.value;
   return Promise.all(candidates.map(async ({ url, repo, state, body }): Promise<OpenedPull> => {
@@ -90,7 +90,7 @@ async function readOpened(ctx: PoolContext, entry: Entry): Promise<readonly Open
  * The open pull requests the code host holds for `entry`'s ticket that its own record does not (A11-240), as the review round Respond queues takes them. Respond is refused for "no pull request open" when the record
  * holds none, so this is what it answers by instead. A pull request the record holds, whatever state the record has it in, is the record's to judge, and is not found again.
  */
-export function openPullsFound(ctx: PoolContext, entry: Entry): PullRequest[] {
+export async function openPullsFound(ctx: PoolContext, entry: Entry): Promise<PullRequest[]> {
   const recorded = new Set(pullsOf(entry).map(({ url }) => url));
-  return ticketPullsOf(ctx, entry.ticket.key).filter(({ url, state }) => state === "open" && !recorded.has(url)).map(({ repo, url }) => ({ repo, url }));
+  return (await ticketPullsOf(ctx, entry.ticket.key)).filter(({ url, state }) => state === "open" && !recorded.has(url)).map(({ repo, url }) => ({ repo, url }));
 }

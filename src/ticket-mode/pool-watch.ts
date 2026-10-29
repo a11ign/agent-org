@@ -625,26 +625,23 @@ async function watchEach(ctx: PoolContext): Promise<void> {
     }
     const readable = pulls.filter((pull): pull is { url: string; read: PullFeedback } => pull.read !== null);
     const open = readable.filter(({ read }) => read.state === "open");
-    sayPartialFiles(entry, open);
-    const files = pullFilesOf(open);
-    // Written only when a file changed, so a watch that finds the same files does not rewrite the queue.
-    if (JSON.stringify(files) !== JSON.stringify(entry.pullFiles ?? {})) update(ctx, (queue) => recordPullFiles(queue, entry.ticket.key, files));
-    recordHeads(ctx, entry, readable);
+    const afterHeads = await recordRead(ctx, entry, readable);
+    if (afterHeads === undefined) continue;
+    entry = afterHeads;
     recorded.push(entry.ticket.key);
-    clearResolvedConflict(ctx, entry, open);
-    // An approved, armed pull request that sits BLOCKED behind a cancelled duplicate run of its required check has the run rerun, once for the head (A11-342): no worker is asked, and the run's log says so. A run a person stopped, one the tracker settled and one that
-    // ended with nothing more to do are left alone, as the base merge leaves them (`mergesBase`).
-    if (mergesBase(entry)) for (const pull of open) rerunCancelledGate(ctx, entry, pull);
+    const afterGate = await answerReadPulls(ctx, entry, open);
+    if (afterGate === undefined) continue;
+    entry = afterGate;
     if (!resumesOnConflict(entry)) {
       // A run no worker is woken for, such as one handed to a person, still has the base merged into its pull requests (A11-293): the free update, and the record of a real conflict for its card and its Respond.
-      if (mergesBase(entry)) mergeBaseOf(ctx, entry, open);
+      if (mergesBase(entry)) await mergeBaseOf(ctx, entry, open);
       continue;
     }
     const checks = await answerChecks(ctx, entry, open, foreign);
     const afterChecks = finishedNow(ctx, entry);
     if (afterChecks === undefined) continue;
     entry = afterChecks;
-    const removals = answerQueue(ctx, entry, open);
+    const removals = await answerQueue(ctx, entry, open);
     // A reviewer's verdict is read by `reviewerLines`, which asks for a round only on requested changes; its reviews are not feedback here.
     const reviewer = isWatched(entry) ? await reviewerLines(ctx, entry, openPulls(entry).map((pr) => pr.url)) : [];
     const afterReviewer = finishedNow(ctx, entry);
@@ -654,7 +651,11 @@ async function watchEach(ctx: PoolContext): Promise<void> {
     const blocks = blocksToAskNow(ctx, entry.ticket.key, reviewer);
     const unanswered = blocks.map(blockRoundLine);
     // A pull request that conflicts or is behind has the base merged into it before a worker is asked (A11-286), unless a round starts in this pass for something else: its worker then finds the branch where it left it, and is told of the conflict.
-    if (!startsAnotherRound(entry, readable, [checks.feedback, removals.feedback, removals.conflict, ...reviewer, ...unanswered])) mergeBaseOf(ctx, entry, open);
+    if (!startsAnotherRound(entry, readable, [checks.feedback, removals.feedback, removals.conflict, ...reviewer, ...unanswered])) {
+      const afterMerge = await mergeBaseOf(ctx, entry, open);
+      if (afterMerge === undefined) continue;
+      entry = afterMerge;
+    }
     if (isWatched(entry)) {
       const lines = [feedbackSince(readable, entry.finishedAt ?? 0, ctx.baseMerges), checks.feedback, removals.feedback, removals.conflict, ...reviewer, ...unanswered]
         .filter((line): line is string => line !== null);
@@ -672,13 +673,47 @@ async function watchEach(ctx: PoolContext): Promise<void> {
     }
     if (resumeUnwatched(ctx, entry, readable, checks, removals)) queued = true;
   }
-  // After every run's round was decided: a run that was handed a round has left `finished`, and a note does not change what the loop above decided for the run.
-  for (const key of recorded) {
+  flagRecorded(ctx, recorded);
+  if (queued) void tick(ctx);
+}
+
+/** After every run's round was decided: a run that was handed a round has left `finished`, and a note does not change what the watch decided for the run. */
+function flagRecorded(ctx: PoolContext, keys: readonly string[]): void {
+  for (const key of keys) {
     flagStaleBlock(ctx, key);
     flagMerge(ctx, key);
     flagReviewerDialog(ctx, key);
   }
-  if (queued) void tick(ctx);
+}
+
+/**
+ * What the watch does about a finished run's open pull requests once it has recorded what it read: a conflict that was resolved is forgotten, and the rerun of a cancelled gate is asked for.
+ */
+async function answerReadPulls(ctx: PoolContext, entry: Entry, open: readonly { url: string; read: PullFeedback }[]): Promise<Entry | undefined> {
+  clearResolvedConflict(ctx, entry, open);
+  // An approved, armed pull request that sits BLOCKED behind a cancelled duplicate run of its required check has the run rerun, once for the head (A11-342): no worker is asked, and the run's log says so. A run a person stopped, one the tracker settled and one that
+  // ended with nothing more to do are left alone, as the base merge leaves them (`mergesBase`).
+  if (mergesBase(entry)) {
+    for (const pull of open) {
+      if (finishedNow(ctx, entry) === undefined) return undefined;
+      await rerunCancelledGate(ctx, entry, pull);
+    }
+  }
+  return finishedNow(ctx, entry);
+}
+
+/**
+ * Record what a watch read of a finished run's pull requests: the files they change, said where the list is cut short, and the heads (`recordHeads`). Returns the run as the queue holds it once the merge flows are read from the code host, or
+ * undefined when it is no longer finished (a person's Respond, Retry or Remove landed meanwhile), as after the other reads of the watch.
+ */
+async function recordRead(ctx: PoolContext, entry: Entry, readable: readonly { url: string; read: PullFeedback }[]): Promise<Entry | undefined> {
+  const open = readable.filter(({ read }) => read.state === "open");
+  sayPartialFiles(entry, open);
+  const files = pullFilesOf(open);
+  // Written only when a file changed, so a watch that finds the same files does not rewrite the queue.
+  if (JSON.stringify(files) !== JSON.stringify(entry.pullFiles ?? {})) update(ctx, (queue) => recordPullFiles(queue, entry.ticket.key, files));
+  await recordHeads(ctx, entry, readable);
+  return finishedNow(ctx, entry);
 }
 
 /**
@@ -726,12 +761,17 @@ function routeStandoff(ctx: PoolContext, key: string): boolean {
 
 /**
  * Merge the base into the open pull requests of a finished run that conflict or are behind (A11-286, {@link mergeBaseInto}), whatever the run's status ({@link mergesBase}, A11-293). A conflict the host reports as real is decided again, by a second watch, once its files are listed; a second watch that
- * throws is said, as the sweep's own failure is, and not left to be an unhandled rejection of the process.
+ * throws is said, as the sweep's own failure is, and not left to be an unhandled rejection of the process. Answers the run as the queue holds it afterwards, or undefined when it is no longer finished.
  */
-function mergeBaseOf(ctx: PoolContext, entry: Entry, open: readonly { url: string; read: PullFeedback }[]): void {
+async function mergeBaseOf(ctx: PoolContext, entry: Entry, open: readonly { url: string; read: PullFeedback }[]): Promise<Entry | undefined> {
   for (const pull of open) {
-    mergeBaseInto(ctx, entry, pull)?.then(() => watchFeedback(ctx)).catch((err: unknown) => log(`${entry.ticket.key}: ${pull.url} could not be answered once its conflict was listed: ${messageOf(err).split("\n")[0]}`));
+    // The run is looked at as the queue holds it for each pull request: a Stop or a Remove that landed while the last update was asked is not brought up to date.
+    const current = finishedNow(ctx, entry);
+    if (current === undefined) return undefined;
+    // The update is asked, and its outcome recorded, before the pass goes on: the pass reads the record. Only the listing of a real conflict's files is left running.
+    (await mergeBaseInto(ctx, current, pull))?.settled.then(() => watchFeedback(ctx)).catch((err: unknown) => log(`${entry.ticket.key}: ${pull.url} could not be answered once its conflict was listed: ${messageOf(err).split("\n")[0]}`));
   }
+  return finishedNow(ctx, entry);
 }
 
 /** Whether this pass starts a round of the run's worker for something other than a conflict: new review feedback on a watched run, or any of `lines` (red checks, the merge queue's removals, a reviewer's request). PURE. */
@@ -761,11 +801,11 @@ function recordWithoutRound(ctx: PoolContext, entry: Entry, checks: CheckAnswer,
  * A pull request the run has no outcome head for takes this head as its outcome head: the end of the run could not read it, or the run was stored before heads were recorded, and the first watch is the nearest
  * read to the end.
  */
-function recordHeads(ctx: PoolContext, entry: Entry, readable: readonly { url: string; read: PullFeedback }[]): void {
+async function recordHeads(ctx: PoolContext, entry: Entry, readable: readonly { url: string; read: PullFeedback }[]): Promise<void> {
   const key = entry.ticket.key;
   followUpdatesFromMain(ctx, entry, readable);
   const reads = Object.fromEntries(readable.map(({ url, read }) => [url, read]));
-  const marked = markedHeads(pullHeadsOf(readable), reads, entry.pullHeads, ctx.now(), (repository) => mergeFlowOf(ctx, repository));
+  const marked = await markedHeads(pullHeadsOf(readable), reads, entry.pullHeads, ctx.now(), (repository) => mergeFlowOf(ctx, repository));
   const heads = stampedBlocks(withMergeableForBlocked(marked, entry), entry.pullHeads, ctx.now());
   if (JSON.stringify(heads) !== JSON.stringify(entry.pullHeads ?? {})) update(ctx, (queue) => recordPullHeads(queue, key, heads, ctx.now()));
   const open = readable.filter(({ read }) => read.state === "open");
@@ -777,22 +817,22 @@ function recordHeads(ctx: PoolContext, entry: Entry, readable: readonly { url: s
 const MERGE_FLOW_TTL_MS = 10 * 60_000;
 
 /** What the code host says of a repository's merge flow, or null when it could not say or threw. */
-function readFlowOrNull(codeHost: PoolContext["codeHost"], repository: string): MergeFlow | null {
+async function readFlowOrNull(codeHost: PoolContext["codeHost"], repository: string): Promise<MergeFlow | null> {
   try {
-    return codeHost.readMergeFlow?.(repository) ?? null;
+    return (await codeHost.readMergeFlow?.(repository)) ?? null;
   } catch {
     return null;
   }
 }
 
 /** Whether `repository` can merge a pull request by itself, as the code host last said within {@link MERGE_FLOW_TTL_MS}, read now when it did not (A11-291). Undefined for a host that cannot be asked, and null for a repository it could not read: neither is "no flow". */
-function mergeFlowOf(ctx: PoolContext, repository: string): MergeFlow | null | undefined {
+async function mergeFlowOf(ctx: PoolContext, repository: string): Promise<MergeFlow | null | undefined> {
   const { codeHost, mergeFlows, now } = ctx;
   if (codeHost.readMergeFlow === undefined) return undefined;
   const known = mergeFlows.get(repository);
   if (known !== undefined && now() - known.at < MERGE_FLOW_TTL_MS) return known.flow;
   // A read that fails keeps what was last known, so a reason that depends on it does not flip, and rewrite the queue, with the host's weather; and a host that throws is no reading either (the contract says it does not).
-  const flow = readFlowOrNull(codeHost, repository) ?? known?.flow ?? null;
+  const flow = (await readFlowOrNull(codeHost, repository)) ?? known?.flow ?? null;
   mergeFlows.set(repository, { at: now(), flow });
   return flow;
 }

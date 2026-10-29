@@ -27,7 +27,7 @@ function boardOver(tracker = createFakeTracker([ticket("NBF-1"), ticket("NBF-2")
   const dir = tmpDir("board-thread-");
   const settings = parseTicketSettings({ clones: { "nbl-ui-netbox": "/r/netbox" }, stateDir: dir, tickets: { port: 4747 } });
   const pool = { tick: async () => {}, reviewNewHeads: () => {}, stopWriterRun: () => {}, stop: () => {}, close: () => {}, dismiss: async () => {}, remove: async () => {}, reconcile: () => {}, ensureSession: async () => {},
-    refreshTracker: async () => {}, watchFeedback: () => {}, releaseReviewers: () => {}, retargetStacked: () => {}, rebaseStacked: async () => {}, applyEdit: async () => {}, discardEdit: () => {}, respond: () => {},
+    refreshTracker: async () => {}, watchFeedback: () => {}, releaseReviewers: () => {}, retargetStacked: () => {}, rebaseStacked: async () => {}, applyEdit: async () => {}, discardEdit: () => {}, respond: async () => {},
     held: () => ({ name: "npm run preflight", reason: "red", since: 5 }), pullReviews: () => ({ "https://github.com/a11ign/agent-org/pull/1": "Reviewer approved" }), claimWarning: () => "GitHub refuses the review claims", hostAlerts: () => [{ id: "tmp-entries", sentence: "/tmp holds 19,960 entries", since: 5 }], reviewerState: () => "on" as const };
   const paths = { queuePath: join(dir, "queue.json"), choicePath: join(dir, "choice.json") };
   const board = createBoard({ settings, source: tracker, codeHost: createFakeCodeHost(), key: KEY, ...paths, pool, now: () => 7, version: "v0.309.1", next: () => null });

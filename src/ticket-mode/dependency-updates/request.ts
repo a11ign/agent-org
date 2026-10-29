@@ -10,7 +10,7 @@ import { firstLine, sayOnce, type SweepContext } from "./context.ts";
 export const PLACES_KEPT_FOR_PEOPLE = 1;
 
 /** What one request is: the key it is recorded under, the repository it concerns and the text the writer is given, which is written once the team it is filed in is known (A11-267). */
-export type TicketRequest = Readonly<{ key: string; repository: string; request: (team: string) => string }>;
+export type TicketRequest = Readonly<{ key: string; repository: string; request: (team: string) => string | Promise<string> }>;
 
 /** The form of a request: the repository's clone when the host has one, else none and the writer places the ticket. */
 const formOf = (repository: string, { clones, cloneKeyOf }: Pick<SweepContext["deps"], "clones" | "cloneKeyOf">): WriterForm => {
@@ -23,7 +23,7 @@ const formOf = (repository: string, { clones, cloneKeyOf }: Pick<SweepContext["d
  * Ask the writer for one ticket, filed in the team the sweep read (A11-267). The key is recorded `requested` first, then the run is queued, and a run the queue refuses (the writer is off or its three places are taken) takes the record back. Answers false when nothing
  * more can be asked this sweep.
  */
-export function requestTicket(ctx: SweepContext, { key, repository, request }: TicketRequest, team: string): boolean {
+export async function requestTicket(ctx: SweepContext, { key, repository, request }: TicketRequest, team: string): Promise<boolean> {
   const { deps, state, commit, memory } = ctx;
   const writer = deps.writer();
   if (writer === null) {
@@ -41,7 +41,9 @@ export function requestTicket(ctx: SweepContext, { key, repository, request }: T
   commit();
   const form = formOf(repository, deps);
   try {
-    deps.store.set(queueWriter(deps.store.get(), { id, request: request(team), mode: "quick", placement: placementOf(form), form, team, model: writer.model, effort: writer.effort }, deps.now()));
+    // The text may read logs from the code host (a red group's failing jobs), so it is made before the queue is read: the queue the run is added to is the one as it is then.
+    const text = await request(team);
+    deps.store.set(queueWriter(deps.store.get(), { id, request: text, mode: "quick", placement: placementOf(form), form, team, model: writer.model, effort: writer.effort }, deps.now()));
   } catch (err) {
     if (before === undefined) delete state.tickets[key];
     else state.tickets[key] = before;

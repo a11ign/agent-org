@@ -7,7 +7,7 @@ import { blockOf, CONCERNS } from "./concerns.ts";
 import { defaultCatalog, pluginNamed } from "./registry.ts";
 
 test("every concern has a contract version and a fake, and the publisher's is 1.1: it gained agent()", () => {
-  assert.deepEqual(CONCERNS.map((concern) => CONTRACT_VERSIONS[concern]), ["1.9", "3.0", "1.1", "2.0", "1.2", "1.1"]);
+  assert.deepEqual(CONCERNS.map((concern) => CONTRACT_VERSIONS[concern]), ["1.9", "4.0", "1.1", "2.0", "1.2", "1.1"]);
   assert.deepEqual(FAKES.map(({ concern }) => concern), [...CONCERNS]);
 });
 

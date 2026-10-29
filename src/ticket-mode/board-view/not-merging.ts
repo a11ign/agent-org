@@ -56,7 +56,7 @@ export function whyNotMerging(repository: string, read: PullFeedback, flow: Merg
 }
 
 /** What the watch can ask of the code host about a repository's merge flow: the answer, or null/undefined when it could not say. Asked only for a pull request that needs it. */
-export type FlowOf = (repository: string) => MergeFlow | null | undefined;
+export type FlowOf = (repository: string) => Promise<MergeFlow | null | undefined>;
 
 /** `owner/name` of a GitHub pull request's address, or null for any other. PURE. */
 const repositoryOf = (url: string): string | null => /^https:\/\/github\.com\/([^/]+\/[^/]+)\/pull\/\d+\/?$/.exec(url)?.[1] ?? null;
@@ -78,28 +78,30 @@ const sinceOf = (head: PullHead, read: PullFeedback, earlier: PullHead | undefin
   earlier?.head === head.head && earlier.unmergedSince !== undefined ? earlier.unmergedSince : isApprovedUnmerged(head, read) ? now : undefined;
 
 /** The marks one head earns from this read (A11-291), and the stamp it keeps from the last watch. */
-function marksOf(url: string, head: PullHead, read: PullFeedback, earlier: PullHead | undefined, now: number, flowOf: FlowOf): Pick<PullHead, "unmergedSince" | "notMerging" | "firstFlow"> {
+async function marksOf(url: string, head: PullHead, read: PullFeedback, earlier: PullHead | undefined, now: number, flowOf: FlowOf): Promise<Pick<PullHead, "unmergedSince" | "notMerging" | "firstFlow">> {
   const repository = repositoryOf(url);
-  const firstFlow = repository !== null && read.state === "open" && head.review === "approved" && touchesFlowFile(read) && hasNoFlowFile(flowOf(repository));
+  const firstFlow = repository !== null && read.state === "open" && head.review === "approved" && touchesFlowFile(read) && hasNoFlowFile(await flowOf(repository));
   const first = firstFlow ? { firstFlow: true as const } : {};
   const since = isApprovedUnqueued(head, read) ? sinceOf(head, read, earlier, now) : undefined;
   if (since === undefined) return first;
   if (now - since <= NOT_MERGING_MINUTES * MINUTE_MS || repository === null) return { unmergedSince: since, ...first };
-  const flow = flowOf(repository);
+  const flow = await flowOf(repository);
   return { unmergedSince: since, ...(intoDefaultBranch(read, flow) ? { notMerging: whyNotMerging(repository, read, flow) } : {}), ...first };
 }
 
 /**
  * The heads as the watch records them, each marked by what its read says (A11-291): `unmergedSince` while it is approved and green and nothing merges it (kept from `before` while the head and the reading stay, else `now`; a moment in which GitHub
  * does not know whether it is mergeable keeps it), `notMerging` once that has lasted {@link NOT_MERGING_MINUTES} and the pull request goes into the default branch, and `firstFlow` while an approved head adds the repository's first merge flow. A head the
- * read does not cover, or that is none of these, carries no mark. `flowOf` is asked only for a head that needs it. PURE.
+ * read does not cover, or that is none of these, carries no mark. `flowOf` is asked only for a head that needs it, one head at a time. PURE apart from `flowOf`.
  */
-export function markedHeads(heads: Readonly<Record<string, PullHead>>, reads: Readonly<Record<string, PullFeedback>>, before: Readonly<Record<string, PullHead>> | undefined, now: number, flowOf: FlowOf): Readonly<Record<string, PullHead>> {
-  return Object.fromEntries(Object.entries(heads).map(([url, head]) => {
+export async function markedHeads(heads: Readonly<Record<string, PullHead>>, reads: Readonly<Record<string, PullFeedback>>, before: Readonly<Record<string, PullHead>> | undefined, now: number, flowOf: FlowOf): Promise<Readonly<Record<string, PullHead>>> {
+  const marked: Record<string, PullHead> = {};
+  for (const [url, head] of Object.entries(heads)) {
     const { unmergedSince: _since, notMerging: _why, firstFlow: _first, ...unmarked } = head;
     const read = reads[url];
-    return [url, read === undefined ? unmarked : { ...unmarked, ...marksOf(url, head, read, before?.[url], now, flowOf) }];
-  }));
+    marked[url] = read === undefined ? unmarked : { ...unmarked, ...(await marksOf(url, head, read, before?.[url], now, flowOf)) };
+  }
+  return marked;
 }
 
 /**

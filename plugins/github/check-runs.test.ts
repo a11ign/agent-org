@@ -48,11 +48,11 @@ test("a rerun GitHub refuses answers the first line of why, and the runs after i
   assert.equal(calls.length, 1);
 });
 
-test("the code host the plugin makes runs both through its one gh, as the process's own account", () => {
+test("the code host the plugin makes runs both through its one gh, as the process's own account", async () => {
   const calls: { file: string; args: readonly string[]; env: unknown }[] = [];
-  const host = create({}, fakePluginDeps({ exec: (file, args, options) => { calls.push({ file, args, env: options?.env }); return { status: 0, stdout: "log text", stderr: "" }; } }));
-  assert.equal(host.readCheckLog(JOB), "log text");
-  assert.equal(host.rerunFailedChecks([JOB]), null);
+  const host = create({}, fakePluginDeps({ execAsync: async (file, args, options) => { calls.push({ file, args, env: options?.env }); return { status: 0, stdout: "log text", stderr: "" }; } }));
+  assert.equal(await host.readCheckLog(JOB), "log text");
+  assert.equal(await host.rerunFailedChecks([JOB]), null);
   assert.deepEqual(calls.map(({ file, args }) => [file, ...args]), [["gh", "api", "repos/a11ign/agent-org/actions/jobs/112233/logs", "--allow-escape-sequences"], ["gh", "run", "rerun", "38391781529", "--failed", "-R", "a11ign/agent-org"]]);
 });
 

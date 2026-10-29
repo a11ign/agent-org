@@ -55,7 +55,7 @@ const own = (key = "A11-177", paths: readonly string[] = ["agent-org:src/ticket-
   ({ ticket: { key }, paths, phase: "finished", outcome: { kind: "reviewed", prs: [{ repo: "agent-org", url }] }, pullStates: { [url]: "open" } }) as unknown as Entry;
 
 /** What a pass reads of the checks red where the run cannot mend them (A11-215): `names` fail on the default branch, and `mainPassing` are the ones it reports passing (null: a host of 1.14, which cannot say); `mainPending` are the ones whose newest run there has not concluded (null: the host does not say, so a check in neither list is taken to be running). */
-const redOn = (names: readonly string[], mainPassing: readonly string[] | null = null, mainPending: readonly string[] | null = null): ForeignReds => () => ({ names: new Set(names), onMain: new Set(names), mainPassing: mainPassing === null ? null : new Set(mainPassing), mainPending: mainPending === null ? null : new Set(mainPending), mainBranch: "main" });
+const redOn = (names: readonly string[], mainPassing: readonly string[] | null = null, mainPending: readonly string[] | null = null): ForeignReds => async () => ({ names: new Set(names), onMain: new Set(names), mainPassing: mainPassing === null ? null : new Set(mainPassing), mainPending: mainPending === null ? null : new Set(mainPending), mainBranch: "main" });
 
 const NOW = Date.parse("2026-10-26T12:00:00Z");
 const WORKERS = "a11ign-workers";
@@ -113,7 +113,7 @@ test("A11-179: a check red on another run's pull request in the same repository 
   const elsewhere = { entry: own("A11-150", ["agent-org:src/other/"], "https://github.com/a11ign/control/pull/9"), open: [{ url: "https://github.com/a11ign/control/pull/9", read: feedback(["suite"], ["src/other/thing.ts"]) }] };
   assert.equal((await answer(elsewhere)).heads[URL_1]?.step, "round", "a pull request of another repository says nothing of it");
   const mineAgain = foreignRedsOf(ctx, [{ entry: mine, open: [{ url: URL_1, read: feedback(["suite"]) }] }]);
-  assert.deepEqual([...mineAgain(mine, URL_1).names], [], "a run's own pull request is not another's");
+  assert.deepEqual([...(await mineAgain(mine, URL_1)).names], [], "a run's own pull request is not another's");
 });
 
 test("A11-179: the ticket that owns a red check is the one a Blocked-by line names, else one the check's refusal names, never the run's own, and none when none is named", async () => {
@@ -184,7 +184,7 @@ test("A11-215: a check red on main is recorded as waited on main; one red only o
   const read = feedback(["ui", "lint"]);
   const elsewhere = { entry: own("A11-150", ["agent-org:src/other/"], URL_2), open: [{ url: URL_2, read: feedback(["lint"], ["src/other/thing.ts"]) }] };
   const reds = foreignRedsOf(ctx, [{ entry: mine, open: [{ url: URL_1, read }] }, elsewhere]);
-  assert.deepEqual([[...reds(mine, URL_1).names], [...reds(mine, URL_1).onMain], [...reds(mine, URL_1).mainPassing!]], [["ui", "lint"], ["ui"], ["typecheck"]], "main's reading is kept apart from the other run's red check");
+  assert.deepEqual([[...(await reds(mine, URL_1)).names], [...(await reds(mine, URL_1)).onMain], [...(await reds(mine, URL_1)).mainPassing!]], [["ui", "lint"], ["ui"], ["typecheck"]], "main's reading is kept apart from the other run's red check");
   const answer = await answerChecks(ctx, mine, [{ url: URL_1, read }], reds);
   assert.deepEqual(Object.keys(answer.heads[URL_1]?.notOurs ?? {}), ["ui", "lint"], "both are held as not this run's");
   assert.deepEqual(answer.heads[URL_1]?.waitingOnMain, ["ui"], "but only the one red on main is waited on main");

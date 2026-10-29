@@ -11,34 +11,34 @@ import { fileURLToPath } from "node:url";
 import type { ChangeRef, CodeHost, VerdictDoor } from "../../src/plugins/contracts/code-host.ts";
 import type { PluginDeps } from "../../src/plugins/manifest.ts";
 import { createCallCounter, countingDeps } from "./call-counter.ts";
-import { readCiRun } from "./ci-run.ts";
+import { readCiRunAsync } from "./ci-run.ts";
 import { conditionalReads } from "./conditional-reads.ts";
 import { createPullSnapshots } from "./pull-snapshot.ts";
 // eslint-disable-next-line clean-code/no-duplication -- import list: the rule matches statement shape, and imports are not duplicated logic
 import { readBranchCi } from "./ci-spend.ts";
-import { readCheckLog, rerunFailedChecks, runsOf } from "./check-runs.ts";
-import { readDefaultBranchRed } from "./default-branch-checks.ts";
+import { readCheckLogAsync, rerunFailedChecksAsync, runsOf } from "./check-runs.ts";
+import { readDefaultBranchRedAsync } from "./default-branch-checks.ts";
 import { asyncGhRunner, ghRunner } from "./gh.ts";
 // eslint-disable-next-line clean-code/no-duplication -- import list: the rule matches statement shape, and imports are not duplicated logic
 import { openPullUrlsOf } from "./open-pulls.ts";
 import { createRepositories } from "./repositories.ts";
 import { pullOf as pullAt, readOwnLoginAsync, readPullFeedback } from "./pull-feedback.ts";
-import { readClosedWork } from "./closed-work.ts";
+import { readClosedWorkAsync } from "./closed-work.ts";
 // eslint-disable-next-line clean-code/no-duplication -- import list: the rule matches statement shape, and imports are not duplicated logic
-import { readMergeFlow } from "./merge-flow.ts";
-import { holdPullRequest, readQueueFailure, releasePullRequest } from "./merge-queue.ts";
+import { readMergeFlowAsync } from "./merge-flow.ts";
+import { holdPullRequestAsync, readQueueFailureAsync, releasePullRequestAsync } from "./merge-queue.ts";
 import { readMergedFindings } from "./merged-findings.ts";
 import { repoCloneArgs, repoViewArgs } from "./repo-args.ts";
-import { rerunRuns } from "./rerun-runs.ts";
+import { rerunRunsAsync } from "./rerun-runs.ts";
 import { readReplies } from "./replies.ts";
 import { createReviewReads } from "./reviews.ts";
-import { pullsNaming } from "./ticket-pulls.ts";
+import { pullsNamingAsync } from "./ticket-pulls.ts";
 import { openDependencyPulls } from "./dependency-pulls.ts";
 import { readReviewClaims, writeReviewClaim } from "./review-claims.ts";
-import { requestStackMerge, stackMergeFactsOf } from "./stack-merge.ts";
-import { sweepRetargets, sweepRetargetsAsync } from "./stack-retarget.ts";
-import { updateBranch } from "./update-branch.ts";
-import { closePull, commentOnPull } from "./close-pull.ts";
+import { requestStackMergeAsync, stackMergeFactsOfAsync } from "./stack-merge.ts";
+import { sweepRetargetsAsync } from "./stack-retarget.ts";
+import { updateBranchAsync } from "./update-branch.ts";
+import { closePullAsync, commentOnPullAsync } from "./close-pull.ts";
 import { armedReasonOf, armMergeOf, type ArmMergeSeams } from "./rows/arming.ts";
 import { createRows, type RowsRunners } from "./rows/index.ts";
 import { gateRunner, runGhTogether } from "./rows/gate-runner.ts";
@@ -103,7 +103,7 @@ function invalidatingWrites(snapshots: Pick<ReturnType<typeof createPullSnapshot
 
 /**
  * The GitHub code host, reading and moving pull requests through the plugin's `gh`. `settle` is how `armMerge` waits for a pull request that may have settled (a test gives none to wait for).
- * THE READS THE INSTANCE'S LOOP MAKES ON A SWEEP RUN THROUGH `deps.execAsync` (A11-356, contract 2.0), so the loop goes on while GitHub answers; `now` is the clock the shared answers are kept by.
+ * EVERY OPERATION THE INSTANCE'S LOOP MAKES RUNS THROUGH `deps.execAsync` (the reads of its sweeps, A11-356, contract 2.0; the operations it makes on an event, A11-395, contract 4.0), so the loop goes on while GitHub answers, but `armMerge`, which nothing on the loop calls; `now` is the clock the shared answers are kept by.
  */
 export function createCodeHost(rawDeps: PluginDeps, settle: ArmMergeSeams = {}, now: () => number = Date.now): CodeHost {
   const counter = createCallCounter({ now, log: rawDeps.log });
@@ -125,31 +125,30 @@ export function createCodeHost(rawDeps: PluginDeps, settle: ArmMergeSeams = {}, 
     repoCloneArgs,
     readOwnLogin: async () => (ownLogin ??= await readOwnLoginAsync(ghAsync)),
     readPullFeedback: (url, self, alsoIgnore) => readPullFeedback(url, self, snapshots, deps.policy, alsoIgnore),
-    readQueueFailure: (url, groupCommit) => readQueueFailure(url, groupCommit, gh),
-    holdFromQueue: (url, on) => writing(repositoriesOf(url), () => (on ? holdPullRequest(url, gh) : releasePullRequest(url, gh))),
-    readDefaultBranchRed: (repository) => readDefaultBranchRed(repository, gh, deps.policy),
-    readMergeFlow: (repository) => readMergeFlow(repository, gh),
+    readQueueFailure: (url, groupCommit) => readQueueFailureAsync(url, groupCommit, ghAsync),
+    holdFromQueue: (url, on) => writingAsync(repositoriesOf(url), () => (on ? holdPullRequestAsync(url, ghAsync) : releasePullRequestAsync(url, ghAsync))),
+    readDefaultBranchRed: (repository) => readDefaultBranchRedAsync(repository, ghAsync, deps.policy),
+    readMergeFlow: (repository) => readMergeFlowAsync(repository, ghAsync),
     readReplies: (url, request) => readReplies(url, request, snapshots),
     readReviewState: (url, options) => reviews.state(url, deps.policy, options),
     peekReviewState: (url) => reviews.peek(url),
     readPullState: (url) => reviews.pullState(url),
     readMergedFindings: (url) => readMergedFindings(url, snapshots, restAsync),
-    readClosedWork: (url) => readClosedWork(url, gh),
+    readClosedWork: (url) => readClosedWorkAsync(url, ghAsync),
     openPullUrlsOf: (repository) => openPullUrlsOf(repository, snapshots),
-    pullsNaming: (key, repositories) => pullsNaming(key, repositories, gh),
+    pullsNaming: (key, repositories) => pullsNamingAsync(key, repositories, ghAsync),
     openDependencyPulls: (repository) => openDependencyPulls(repository, snapshots),
-    sweepRetargets: (sweep) => writing(sweep.urls.flatMap(repositoriesOf), () => sweepRetargets({ ...sweep, gh })),
-    sweepRetargetsAsync: (sweep) => writingAsync(sweep.urls.flatMap(repositoriesOf), () => sweepRetargetsAsync(sweep, ghAsync)),
-    stackMergeFactsOf: (url) => stackMergeFactsOf(url, gh),
-    requestStackMerge: (request) => writing([request.repo], () => requestStackMerge(request, gh)),
-    readCiRun: (repository, runId) => readCiRun(repository, runId, gh),
+    sweepRetargets: (sweep) => writingAsync(sweep.urls.flatMap(repositoriesOf), () => sweepRetargetsAsync(sweep, ghAsync)),
+    stackMergeFactsOf: (url) => stackMergeFactsOfAsync(url, ghAsync),
+    requestStackMerge: (request) => writingAsync([request.repo], () => requestStackMergeAsync(request, ghAsync)),
+    readCiRun: (repository, runId) => readCiRunAsync(repository, runId, ghAsync),
     readBranchCi: (repository, branch, settled) => readBranchCi(repository, branch, settled, restAsync),
-    readCheckLog: (detailsUrl) => readCheckLog(detailsUrl, gh, deps.log),
-    rerunFailedChecks: (detailsUrls) => writing(rerunRepositories(detailsUrls), () => rerunFailedChecks(detailsUrls, gh)),
-    rerunRuns: (detailsUrls) => writing(rerunRepositories(detailsUrls), () => rerunRuns(detailsUrls, gh)),
-    updateBranch: (url, expectedHead) => writing(repositoriesOf(url), () => updateBranch(url, expectedHead, gh)),
-    closePull: (url, comment) => writing(repositoriesOf(url), () => closePull(url, comment, gh)),
-    commentOnPull: (url, comment) => writing(repositoriesOf(url), () => commentOnPull(url, comment, gh)),
+    readCheckLog: (detailsUrl) => readCheckLogAsync(detailsUrl, ghAsync, deps.log),
+    rerunFailedChecks: (detailsUrls) => writingAsync(rerunRepositories(detailsUrls), () => rerunFailedChecksAsync(detailsUrls, ghAsync)),
+    rerunRuns: (detailsUrls) => writingAsync(rerunRepositories(detailsUrls), () => rerunRunsAsync(detailsUrls, ghAsync)),
+    updateBranch: (url, expectedHead) => writingAsync(repositoriesOf(url), () => updateBranchAsync(url, expectedHead, ghAsync)),
+    closePull: (url, comment) => writingAsync(repositoriesOf(url), () => closePullAsync(url, comment, ghAsync)),
+    commentOnPull: (url, comment) => writingAsync(repositoriesOf(url), () => commentOnPullAsync(url, comment, ghAsync)),
     readReviewClaims: (repository, head) => readReviewClaims(repository, head, ghAsync),
     // The claim is written as the reviewer role: the environment it is given (the account folder and token the reviewer acts with) is laid over this process's for the one call.
     // The claim is a commit status the rollup lists, green and not required: it changes no check a reader judges, so the snapshot is kept.

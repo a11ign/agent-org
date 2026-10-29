@@ -18,11 +18,11 @@ test("A11-291: the thresholds are 15 minutes for the card and 60 for Needs you, 
   assert.equal(WAITS_ON_REVIEW.has("not-merging"), true, "a board note may turn such a run into Needs you");
 });
 
-test("A11-291: a head is stamped when it is first read approved, green, mergeable and out of the queue, kept at the same head, and dropped by anything else", () => {
-  const first = markedHeads({ [PR]: APPROVED }, { [PR]: read() }, undefined, 1000, never);
+test("A11-291: a head is stamped when it is first read approved, green, mergeable and out of the queue, kept at the same head, and dropped by anything else", async () => {
+  const first = (await markedHeads({ [PR]: APPROVED }, { [PR]: read() }, undefined, 1000, never));
   assert.equal(first[PR].unmergedSince, 1000);
-  assert.equal(markedHeads({ [PR]: APPROVED }, { [PR]: read() }, first, 5000, never)[PR].unmergedSince, 1000, "a later read at the same head keeps the stamp, so the record does not change");
-  assert.equal(markedHeads({ [PR]: { ...APPROVED, head: "new" } }, { [PR]: read({ head: "new" }) }, first, 6000, never)[PR].unmergedSince, 6000, "a new head counts again");
+  assert.equal((await markedHeads({ [PR]: APPROVED }, { [PR]: read() }, first, 5000, never))[PR].unmergedSince, 1000, "a later read at the same head keeps the stamp, so the record does not change");
+  assert.equal((await markedHeads({ [PR]: { ...APPROVED, head: "new" } }, { [PR]: read({ head: "new" }) }, first, 6000, never))[PR].unmergedSince, 6000, "a new head counts again");
   const dropped: [string, PullHead, Partial<PullFeedback>][] = [
     ["a review that is not an approval", { ...APPROVED, review: "none" }, {}],
     ["a red required check", { ...APPROVED, red: ["test"] }, {}],
@@ -34,18 +34,18 @@ test("A11-291: a head is stamped when it is first read approved, green, mergeabl
     ["a merged pull request", APPROVED, { state: "merged" }],
   ];
   for (const [name, head, over] of dropped) {
-    assert.equal("unmergedSince" in markedHeads({ [PR]: head }, { [PR]: read(over) }, first, 7000, never)[PR], false, name);
+    assert.equal("unmergedSince" in (await markedHeads({ [PR]: head }, { [PR]: read(over) }, first, 7000, never))[PR], false, name);
   }
-  assert.equal("unmergedSince" in markedHeads({ [PR]: APPROVED }, {}, first, 8000, never)[PR], false, "a head the watch did not read carries no mark");
+  assert.equal("unmergedSince" in (await markedHeads({ [PR]: APPROVED }, {}, first, 8000, never))[PR], false, "a head the watch did not read carries no mark");
 });
 
-test("A11-291: the reason is asked for, and recorded, only once the pull request has been out of the queue for more than 15 minutes", () => {
+test("A11-291: the reason is asked for, and recorded, only once the pull request has been out of the queue for more than 15 minutes", async () => {
   const stamped = { [PR]: { ...APPROVED, unmergedSince: NOW } };
   const asked: string[] = [];
-  const asking = (repository: string) => { asked.push(repository); return NO_FLOW; };
-  assert.equal("notMerging" in markedHeads({ [PR]: APPROVED }, { [PR]: read() }, stamped, NOW + 15 * MINUTE, asking)[PR], false, "exactly 15 minutes is not more");
+  const asking = async (repository: string) => { asked.push(repository); return NO_FLOW; };
+  assert.equal("notMerging" in (await markedHeads({ [PR]: APPROVED }, { [PR]: read() }, stamped, NOW + 15 * MINUTE, asking))[PR], false, "exactly 15 minutes is not more");
   assert.deepEqual(asked, [], "and nothing is asked of the host before then");
-  const late = markedHeads({ [PR]: APPROVED }, { [PR]: read() }, stamped, NOW + 16 * MINUTE, asking)[PR];
+  const late = (await markedHeads({ [PR]: APPROVED }, { [PR]: read() }, stamped, NOW + 16 * MINUTE, asking))[PR];
   assert.equal(late.unmergedSince, NOW);
   assert.equal(late.notMerging, "a11ign/plugin has no merge flow: auto-merge is not allowed, no .github/workflows/auto-arm.yml");
   assert.deepEqual(asked, [REPO]);
@@ -63,14 +63,14 @@ test("A11-291: the reason is the repository's missing flow when it can be read, 
   assert.equal(whyNotMerging(REPO, read(), undefined), "it is not in the merge queue", "nor is a host that cannot be asked");
 });
 
-test("A11-291: a head that adds the arm workflow to a repository without one is marked as a first install the day it is approved, and no other head is", () => {
+test("A11-291: a head that adds the arm workflow to a repository without one is marked as a first install the day it is approved, and no other head is", async () => {
   const adds = read({ files: ["README.md", ARM] });
-  assert.equal(markedHeads({ [PR]: APPROVED }, { [PR]: adds }, undefined, NOW, () => NO_FLOW)[PR].firstFlow, true, "approved just now, no waiting");
-  assert.equal("firstFlow" in markedHeads({ [PR]: APPROVED }, { [PR]: adds }, undefined, NOW, () => (flowOf({ autoMerge: true, armWorkflow: true })))[PR], false, "a repository that has the workflow: an edit of it is any change");
-  assert.equal("firstFlow" in markedHeads({ [PR]: APPROVED }, { [PR]: adds }, undefined, NOW, () => null)[PR], false, "a repository the host could not read is not called flowless");
-  assert.equal("firstFlow" in markedHeads({ [PR]: { ...APPROVED, review: "none" } }, { [PR]: adds }, undefined, NOW, () => NO_FLOW)[PR], false, "an unapproved head waits");
-  assert.equal("firstFlow" in markedHeads({ [PR]: APPROVED }, { [PR]: read({ files: ["README.md"] }) }, undefined, NOW, never)[PR], false, "and nothing is asked of a pull request that touches no arm workflow");
-  assert.equal("firstFlow" in markedHeads({ [PR]: APPROVED }, { [PR]: { ...adds, state: "merged" } }, undefined, NOW, () => NO_FLOW)[PR], false, "a merged one is done");
+  assert.equal((await markedHeads({ [PR]: APPROVED }, { [PR]: adds }, undefined, NOW, async () => NO_FLOW))[PR].firstFlow, true, "approved just now, no waiting");
+  assert.equal("firstFlow" in (await markedHeads({ [PR]: APPROVED }, { [PR]: adds }, undefined, NOW, async () => (flowOf({ autoMerge: true, armWorkflow: true }))))[PR], false, "a repository that has the workflow: an edit of it is any change");
+  assert.equal("firstFlow" in (await markedHeads({ [PR]: APPROVED }, { [PR]: adds }, undefined, NOW, async () => null))[PR], false, "a repository the host could not read is not called flowless");
+  assert.equal("firstFlow" in (await markedHeads({ [PR]: { ...APPROVED, review: "none" } }, { [PR]: adds }, undefined, NOW, async () => NO_FLOW))[PR], false, "an unapproved head waits");
+  assert.equal("firstFlow" in (await markedHeads({ [PR]: APPROVED }, { [PR]: read({ files: ["README.md"] }) }, undefined, NOW, never))[PR], false, "and nothing is asked of a pull request that touches no arm workflow");
+  assert.equal("firstFlow" in (await markedHeads({ [PR]: APPROVED }, { [PR]: { ...adds, state: "merged" } }, undefined, NOW, async () => NO_FLOW))[PR], false, "a merged one is done");
 });
 
 test("A11-291: a run with a stuck pull request reads Approved, not merging, with the reason on its card; one that is not stuck still reads Awaiting review", () => {
@@ -119,21 +119,21 @@ test("A11-291: a first install of a merge flow is a note the day it is approved,
   assert.equal(mergeNote(installing, NOW), FIRST_FLOW_NOTE, "and it comes before the hour's");
 });
 
-test("A11-291: a flicker in what GitHub knows of mergeable keeps the count, and a conflict ends it", () => {
+test("A11-291: a flicker in what GitHub knows of mergeable keeps the count, and a conflict ends it", async () => {
   const stamped = { [PR]: { ...APPROVED, unmergedSince: NOW } };
-  const unknown = markedHeads({ [PR]: APPROVED }, { [PR]: read({ mergeable: false }) }, stamped, NOW + 5 * MINUTE, never);
+  const unknown = (await markedHeads({ [PR]: APPROVED }, { [PR]: read({ mergeable: false }) }, stamped, NOW + 5 * MINUTE, never));
   assert.equal(unknown[PR].unmergedSince, NOW, "UNKNOWN right after the base moved is not a change of the pull request");
-  assert.equal("unmergedSince" in markedHeads({ [PR]: APPROVED }, { [PR]: read({ mergeable: false }) }, undefined, NOW, never)[PR], false, "but a count is not started from it");
-  assert.equal("unmergedSince" in markedHeads({ [PR]: APPROVED }, { [PR]: read({ mergeable: false, conflicting: true }) }, stamped, NOW + 5 * MINUTE, never)[PR], false, "and a conflict ends it");
+  assert.equal("unmergedSince" in (await markedHeads({ [PR]: APPROVED }, { [PR]: read({ mergeable: false }) }, undefined, NOW, never))[PR], false, "but a count is not started from it");
+  assert.equal("unmergedSince" in (await markedHeads({ [PR]: APPROVED }, { [PR]: read({ mergeable: false, conflicting: true }) }, stamped, NOW + 5 * MINUTE, never))[PR], false, "and a conflict ends it");
 });
 
-test("A11-291: a pull request into another branch than the default one (a stacked pull request) waits on its base and is not called stuck; the count still runs", () => {
+test("A11-291: a pull request into another branch than the default one (a stacked pull request) waits on its base and is not called stuck; the count still runs", async () => {
   const stamped = { [PR]: { ...APPROVED, unmergedSince: NOW } };
-  const stacked = markedHeads({ [PR]: APPROVED }, { [PR]: read({ base: "a11-250-step-1" }) }, stamped, NOW + 90 * MINUTE, () => FULL_FLOW)[PR];
+  const stacked = (await markedHeads({ [PR]: APPROVED }, { [PR]: read({ base: "a11-250-step-1" }) }, stamped, NOW + 90 * MINUTE, async () => FULL_FLOW))[PR];
   assert.equal("notMerging" in stacked, false);
   assert.equal(stacked.unmergedSince, NOW);
-  assert.equal(markedHeads({ [PR]: APPROVED }, { [PR]: read({ base: "main" }) }, stamped, NOW + 90 * MINUTE, () => FULL_FLOW)[PR].notMerging, "it is not in the merge queue");
-  assert.equal(markedHeads({ [PR]: APPROVED }, { [PR]: read({ base: "a11-250-step-1" }) }, stamped, NOW + 90 * MINUTE, () => null)[PR].notMerging, "it is not in the merge queue", "where the default branch is not known it is called stuck, as before");
+  assert.equal((await markedHeads({ [PR]: APPROVED }, { [PR]: read({ base: "main" }) }, stamped, NOW + 90 * MINUTE, async () => FULL_FLOW))[PR].notMerging, "it is not in the merge queue");
+  assert.equal((await markedHeads({ [PR]: APPROVED }, { [PR]: read({ base: "a11-250-step-1" }) }, stamped, NOW + 90 * MINUTE, async () => null))[PR].notMerging, "it is not in the merge queue", "where the default branch is not known it is called stuck, as before");
 });
 
 test("A11-291: a run reads Approved, not merging only when every open pull request is stuck; one still waiting for its review keeps the run Awaiting review, and the stuck one is still named", () => {
@@ -175,11 +175,11 @@ test("A11-291: the reason for a private repository is the merge bot's: its absen
   assert.equal(whyNotMerging(REPO, read(), flowOf({ autoMerge: false, armWorkflow: false, mergeBot: true })), "a11ign/plugin has no merge flow: auto-merge is not allowed, no .github/workflows/auto-arm.yml", "a public repository's merge bot is not its flow");
 });
 
-test("A11-291: a head that adds the merge bot to a repository with neither workflow is a first install; one that adds it where the bot or the arm workflow already is, is not", () => {
+test("A11-291: a head that adds the merge bot to a repository with neither workflow is a first install; one that adds it where the bot or the arm workflow already is, is not", async () => {
   const bot = ".github/workflows/merge-bot.yml";
   const adds = read({ files: ["README.md", bot] });
-  const first = (flow: ReturnType<typeof flowOf>) => "firstFlow" in markedHeads({ [PR]: APPROVED }, { [PR]: adds }, undefined, NOW, () => flow)[PR];
-  assert.equal(first(flowOf({ ...PRIVATE, mergeBot: false })), true);
-  assert.equal(first(flowOf({ ...PRIVATE, mergeBot: true })), false, "the repository has the bot already");
-  assert.equal(first(flowOf({ autoMerge: true, armWorkflow: true, mergeBot: false })), false, "the repository has the arm workflow already");
+  const first = async (flow: ReturnType<typeof flowOf>) => "firstFlow" in (await markedHeads({ [PR]: APPROVED }, { [PR]: adds }, undefined, NOW, async () => flow))[PR];
+  assert.equal(await first(flowOf({ ...PRIVATE, mergeBot: false })), true);
+  assert.equal(await first(flowOf({ ...PRIVATE, mergeBot: true })), false, "the repository has the bot already");
+  assert.equal(await first(flowOf({ autoMerge: true, armWorkflow: true, mergeBot: false })), false, "the repository has the arm workflow already");
 });

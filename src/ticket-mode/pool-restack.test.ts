@@ -253,7 +253,7 @@ test("A11-248: a code host that cannot update a branch restacks nothing, and the
 
 test("A11-248: a pull request the code host cannot read keeps the restack note it had", async () => {
   const note = "#2 conflicts with main after #1 merged: a conflict round resolves it";
-  const { host, sweep, run } = world({ next: { retargets: { [NEXT]: note } }, codeHost: (fake) => ({ ...fake, stackMergeFactsOf: (url) => (url === NEXT ? null : fake.stackMergeFactsOf!(url)) }) });
+  const { host, sweep, run } = world({ next: { retargets: { [NEXT]: note } }, codeHost: (fake) => ({ ...fake, stackMergeFactsOf: async (url) => (url === NEXT ? null : fake.stackMergeFactsOf!(url)) }) });
   await sweep();
   assert.deepEqual(host.branchUpdates.asked, []);
   assert.deepEqual(run().retargets, { [NEXT]: note });
@@ -261,7 +261,7 @@ test("A11-248: a pull request the code host cannot read keeps the restack note i
 
 test("A11-248: a note about a pull request's base comes first, and the pull request is not restacked", async () => {
   const stale = `Needs retarget: ${NEXT} still targets ${BOTTOM_BRANCH}, whose branch is gone: retarget it by hand`;
-  const { host, sweep, run } = world({ codeHost: (fake) => ({ ...fake, sweepRetargets: () => ({ [NEXT]: stale }) }) });
+  const { host, sweep, run } = world({ codeHost: (fake) => ({ ...fake, sweepRetargets: async () => ({ [NEXT]: stale }) }) });
   await sweep();
   assert.deepEqual(host.branchUpdates.asked, []);
   assert.deepEqual(run().retargets, { [NEXT]: stale });

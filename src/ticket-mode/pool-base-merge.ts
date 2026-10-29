@@ -134,6 +134,15 @@ function listThenDecide(ctx: PoolContext, entry: Entry, pull: HeadedPull): Promi
   return listedWithin(ctx.listingMs, conflictFilesOf(ctx, place, read.head)).then((files) => decideRound(ctx, entry, pull, files));
 }
 
+/** The listing of a real conflict's files that {@link mergeBaseInto} hands back, in a box: a promise returned from an async function would be waited for there, and the watch must not wait for the listing. */
+export type ConflictListing = Readonly<{ settled: Promise<void> }>;
+
+/** {@link listThenDecide}, boxed: null when the conflict was decided at once. */
+function listingOf(ctx: PoolContext, entry: Entry, pull: HeadedPull): ConflictListing | null {
+  const settled = listThenDecide(ctx, entry, pull);
+  return settled === null ? null : { settled };
+}
+
 /** Whether the board's merge of the base (or a refusal of it) has stood at the head the pull request is still read at for longer than {@link MERGE_GRACE_MS}: the host accepted the merge and never made it. PURE over the clock. */
 function acceptedButUnmoved(ctx: PoolContext, known: BaseMerge | undefined, head: string): boolean {
   const waited = ctx.now() - (known?.at ?? ctx.now());
@@ -154,14 +163,14 @@ function needOf(read: PullFeedback): "merging" | "behind" | null {
 }
 
 /**
- * What the board does about one open pull request of `entry`'s ticket that conflicts with its base or is behind it. Returns null when nothing is pending, and otherwise a promise that settles once the files of a real conflict were listed and
- * the record says what is decided ({@link BaseMerge}), which the caller answers by deciding the round again.
+ * What the board does about one open pull request of `entry`'s ticket that conflicts with its base or is behind it. Answers once the update was asked and its outcome recorded ({@link BaseMerge}), so the caller's pass sees the record: null when no files are to be listed, and otherwise the listing of a real conflict's files, which
+ * settles once the record says what is decided, and which the caller answers by deciding the round again.
  *
  * It does nothing for a pull request that is not open, one the host does not say the head of, one in the merge queue, one of a run stacked in its repository (its restack keeps it current), a host that cannot update a branch, and a pull
  * request it has done its part for at this head. A run that holds a workspace is not pushed to: the pull request is recorded as waiting, once, and answered when the run ends. Otherwise the host merges the base in: `updated` is recorded and the
  * armed auto-merge carries on from the new head; `conflict` starts the listing of the files; `up-to-date` means the read was stale and records nothing, so the next head is looked at; a refusal is said once and asked again on the next sweep.
  */
-export function mergeBaseInto(ctx: PoolContext, entry: Entry, pull: OpenPull): Promise<void> | null {
+export async function mergeBaseInto(ctx: PoolContext, entry: Entry, pull: OpenPull): Promise<ConflictListing | null> {
   const { url, read } = pull;
   const { head } = read;
   const kind = needOf(read);
@@ -170,7 +179,7 @@ export function mergeBaseInto(ctx: PoolContext, entry: Entry, pull: OpenPull): P
   if (repo === undefined || entry.stackBase?.repo === repo) return null;
   const known = ctx.baseMerges.get(url);
   const unmoved = acceptedButUnmoved(ctx, known, head);
-  if (unmoved && kind === "merging") return listThenDecide(ctx, entry, { url, read: { ...read, head } });
+  if (unmoved && kind === "merging") return listingOf(ctx, entry, { url, read: { ...read, head } });
   if (!unmoved && triedAt(known, head, entry, { url, now: ctx.now() })) return null;
   // A pull request held red on main is brought up to date once main is green (A11-215), not before: merging a branch that is only behind would take the red in.
   const held = entry.checkHeads?.[url];
@@ -180,7 +189,7 @@ export function mergeBaseInto(ctx: PoolContext, entry: Entry, pull: OpenPull): P
     if (!ownsPull(entry, url)) remember(ctx, entry, url, read.base, { head, step: "waiting" });
     return null;
   }
-  const result = askUpdate(ctx, url, head);
+  const result = await askUpdate(ctx, url, head);
   switch (result.kind) {
     case "updated":
       remember(ctx, entry, url, read.base, { head, step: kind });
@@ -192,7 +201,7 @@ export function mergeBaseInto(ctx: PoolContext, entry: Entry, pull: OpenPull): P
       ctx.baseMerges.set(url, { head, step: "refused", reason: result.reason, at: known?.step === "refused" && known.head === head ? known.at : ctx.now() });
       return null;
     case "conflict":
-      return listThenDecide(ctx, entry, { url, read: { ...read, head } });
+      return listingOf(ctx, entry, { url, read: { ...read, head } });
   }
 }
 
@@ -286,7 +295,14 @@ async function sweepTicket(ctx: PoolContext, key: string): Promise<boolean> {
   const latest = find(ctx.store.get(), key);
   if (!isStillKept(latest)) return false;
   const before = new Map(open.map(({ url }) => [url, ctx.baseMerges.get(url)]));
-  await Promise.all(open.flatMap((pull) => mergeBaseInto(ctx, latest, pull) ?? []));
+  // The updates are asked one after another, as they always were; the listings of real conflicts' files go on together.
+  const listings: Promise<void>[] = [];
+  for (const pull of open) {
+    if (!isStillKept(find(ctx.store.get(), key))) break;
+    const listing = await mergeBaseInto(ctx, latest, pull);
+    if (listing !== null) listings.push(listing.settled);
+  }
+  await Promise.all(listings);
   const decided = open.filter(({ url, read }) => {
     const now = ctx.baseMerges.get(url);
     return now !== before.get(url) && now?.step === "round" && now.head === read.head;

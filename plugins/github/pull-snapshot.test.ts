@@ -182,13 +182,13 @@ test("A11-365: a write the plugin makes to a pull request drops its repository's
   await host.readPullState(url);
   await host.readPullState(url);
   assert.equal(calls.length, 1);
-  host.commentOnPull?.(url, "a comment");
+  await host.commentOnPull?.(url, "a comment");
   await host.readPullState(url);
   assert.equal(calls.length, 2, "a comment changes the pull request: the next read asks");
-  host.closePull?.(url, "closing");
+  await host.closePull?.(url, "closing");
   await host.readPullState(url);
   assert.equal(calls.length, 3);
-  host.updateBranch?.(url, HEAD);
+  await host.updateBranch?.(url, HEAD);
   await host.readPullState(url);
   assert.equal(calls.length, 4);
 });
