@@ -1,7 +1,6 @@
 // no-token: gh -- A11-374: a conflict round answers no review, so it is not one of the board's own rounds
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { keptPullRound } from "./pool-base-merge.ts";
 import { conflictFields, conflictRoundFeedback, conflictRoundLeft } from "./queue/queue-conflict-rounds.ts";
 import type { Entry, Queue } from "./queue/queue-entries-and-outcomes.ts";
 import { MAX_FEEDBACK_ROUNDS, conflictRound, feedbackRound, roundsLeft } from "./queue/queue-transitions.ts";
@@ -28,9 +27,6 @@ const on = (base: string | null, url = URL_A) => ({ [url]: { base } });
 
 test("A11-374: a conflict round does not use up the cap: a run at its 3 rounds still gets one, and its rounds are as they were", () => {
   const spent = { rounds: MAX_FEEDBACK_ROUNDS, freeRounds: 2 };
-  const kept = keptPullRound(queueOf(run("A11-1", { ...spent, phase: "queued", afterRound: undefined })), "A11-1", [PULL], "Conflict.", 9, on("base-1"));
-  assert.equal(at(kept).review?.length, 1, "keptPullRound queues the round");
-  assert.deepEqual([at(kept).rounds, at(kept).freeRounds], [MAX_FEEDBACK_ROUNDS, 2], "keptPullRound: neither rounds nor freeRounds moved");
   const unwatched = conflictRound(queueOf(parked(spent)), "A11-1", "Conflict.", 9, on("base-1"));
   assert.equal(at(unwatched).phase, "queued", "conflictRound queues the round");
   assert.deepEqual([at(unwatched).rounds, at(unwatched).freeRounds], [MAX_FEEDBACK_ROUNDS, 2], "conflictRound: neither moved");

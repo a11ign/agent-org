@@ -2,7 +2,9 @@ A queued ticket that overlaps a run in its repository is started at once, stacke
 
 Acceptance:
 ```bash
-npx rstest run --config scripts/rstest/rstest.config.ts src/ticket-mode/overlap-stack.test.ts src/ticket-mode/conflict-rounds.test.ts src/ticket-mode/overlap-hold.test.ts src/ticket-mode/queue.test.ts src/ticket-mode/overlap-stack-merge.test.ts
+npx rstest run --config scripts/rstest/rstest.config.ts src/ticket-mode/overlap-stack.test.ts src/ticket-mode/conflict-rounds.test.ts src/ticket-mode/overlap-hold.test.ts
+npx rstest run --config scripts/rstest/rstest.config.ts src/ticket-mode/queue.test.ts
+npx rstest run --config scripts/rstest/rstest.config.ts src/ticket-mode/overlap-stack-merge.test.ts src/ticket-mode/pool-base-merge.test.ts
 ```
 
 Consumer-declaration: none -- the board's own start and round decisions; `ticket:serve` and its pool are the only consumers and change in this pull request.
