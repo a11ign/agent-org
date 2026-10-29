@@ -21,6 +21,7 @@ const NOW = 1_000_000;
 const REPOSITORY = "a11ign/agent-org";
 const URL = fakePullUrl(REPOSITORY, 7);
 const KEY = "A11-1";
+const CONFLICT_1 = "Conflict 1 on #7:";
 const MERGE_WITH = "Merge it with: git fetch origin main && git merge origin/main, resolve the files above, run the tests and push.";
 
 /** Real git with every `GIT_*` scrubbed, synchronous for the test's own setup. */
@@ -35,9 +36,9 @@ const commit = (cwd: string, file: string, text: string, message: string) => {
 
 /**
  * A bare origin whose `main` moved to `a.txt: theirs` after a pull request (#7, at `refs/pull/7/head`, as the host keeps it) branched from it and changed the same line to `ours`, and a clone of it: merging `main` into the pull request conflicts in `a.txt`.
- * Returns the clone and the pull request's head.
+ * Returns the clone, the pull request's head and the commit `main` is at in the clone.
  */
-function conflictingRepository(): Readonly<{ clone: string; head: string }> {
+function conflictingRepository(): Readonly<{ clone: string; head: string; base: string }> {
   const root = tmpDir("base-merge-");
   const origin = join(root, "origin.git");
   const seed = join(root, "seed");
@@ -54,7 +55,7 @@ function conflictingRepository(): Readonly<{ clone: string; head: string }> {
   git(seed, ["push", "-q", "origin", "main"]);
   const clone = join(root, "clone");
   git(root, ["clone", "-q", origin, clone]);
-  return { clone, head };
+  return { clone, head, base: git(clone, ["rev-parse", "origin/main"]) };
 }
 
 /** The ticket queued for its next plan step, step 1's pull request #7 open and in no entry: what happened to a11ign/agent-org#1921. Paused, so no run starts. */
@@ -64,13 +65,13 @@ const nextStepQueue = (more: Partial<Entry> = {}): Queue => nextStepQueued(KEY, 
 const finishedOnPull = (): Queue => finishedWith(KEY, { kind: "ready-pr", prs: [{ repo: "agent-org", url: URL }] }, NOW - 10);
 
 /** The pool over a world with pull request #7 (`pull` is what the host says of it), the queue `queue`, and the real repository when `listable`; sweeps wait for the kept pull requests' sweep. */
-function world({ queue = nextStepQueue(), pull = { conflicting: true }, listable = true, git: listing, listingMs }: { queue?: Queue | ((head: string) => Queue); pull?: FakePull["feedback"]; listable?: boolean; git?: Git; listingMs?: number } = {}) {
+function world({ queue = nextStepQueue(), pull = { conflicting: true }, listable = true, git: listing, listingMs }: { queue?: Queue | ((head: string, base: string) => Queue); pull?: FakePull["feedback"]; listable?: boolean; git?: Git; listingMs?: number } = {}) {
   const repository = conflictingRepository();
   const host = createFakeCodeHost("worker-bot");
   host.seedPull(REPOSITORY, 7, { head: repository.head, feedback: pull });
   const clock = { at: NOW };
   const fixture = poolFixture({ keys: [KEY], now: () => clock.at, ...(listable ? { clones: { "agent-org": repository.clone } } : {}) });
-  fixture.store.set(typeof queue === "function" ? queue(repository.head) : queue);
+  fixture.store.set(typeof queue === "function" ? queue(repository.head, repository.base) : queue);
   const pool = fixture.restart({ codeHost: host, ...(listing === undefined ? {} : { git: listing }), ...(listingMs === undefined ? {} : { listingMs }) });
   const sweep = async () => {
     await pool.watchFeedback();
@@ -82,7 +83,7 @@ function world({ queue = nextStepQueue(), pull = { conflicting: true }, listable
   const entry = (): Entry => find(fixture.store.get(), KEY)!;
   const events = () => logOf(fixture.store.get(), KEY).filter((event) => event.kind === "base-merge").map((event) => (event.kind === "base-merge" ? event.step : ""));
   const asked = () => host.branchUpdates.asked.length;
-  return { host, fixture, pool, sweep, entry, events, asked, clock, head: repository.head };
+  return { host, fixture, pool, sweep, entry, events, asked, clock, head: repository.head, base: repository.base };
 }
 
 /** The wait for something the board does after an await (the files of a conflict being listed), bounded. */
@@ -110,8 +111,8 @@ test("A11-286: a conflicting pull request of a ticket queued for its next step s
   const nextStep = entry();
   await sweep();
   assert.equal(asked(), 1, "the host was asked to merge the base in first");
-  assert.deepEqual([entry().phase, entry().rounds, entry().review], ["queued", 1, [{ repo: "agent-org", url: URL }]], "a round over the conflicting pull request");
-  assert.equal(entry().feedback, [`${URL} conflicts with its base branch main.`, "Merging main into it conflicted in a.txt.", MERGE_WITH].join("\n"));
+  assert.deepEqual([entry().phase, entry().rounds, entry().review], ["queued", 0, [{ repo: "agent-org", url: URL }]], "a round over the conflicting pull request, which is no round of the board's own (A11-374)");
+  assert.equal(entry().feedback, [CONFLICT_1, `${URL} conflicts with its base branch main.`, "Merging main into it conflicted in a.txt.", MERGE_WITH].join("\n"));
   assert.deepEqual(entry().afterRound, nextStep, "the step it was queued for, as it was, waits behind the round");
   assert.deepEqual(events(), ["round"]);
   assert.deepEqual(logOf(fixture.store.get(), KEY).filter((event) => event.kind === "round").map((event) => (event.kind === "round" ? event.cause : "")), ["conflict"]);
@@ -127,7 +128,7 @@ test("A11-286: a conflicting pull request of a ticket queued for its next step s
   host.pullAt(URL)!.feedback = {};
   await sweep();
   assert.deepEqual([entry().phase, entry().queuedAt, entry().steps, entry().review, entry().afterRound], ["queued", NOW, nextStep.steps, undefined, undefined], "the next step is back, and no longer waits");
-  assert.equal(entry().rounds, 1, "the round it took still counts toward the board's cap");
+  assert.deepEqual([entry().rounds, entry().conflictRounds], [0, { [URL]: 1 }], "the conflict round it took counts toward no cap, and toward the pull request's own count");
   assert.deepEqual(logOf(fixture.store.get(), KEY).at(-1), { kind: "requeued", why: "conflict-round", at: NOW });
 });
 
@@ -219,19 +220,27 @@ test("A11-286: a refused update is said once and tried again on the next sweep, 
   assert.deepEqual([asked(), events()], [3, ["merging"]], "once it merges, the card says so");
 });
 
-test("A11-286: at the cap no round is queued, and the card says the board's rounds are used up, once for the head", async () => {
-  const { host, sweep, entry, events, asked } = world({ queue: nextStepQueue({ rounds: 3 }) });
+test("A11-286: a conflict at the base the last conflict round was started at, with the rounds used up, queues no round, and the card says so, once for the head", async () => {
+  const { host, sweep, entry, events, asked } = world({ queue: (_head, base) => nextStepQueue({ rounds: 3, conflictBase: { [URL]: base } }) });
   host.branchUpdates.answers.set(URL, { kind: "conflict" });
   await sweep();
   await sweep();
   assert.deepEqual([entry().phase, entry().review, entry().afterRound, asked(), events()], ["queued", undefined, undefined, 1, ["capped"]]);
 });
 
+test("A11-374: a conflict at a base that moved since the last conflict round starts a round although the board's own rounds are used up, and counts toward none", async () => {
+  const { host, sweep, entry, events } = world({ queue: nextStepQueue({ rounds: 3, conflictBase: { [URL]: "an-earlier-base" } }) });
+  host.branchUpdates.answers.set(URL, { kind: "conflict" });
+  await sweep();
+  assert.deepEqual([entry().phase, entry().rounds, events()], ["queued", 3, ["round"]]);
+  assert.match(entry().feedback ?? "", /^Conflict 1 on #7:\n/);
+});
+
 test("A11-286: a conflict whose files cannot be listed still starts the round, and says so", async () => {
   const { host, sweep, entry } = world({ listable: false });
   host.branchUpdates.answers.set(URL, { kind: "conflict" });
   await sweep();
-  assert.equal(entry().feedback, [`${URL} conflicts with its base branch main.`, "Merging main into it conflicted, and the board could not list the files.", MERGE_WITH].join("\n"));
+  assert.equal(entry().feedback, [CONFLICT_1, `${URL} conflicts with its base branch main.`, "Merging main into it conflicted, and the board could not list the files.", MERGE_WITH].join("\n"));
 });
 
 test("A11-286: a run that ended asking a person, whose outcome names no pull request, is handed the round over the pull request an earlier outcome opened", async () => {
@@ -239,8 +248,8 @@ test("A11-286: a run that ended asking a person, whose outcome names no pull req
   const { host, sweep, entry } = world({ queue: asking });
   host.branchUpdates.answers.set(URL, { kind: "conflict" });
   await sweep();
-  assert.deepEqual([entry().phase, entry().rounds, entry().review, entry().afterRound], ["queued", 1, [{ repo: "agent-org", url: URL }], undefined], "a round on the pull request, and no step to hold back");
-  assert.match(entry().feedback ?? "", /^https:\/\/github\.com\/a11ign\/agent-org\/pull\/7 conflicts with its base branch main\.\nMerging main into it conflicted in a\.txt\./);
+  assert.deepEqual([entry().phase, entry().rounds, entry().review, entry().afterRound], ["queued", 0, [{ repo: "agent-org", url: URL }], undefined], "a round on the pull request, and no step to hold back");
+  assert.match(entry().feedback ?? "", /^Conflict 1 on #7:\nhttps:\/\/github\.com\/a11ign\/agent-org\/pull\/7 conflicts with its base branch main\.\nMerging main into it conflicted in a\.txt\./);
 });
 
 test("A11-286: a finished run's own conflicting pull request is merged up to date first, and its round names the files once they are listed", async () => {
@@ -250,8 +259,8 @@ test("A11-286: a finished run's own conflicting pull request is merged up to dat
   assert.equal(asked(), 1, "the base merge is asked for before any round");
   assert.equal(entry().phase, "finished", "and the round waits for the files of the conflict");
   await until(() => entry().phase === "queued", "the round starts once the files are listed");
-  assert.equal(entry().feedback, [`${URL} conflicts with its base branch main.`, "Merging main into it conflicted in a.txt.", MERGE_WITH].join("\n"));
-  assert.deepEqual([entry().rounds, entry().afterRound, events()], [1, undefined, ["round"]]);
+  assert.equal(entry().feedback, [CONFLICT_1, `${URL} conflicts with its base branch main.`, "Merging main into it conflicted in a.txt.", MERGE_WITH].join("\n"));
+  assert.deepEqual([entry().rounds, entry().afterRound, events()], [0, undefined, ["round"]]);
 });
 
 test("A11-286: a finished run's conflicting pull request that merges up to date starts no round, and the merge is no person's answer to a run that asked one", async () => {
@@ -276,7 +285,7 @@ test("A11-286: a merge the host accepted that never moved the head is taken as a
   clock.at += 2 * 60_000;
   host.branchUpdates.answers.set(URL, { kind: "conflict" });
   await sweep();
-  assert.deepEqual([asked(), events(), entry().rounds], [1, ["merging", "round"], 1], "past it the conflict is real, with no second ask of the host");
+  assert.deepEqual([asked(), events(), entry().rounds], [1, ["merging", "round"], 0], "past it the conflict is real, with no second ask of the host");
   assert.match(entry().feedback ?? "", /conflicted in a\.txt/);
 });
 
@@ -286,7 +295,7 @@ test("A11-286: a refusal that lasts ten minutes on a conflicting pull request st
   await sweep();
   clock.at += 11 * 60_000;
   await sweep();
-  assert.deepEqual([asked(), entry().phase, entry().rounds], [1, "queued", 1], "asked until the grace ran out, and then a round");
+  assert.deepEqual([asked(), entry().phase, entry().rounds], [1, "queued", 0], "asked until the grace ran out, and then a round");
   assert.deepEqual(entry().review, [{ repo: "agent-org", url: URL }]);
 });
 
@@ -382,10 +391,10 @@ test("A11-293: a real conflict on a run handed to a person is held for it: the c
   assert.equal(answered.phase, "queued");
 });
 
-test("A11-293: a conflict on a run that asked a person, at the board's cap, is not dropped: the card says it and Respond carries it", async () => {
+test("A11-293: a conflict on a run that asked a person, at the board's cap and at the base it was last asked about, is not dropped: the card says it and Respond carries it", async () => {
   // A needs-human outcome names no pull request: the run's review round does.
   const asking = replace(finishedWith(KEY, { kind: "needs-human", reason: "which side wins?", escalation: "reserved" }, NOW - 10), KEY, (entry) => ({ ...entry, rounds: 3, review: [{ repo: "agent-org", url: URL }] }));
-  const { host, pool, fixture, entry, events } = world({ queue: asking });
+  const { host, pool, fixture, entry, events } = world({ queue: (_head, base) => replace(asking, KEY, (each) => ({ ...each, conflictBase: { [URL]: base } })) });
   host.branchUpdates.answers.set(URL, { kind: "conflict" });
   await pool.watchFeedback();
   await until(() => events().includes("capped"), "the conflict is decided");

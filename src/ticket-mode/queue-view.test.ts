@@ -52,7 +52,7 @@ test("A11-270: a run in the list has its ticket's key, title and address and no 
   assert.deepEqual(view.openedPullLog, Object.fromEntries(Object.entries(queue.runLog ?? {}).flatMap(([key, events]) => { const opened = events.filter(({ kind }) => kind === "pr-opened"); return opened.length === 0 ? [] : [[key, opened]]; })), "the log is sent as far as the Runs page reads it: the events that opened a pull request");
   assert.ok(Object.keys(view.openedPullLog).length > 0 && Object.values(view.openedPullLog).every((events) => events.every(({ kind }) => kind === "pr-opened")));
   const first = view.entries[0];
-  assert.deepEqual(Object.keys(first.ticket).sort(), ["key", "title", "url"]);
+  assert.deepEqual(Object.keys(first.ticket).sort(), ["branch", "key", "title", "url"]);
   for (const entry of view.entries) for (const field of Object.keys(entry)) assert.ok(([...LIST_FIELDS, "ci"] as string[]).includes(field), `${entry.ticket.key} sends ${field}`);
   assert.equal(view.entries.some((entry) => "feedback" in entry || "plannedSteps" in entry || "session" in entry), false, "what only a run's own page draws is not listed");
 });

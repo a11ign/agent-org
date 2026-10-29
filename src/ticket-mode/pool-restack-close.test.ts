@@ -184,7 +184,7 @@ test("A11-248: after a restart a read that still shows the head from before the 
 });
 
 test("A11-248: a member whose restack conflicted is never closed, whatever its files", async () => {
-  const { host, pool, next, closes, emptied } = world({ next: { rounds: 3 } });
+  const { host, pool, next, closes, emptied } = world({ next: { rounds: 3, conflictBase: { [NEXT]: `merged ${BOTTOM}` } } });
   host.branchUpdates.answers.set(NEXT, { kind: "conflict" });
   await pool.retargetStacked();
   assert.match(next().retargets![NEXT], /^#2 conflicts with main after #1 merged/);

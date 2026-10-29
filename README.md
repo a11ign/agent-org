@@ -440,6 +440,11 @@ Ticket mode is two services, both on `127.0.0.1`:
   cannot say; they are read again every two minutes, so a relation changed in the tracker counts. A run that waited names its blockers and
   their pull requests in its brief, and checks that any release it depends on is out before relying on it. A run whose plan cannot be
   downloaded waits, saying why, and the board asks again on every pass; the other runs start, and it takes no slot (A11-125).
+- **Stacked on a run it overlaps, not held (A11-374).** A queued run whose files overlap a run in its repository that has an open pull request, or a branch the board read as pushed, starts at once, branched from that run's branch, with its
+  pull request based on that branch; A11-248's restack moves the stack onto the default branch as each pull request below it merges, and the arm bot merges it bottom first. Its card says why: "Stacked on A11-196 #12 (overlaps `src/pool.ts`)". What a run
+  claims is, in this order, the paths its plan declares, the files of its open pull requests, the paths its ticket's `## Region` names, and, when it has none of these, its whole repository (the card reads "same repository, files not known"): a run at work
+  with no files known holds its whole repository, so a ticket queued without a plan is not treated as overlapping nothing. A run that overlaps two open stacks stacks on the one most recently updated, and its brief names the other's branch. Against a run that has pushed
+  no branch yet it waits ("Waits for A11-196 to push its branch"). The rest of this item is the wait a run has where no stack is possible (no repository is known for it):
 - **Held back by an overlap.** A queued run whose plan declares a path another run holds waits, as Blocked, saying which run it waits on
   and every path both touch, such as "Waits on A11-196 #12: both touch ui/src/shell/App.tsx, ui/test/fixtures.ts". When every path is only a
   directory claim and no file is shared, the line adds whose directory to narrow: "a folder claim, not a shared file: narrow A11-196's `ui/test/` in its plan" (A11-212). A run holds the paths its plan declares, and the files its open pull requests change, from the moment it ends.
@@ -460,6 +465,7 @@ Ticket mode is two services, both on `127.0.0.1`:
   running ticket also writes into is sent back once by the planner's Stop hook, naming the narrower paths, and refused on the board as Needs you when it still does. A file claim is never
   refused: two tickets that name one file share it, and the overlap wait puts them in turn. The list is written beside the brief (`claims-given.json`) so the brief, the hook and the board judge
   the plan against what the planner was shown.
+- **A conflict round is not a round of the board's own (A11-374).** The board's own rounds on one pull request are capped (three between a person's approvals); a round that only resolves a conflict with a base that other merges moved answers no review, so it counts toward no cap. A conflict at the base the last conflict round was started at counts, since that is the worker's own failure to resolve it. A conflict round's reason reads "Conflict <n> on #<pr>:", and from the 4th conflict on one pull request the feedback names the pull requests it keeps colliding with.
 - **Start anyway, for an overlap.** A run Blocked only on such an overlap, and on no ticket that blocks it, offers Start anyway. It
   starts beside the run it overlapped, the board says so on its row ("Started anyway: it overlapped NBF-1 #12 on src/pool.ts; a person
   overrode the wait") and the log records it. It does not pass a blocker, nor a plan that could not be downloaded (A11-125).

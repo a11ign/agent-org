@@ -3,6 +3,7 @@ import type { RerunRecord } from "./check-rerun-record.ts";
 import type { QueueHead } from "./queue-head.ts";
 import type { BlockerPullDeclared, PartialOverruled, PullDeclared } from "./pull-declared.ts";
 import type { CiView } from "./ci-note.ts";
+import type { OverlapStackRecord } from "./overlap-stack.ts";
 
 export type ViewTicket = Readonly<{
   key: string; title: string; status: string; statusOrder: number; priority: number; project: string | null; parent?: string | null; uploads?: readonly string[];
@@ -25,7 +26,7 @@ type ViewWait = Readonly<{ kind: "ticket"; key: string }> | Readonly<{ kind: "pu
 
 /** The fields of a queue entry the board reads. */
 export type ViewEntry = Readonly<{
-  ticket: Readonly<{ key: string; url?: string }>; phase: string; outcome?: Readonly<{ kind: string; prs?: readonly PullRef[]; edit?: ViewEdit; reason?: string; where?: string; unreadable?: boolean }>; waiting?: boolean;
+  ticket: Readonly<{ key: string; url?: string; branch?: string }>; phase: string; outcome?: Readonly<{ kind: string; prs?: readonly PullRef[]; edit?: ViewEdit; reason?: string; where?: string; unreadable?: boolean }>; waiting?: boolean;
   /** What the first line of the dialog a waiting run sits on says, when the pool could read one (A11-174). */
   prompt?: string;
   /** A Claude Code safety prompt the pool answered No to on this run, the command it asked about (A11-174) and the subagent that raised it, absent for the main agent (A11-209). */
@@ -106,6 +107,15 @@ export type ViewEntry = Readonly<{
   projectRepo?: string | null;
   /** The repository-prefixed paths its plan says its work touches, as last read: unset until read, empty when the plan declares none. */
   paths?: readonly string[];
+  /**
+   * The paths its ticket's `## Region` names (A11-374), as `<repo>:<path>`, or `:<path>` where the Region names no repository this machine clones (the run's own, see `repoOf`). Unset until the ticket's text was read; empty when the Region names none. A queued run with no plan
+   * paths and no pull request claims these (`claimOf`).
+   */
+  regionPaths?: readonly string[];
+  /** The commit the run's own branch is at on the remote of the repository it works in, once the board read it pushed there (A11-374): what a queued run that overlaps this one builds on while this one has no pull request. */
+  pushed?: Readonly<{ repo: string; head: string }>;
+  /** The run this one was started stacked on because their files overlap (A11-374): see {@link OverlapStackRecord}. Cleared once the base's work is over (`dropSettledOverlapStacks`). */
+  overlapStack?: OverlapStackRecord;
   /** The paths each step section of its plan lists, by step number, when the plan has step sections that list any (A11-175): see `currentStepPaths`. */
   stepPaths?: Readonly<Record<string, readonly string[]>>;
   /**

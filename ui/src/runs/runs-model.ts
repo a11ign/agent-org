@@ -210,7 +210,7 @@ function linesOf(entry: RunEntry, { queue, publisher, now }: NoteContext, ci?: s
     promptNote(entry),
     sharedRunNote(entry, entries),
     waits.length > 0 ? `Waits on ${waits.map((blocker) => `${blocker.key} (${blocker.status})`).join(", ")}` : null,
-    stacked.length > 0 ? stackNote(stacked) : null,
+    stacked.length > 0 ? stackNote(stacked, entry.overlapStack) : null,
     stackWaitNote(entry, entries),
     stackedOnItNote(entry, entries),
     rebaseNote(entry),

@@ -10,6 +10,7 @@ import { openPulls } from "../board-view/view-types-and-filters.ts";
 import { workStatus } from "../board-view/pull-status-and-notes.ts";
 import { find, replace, reviewRound, type Entry, type Queue } from "./queue-entries-and-outcomes.ts";
 import { logEvent, shortReason } from "./run-log.ts";
+import type { ConflictOn } from "./queue-conflict-rounds.ts";
 
 /** What the planner decided about a run at the round cap (A11-343): `round` records a Decision (`reason`, in words) and starts one more round with it; `waiting` marks the run as waiting on the ticket `ticket`. */
 export type CapDecision = Readonly<{ decision: "round"; reason: string } | { decision: "waiting"; ticket: string; reason: string }>;
@@ -22,9 +23,10 @@ export type TicketWait = Readonly<{ key: string; reason: string; since: number }
 
 /**
  * How the board answers a trigger for a round (A11-343). `planner`: this machine has a planner, so a run that used up its rounds goes to the planner, which is not a person, and not to Needs you. `uncounted`: the feedback answers nothing but a check that the
- * ticket's Decisions call unrelated or that the board already reran and found red again, so the round is not one of the board's own and the cap does not apply to it.
+ * ticket's Decisions call unrelated or that the board already reran and found red again, so the round is not one of the board's own and the cap does not apply to it. `conflictOnly` (A11-374): the feedback answers nothing but these pull requests' conflicts with their base, which
+ * is no review, so the round counts toward no cap unless the base has not moved since the last one (`conflictRoundLeft`).
  */
-export type RoundOptions = Readonly<{ planner?: boolean; uncounted?: boolean }>;
+export type RoundOptions = Readonly<{ planner?: boolean; uncounted?: boolean; conflictOnly?: ConflictOn }>;
 
 /** The most times the board asks the planner about one run at its round cap and lets it start one more round (A11-343): past it the planner may only mark the run as waiting on a ticket, or escalate. */
 export const MAX_CAP_PLANS = 3;

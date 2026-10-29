@@ -11,6 +11,8 @@ import type { RunWorker } from "./queue-run-detail.ts";
 import { loggedPersonRound } from "./queue-person-round.ts";
 import { respondRefusal } from "./queue-respond-refusal.ts";
 import { capPlannerRound, type RoundOptions } from "./queue-cap.ts";
+import { MAX_FEEDBACK_ROUNDS, roundsLeft } from "./queue-round-cap.ts";
+import { conflictFields, conflictRoundFeedback, conflictRoundLeft, type ConflictOn } from "./queue-conflict-rounds.ts";
 import { logEvent, logHas, shortReason, type RoundCause } from "./run-log.ts";
 import { pathsUnread } from "./start-reads.ts";
 import { declaredMark, repeatOf, undeclaredMark } from "../wait-on/wait-note.ts";
@@ -79,8 +81,7 @@ export function startAnyway(queue: Queue, key: string, now: number): Queue {
   return replace(queue, key, (e) => ({ ...e, overlapOverride: { holder: wait.key, pull: wait.pull, path: wait.path, at: now } }));
 }
 
-/** The most review rounds the board starts on its own, on new feedback, between two of a person's approvals. */
-export const MAX_FEEDBACK_ROUNDS = 3;
+export { MAX_FEEDBACK_ROUNDS, roundsLeft };
 
 /**
  * New feedback reached a watched run's pull requests after its last round ended (`feedback` says what), a check is red at a head the board has not answered, or
@@ -107,8 +108,10 @@ const withHeads = (entry: Entry, heads: CheckHeads | undefined): Entry => (heads
  * A round for `entry` that answers `feedback`, for `cause`, or, once the board has started {@link MAX_FEEDBACK_ROUNDS} of its own, the run handed to a person with the latest feedback named, which logs that it needs them
  * when the words of the hand-back are new (A11-219).
  */
-function roundOrHandBack(queue: Queue, entry: Entry, feedback: string, now: number, cause: RoundCause, { planner = false, uncounted = false }: RoundOptions = {}): Queue {
+function roundOrHandBack(queue: Queue, entry: Entry, feedback: string, now: number, cause: RoundCause, { planner = false, uncounted = false, conflictOnly }: RoundOptions = {}): Queue {
   const rounds = entry.rounds ?? 0;
+  // A round that answers only a conflict answers no review (A11-374): it is not one of the board's own rounds, unless the base has not moved since the last one. At the cap such a conflict goes where any other trigger goes.
+  if (conflictOnly !== undefined && conflictRoundLeft(entry, conflictOnly)) return queueConflictRound(queue, entry, feedback, now, cause, conflictOnly);
   // Bounded: the board starts at most MAX_FEEDBACK_ROUNDS of them, so a check that is red for a reason of the worker's own cannot be asked for ever (A11-343).
   if (uncounted && (entry.freeRounds ?? 0) < MAX_FEEDBACK_ROUNDS) return queueUncountedRound(queue, entry, feedback, now, cause);
   if (rounds < MAX_FEEDBACK_ROUNDS) return queueRound(queue, entry, feedback, now, cause);
@@ -136,19 +139,20 @@ export function recordCheckHeads(queue: Queue, key: string, heads: CheckHeads): 
   return replace(queue, key, (entry) => (entry.phase === "finished" ? { ...entry, checkHeads: heads } : entry));
 }
 
-/** Whether the board may start one more round of its own on `entry`: it has started fewer than {@link MAX_FEEDBACK_ROUNDS} since a person approved. */
-export const roundsLeft = (entry: Entry): boolean => (entry.rounds ?? 0) < MAX_FEEDBACK_ROUNDS;
-
 /** `entry` goes back on the queue, at the end, as a review round that answers `feedback`, for `cause`, and counts as one of the board's own rounds. */
 const queueRound = (queue: Queue, entry: Entry, feedback: string, now: number, cause: RoundCause): Queue =>
   queuedFor(queue, entry, { feedback, rounds: (entry.rounds ?? 0) + 1 }, now, cause);
+
+/** The round that resolves a conflict (A11-374): the feedback is numbered and may name the pull requests it keeps colliding with, and it writes its conflict counts instead of a round of the board's own, except at an unmoved base. */
+const queueConflictRound = (queue: Queue, entry: Entry, feedback: string, now: number, cause: RoundCause, on: ConflictOn): Queue =>
+  queuedFor(queue, entry, { feedback: conflictRoundFeedback(queue, entry, on, feedback), ...conflictFields(entry, on) }, now, cause);
 
 /** The same round, counted toward no cap (A11-343): it answers only checks that count toward none, and the run's `freeRounds` counts it, so there are at most {@link MAX_FEEDBACK_ROUNDS} of them. */
 const queueUncountedRound = (queue: Queue, entry: Entry, feedback: string, now: number, cause: RoundCause): Queue =>
   queuedFor(queue, entry, { feedback, rounds: entry.rounds ?? 0, freeRounds: (entry.freeRounds ?? 0) + 1 }, now, cause);
 
 /** `entry` goes back on the queue, at the end, as a review round with `fields`, and the log says why. */
-function queuedFor(queue: Queue, entry: Entry, fields: Pick<Entry, "feedback" | "rounds" | "freeRounds">, now: number, cause: RoundCause): Queue {
+function queuedFor(queue: Queue, entry: Entry, fields: Pick<Entry, "feedback" | "rounds" | "freeRounds" | "conflictRounds" | "conflictBase">, now: number, cause: RoundCause): Queue {
   const round: Entry = { ...reviewRound(entry, openPulls(entry), now), ...fields };
   const queued = { ...queue, entries: [...queue.entries.filter((e) => e.ticket.key !== entry.ticket.key), round] };
   return logEvent(queued, entry.ticket.key, now, { kind: "round", cause, reason: shortReason(fields.feedback ?? "") });
@@ -159,11 +163,11 @@ function queuedFor(queue: Queue, entry: Entry, fields: Pick<Entry, "feedback" | 
  * {@link resumesOnConflict} names it. Its ticket goes back on the queue as a review round that answers the conflict and resumes the same worker,
  * as {@link feedbackRound} does for a watched run. At the cap nothing is queued, and no `handedBack` is set: a parked run already reads Needs you.
  */
-export function conflictRound(queue: Queue, key: string, feedback: string, now: number): Queue {
+export function conflictRound(queue: Queue, key: string, feedback: string, now: number, on: ConflictOn): Queue {
   const entry = find(queue, key);
-  const cannotResume = entry === undefined || entry.phase !== "finished" || isWatched(entry) || !resumesOnConflict(entry) || !roundsLeft(entry);
+  const cannotResume = entry === undefined || entry.phase !== "finished" || isWatched(entry) || !resumesOnConflict(entry) || !conflictRoundLeft(entry, on);
   if (cannotResume) return queue;
-  return queueRound(queue, entry, feedback, now, "conflict");
+  return queueConflictRound(queue, entry, feedback, now, "conflict", on);
 }
 
 /** Why a run cannot be published, by the machine's `when`. */

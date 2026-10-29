@@ -5,6 +5,7 @@ import { joinRunning } from "./pool-reads.ts";
 import { existsSync } from "node:fs";
 import { headsToRead, readHeads, undoEarlyCompletion } from "./pool-start.ts";
 import { readBlockersRecorded } from "./pool-start-reads.ts";
+import { conflictRoundLeft, type ConflictAt, type ConflictOn } from "./queue/queue-conflict-rounds.ts";
 import { completableRuns, MAX_FEEDBACK_ROUNDS, recordPullStates, recordRetargets, recordStackBase, recordTrackerStates, roundsLeft, unsettledKeys } from "./queue/queue-transitions.ts";
 import { SETTLED, type Entry } from "./queue/queue-entries-and-outcomes.ts";
 import { earlyCompletions, nextStepRuns, queueNextStep } from "./queue/queue-next-step.ts";
@@ -19,6 +20,7 @@ import { startStackConflictRound } from "./pool-watch.ts";
 import { openPulls, pullsOf, type StackBaseRecord } from "./board-view/view-types-and-filters.ts";
 import { pullLabel } from "./board-view/pull-label.ts";
 import { resumesOnConflict } from "./board-view/pull-status-and-notes.ts";
+import { stackBlockersOf } from "./board-view/waits-on.ts";
 import { isPullReadyToMerge } from "./board-view/pull-readiness.ts";
 import { handBackNote, isStackMergeNote, stackMergeRequestOf, stackMergeStep } from "./stack-merge.ts";
 import { settledByPulls } from "./board-view/pull-settled.ts";
@@ -196,7 +198,7 @@ export async function rebaseStacked(ctx: PoolContext): Promise<void> {
 function stackBaseOf(ctx: PoolContext, entry: Entry): StackBaseRecord | undefined {
   if (entry.stackBase !== undefined) return entry.stackBase;
   const file = readStackBase(stackBaseFile(ctx.settings, entry.ticket.key));
-  const blocker = file === null ? undefined : (entry.blockers ?? []).find((b) => b.branch === file.branch);
+  const blocker = file === null ? undefined : stackBlockersOf(entry).find((b) => b.branch === file.branch);
   return file === null || blocker === undefined ? undefined : { key: blocker.key, repo: file.repo, branch: file.branch, sha: file.sha };
 }
 
@@ -256,7 +258,9 @@ async function mergeMoved({ ctx, entry, found, record, head, worktree }: {
   const result = await mergeBaseIn({ git, worktree, own: entry.ticket.branch, base: current });
   const latest = store.get().entries.find((e) => e.ticket.key === key) ?? entry;
   const roundable = resumesOnConflict(latest) && openPulls(latest).some((pr) => pr.repo === found.repo);
-  const capped = roundsLeft(latest) ? undefined : MAX_FEEDBACK_ROUNDS;
+  const urls = openPulls(latest).filter((pr) => pr.repo === found.repo).map((pr) => pr.url);
+  const conflictOn: ConflictOn = Object.fromEntries(urls.map((url) => [url, { base: `${found.key} ${head}` }]));
+  const capped = conflictRoundLeft(latest, conflictOn) ? undefined : MAX_FEEDBACK_ROUNDS;
   const recorded: MergeResult = !result.ok && result.conflict !== undefined && !roundable ? { ok: false, reason: result.reason } : result;
   update(ctx, (queue) => recordStackBase(queue, key, afterMerge(stackBaseIn(queue, key, current), head, recorded, now(), capped)));
   if (result.ok && result.pushed !== undefined) {
@@ -269,8 +273,7 @@ async function mergeMoved({ ctx, entry, found, record, head, worktree }: {
     return;
   }
   if (!roundable) return;
-  const urls = openPulls(latest).filter((pr) => pr.repo === found.repo).map((pr) => pr.url);
-  startStackConflictRound(ctx, key, conflictFeedback(urls, found, result.conflict));
+  startStackConflictRound(ctx, key, conflictFeedback(urls, found, result.conflict), conflictOn);
 }
 
 /**
@@ -298,7 +301,7 @@ async function retargetEach(ctx: PoolContext): Promise<void> {
     // Only a finished run is asked: the board shows its note on a finished run alone, and a run that is not finished is not written to here. Only a run
     // stacked on a blocker's branch has a base the board moves; any other pull request's base is the worker's own, and is left as it is.
     if (entry.phase !== "finished") continue;
-    const stacked = new Set((entry.blockers ?? []).flatMap(({ branch }) => (branch ? [branch] : [])));
+    const stacked = new Set(stackBlockersOf(entry).flatMap(({ branch }) => (branch ? [branch] : [])));
     const urls = openPulls(entry).map(({ url }) => url);
     if (urls.length === 0) continue;
     const previous = entry.retargets ?? {};
@@ -315,7 +318,7 @@ async function retargetEach(ctx: PoolContext): Promise<void> {
     const next = Object.keys(notes).length === 0 ? undefined : notes;
     if (JSON.stringify(next ?? {}) !== JSON.stringify(previous)) update(ctx, (queue) => recordRetargets(queue, entry.ticket.key, next));
     // The round starts after its note is recorded: the note is written over a finished run alone.
-    if (restacks.feedback.length > 0) startStackConflictRound(ctx, entry.ticket.key, restacks.feedback.join("\n"));
+    if (restacks.feedback.length > 0) startStackConflictRound(ctx, entry.ticket.key, restacks.feedback.join("\n"), restacks.conflicts);
   }
 }
 
@@ -377,10 +380,10 @@ function factsOf(ctx: PoolContext, url: string, read: Map<string, StackMergeFact
 }
 
 /** What {@link sweepRestacks} decided for a run: the note of each pull request, the pull requests whose branch it moved, found conflicting or has closed (or is to close), and the feedback of the conflict round to start. */
-type RestackSweep = Readonly<{ notes: Record<string, string>; moved: ReadonlySet<string>; feedback: readonly string[] }>;
+type RestackSweep = Readonly<{ notes: Record<string, string>; moved: ReadonlySet<string>; feedback: readonly string[]; conflicts: ConflictOn }>;
 
 /** What the restack decided for one pull request: its note (null clears it), whether its branch moved or conflicts or the member is empty, and the feedback of the conflict round it earns. */
-type MemberRestack = Readonly<{ note: string | null; moved: boolean; feedback: string | null }>;
+type MemberRestack = Readonly<{ note: string | null; moved: boolean; feedback: string | null; conflict?: ConflictAt }>;
 
 /** The restack notes a run has now, for the pull requests it still holds open. */
 const restackNotesOf = (entry: Entry, urls: readonly string[]): Record<string, string> =>
@@ -398,22 +401,23 @@ const restackedOnly = (notes: Readonly<Record<string, string>>): Record<string, 
 async function sweepRestacks(ctx: PoolContext, entry: Entry, { urls, bases, facts, told }: { urls: readonly string[]; bases: Readonly<Record<string, string>>; facts: Map<string, StackMergeFacts | null>; told: { unsupported: boolean } }): Promise<RestackSweep> {
   const kept = restackNotesOf(entry, urls);
   const found = restackMembers(ctx, entry, bases);
-  if (found === null || !canRestack(ctx, told)) return { notes: restackedOnly(kept), moved: new Set(), feedback: [] };
-  if (!mergeable(entry) || ctx.rebasing.has(entry.ticket.key)) return { notes: kept, moved: new Set(), feedback: [] };
+  if (found === null || !canRestack(ctx, told)) return { notes: restackedOnly(kept), moved: new Set(), feedback: [], conflicts: {} };
+  if (!mergeable(entry) || ctx.rebasing.has(entry.ticket.key)) return { notes: kept, moved: new Set(), feedback: [], conflicts: {} };
   const { stack, members, candidates } = found;
-  const round = conflictRoundOf(entry);
   const notes = { ...kept };
   const moved = new Set<string>();
   const feedback: string[] = [];
+  const conflicts: Record<string, ConflictAt> = {};
   for (const { url } of members) {
-    const decided = await restackMember(ctx, entry, { url, stack, candidates, facts, round });
+    const decided = await restackMember(ctx, entry, { url, stack, candidates, facts });
     if (decided === null) continue;
     if (decided.note === null) delete notes[url];
     else notes[url] = decided.note;
     if (decided.moved) moved.add(url);
     if (decided.feedback !== null) feedback.push(decided.feedback);
+    if (decided.conflict !== undefined) conflicts[url] = decided.conflict;
   }
-  return { notes, moved, feedback };
+  return { notes, moved, feedback, conflicts };
 }
 
 /** The stack a run is in, its open pull requests in the stack's repository that have no base note, and the blocker's pull requests there; null when the run has no stack, no member or no blocker pull request to look at, which is said once in the log. */
@@ -433,9 +437,9 @@ function restackMembers(ctx: PoolContext, entry: Entry, bases: Readonly<Record<s
   return null;
 }
 
-/** What a conflict found by the restack earns the run: a conflict round where it resumes on one and has rounds left, none at the cap, and none where the board does not resume it. PURE. */
-function conflictRoundOf(entry: Entry): ConflictRound {
-  if (resumesOnConflict(entry)) return roundsLeft(entry) ? "round" : "capped";
+/** What a conflict found by the restack earns the run: a conflict round where it resumes on one and the cap does not stop it (a conflict at the base the last conflict round was started at counts toward the cap, A11-374), the cap otherwise, and none where the board does not resume it. PURE. */
+function conflictRoundOf(entry: Entry, on: ConflictOn): ConflictRound {
+  if (resumesOnConflict(entry)) return conflictRoundLeft(entry, on) ? "round" : "capped";
   return "none";
 }
 
@@ -449,8 +453,8 @@ function canRestack(ctx: PoolContext, told: { unsupported: boolean }): boolean {
 }
 
 /** One open member of a stack: merge the default branch into it when the member below has merged and it has not been done, and say what happened. Null: nothing is decided for it, so its note stands. */
-async function restackMember(ctx: PoolContext, entry: Entry, { url, stack, candidates, facts, round }: {
-  url: string; stack: StackBaseRecord; candidates: readonly string[]; facts: Map<string, StackMergeFacts | null>; round: ConflictRound;
+async function restackMember(ctx: PoolContext, entry: Entry, { url, stack, candidates, facts }: {
+  url: string; stack: StackBaseRecord; candidates: readonly string[]; facts: Map<string, StackMergeFacts | null>;
 }): Promise<MemberRestack | null> {
   const key = entry.ticket.key;
   const previous = entry.retargets?.[url];
@@ -458,6 +462,9 @@ async function restackMember(ctx: PoolContext, entry: Entry, { url, stack, candi
   const below = await belowOf(ctx, stack.key, candidates, done);
   const read = below === null ? null : factsOf(ctx, url, facts);
   if (below === null || read === null) return null;
+  // The base this conflict would be against is the default branch as it is once the member below has merged: the same merged pull request again is the same base (A11-374).
+  const at: ConflictAt = { base: `merged ${below.url}` };
+  const round = conflictRoundOf(entry, { [url]: at });
   const step = restackStep({ facts: read, below, done, previousNote: previous });
   if (!step.restack) {
     const closing = done === undefined ? null : await closeEmptyMember(ctx, entry, { url, below, done, read, previousNote: previous });
@@ -472,7 +479,7 @@ async function restackMember(ctx: PoolContext, entry: Entry, { url, stack, candi
   if (result.kind === "updated") followHead(ctx, key, url, read.head);
   log(`${key}: ${note}`);
   const feedback = result.kind === "conflict" && round === "round" ? restackFeedback({ url, defaultBranch: read.defaultBranch, below, key }) : null;
-  return { note, moved: result.kind === "updated" || result.kind === "conflict", feedback };
+  return { note, moved: result.kind === "updated" || result.kind === "conflict", feedback, ...(feedback === null ? {} : { conflict: at }) };
 }
 
 /** The restack a pull request's note says was made: the note stands in for the memory a restart lost. A note about a conflict or a refusal does not, so the restack is made again and finds the conflict, or finds it resolved. */

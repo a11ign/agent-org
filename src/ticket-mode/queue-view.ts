@@ -22,12 +22,12 @@ import type { Ticket } from "./source.ts";
 export const LIST_FIELDS = [
   "ticket", "phase", "outcome", "waiting", "prompt", "declined", "trackerState", "pullStates", "queuedAt", "startedAt", "finishedAt", "workspace", "pane", "blockers", "model", "effort", "pathsFailure", "pathsRetryAt", "blockersReadAt", "blockersFailure", "toolVersion",
   "stoppedForUpdate", "stoppedForBlocker", "ciHold", "resume", "sessionWait", "sessionNote", "overlapOverride", "waitSince", "repos", "plan", "planned", "ticketChange", "ticketChanges", "learned", "review", "batch", "talkFrom",
-  "blockersDeclared", "talk", "partial", "declared", "partialOverruled", "steps", "completedBy", "reopenFailure", "afterMerge", "planSteps", "plannedRepo", "projectRepo", "paths", "stepPaths", "pullFiles", "waitMerged",
+  "blockersDeclared", "talk", "partial", "declared", "partialOverruled", "steps", "completedBy", "reopenFailure", "afterMerge", "planSteps", "plannedRepo", "projectRepo", "paths", "regionPaths", "overlapStack", "pushed", "stepPaths", "pullFiles", "waitMerged",
   "published", "worker", "handedBack", "readopted", "lostInRestart", "working", "verdictNotPosted", "reviewerRefused", "retargets", "stackBase", "checkHeads", "queueHeads", "outcomeHeads", "outcomeBlocks", "pullHeads", "tokens", "waitingOnTicket", "opened",
 ] as const satisfies readonly (keyof Entry)[];
 
 /** What a list draws of a run's ticket. The description and the rest of its text are in the run's full read. */
-export type ListTicket = Pick<Ticket, "key" | "title" | "url">;
+export type ListTicket = Pick<Ticket, "key" | "title" | "url" | "branch">;
 
 /** A run as the list is sent it. */
 export type QueueListEntry = Readonly<Omit<Pick<Entry, (typeof LIST_FIELDS)[number]>, "ticket" | "talkFrom"> & {
@@ -69,9 +69,9 @@ const withoutFiles = (stepPaths: NonNullable<Entry["stepPaths"]>): NonNullable<E
 export function listEntry(entry: Entry, ci?: CiView): QueueListEntry {
   const unread = unreadFields(entry);
   const fields = LIST_FIELDS.filter((field) => entry[field] !== undefined && !unread.includes(field));
-  const { ticket: { key, title, url }, ticketChanges, talkFrom, stepPaths, ...kept } = Object.fromEntries(fields.map((field) => [field, entry[field]])) as unknown as Entry;
+  const { ticket: { key, title, url, branch }, ticketChanges, talkFrom, stepPaths, ...kept } = Object.fromEntries(fields.map((field) => [field, entry[field]])) as unknown as Entry;
   return {
-    ...kept, ticket: { key, title, url },
+    ...kept, ticket: { key, title, url, branch },
     ...(ticketChanges ? { ticketChanges: ticketChanges.slice(-1) } : {}),
     ...(stepPaths ? { stepPaths: claimsNothing(entry) ? withoutFiles(stepPaths) : stepPaths } : {}),
     ...(talkFrom ? { talkFrom: listEntry(talkFrom as Entry) } : {}),

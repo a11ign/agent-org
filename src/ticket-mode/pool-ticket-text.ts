@@ -23,6 +23,7 @@ import { parseStamp, urlsNamedIn } from "./plan-stamp.ts";
 import { planDecisionsOf } from "./plan-decisions.ts";
 import { stepSectionText } from "./plan-step-sections.ts";
 import { descriptionHash, ticketReadOf, type TicketRead } from "./ticket-read.ts";
+import { noteRegion } from "./pool-overlap.ts";
 import { BLOCKERS_DIR, diffText, type Finding, PREVIOUS_PLAN_DIR } from "./brief-ticket-text.ts";
 import { ticketDir } from "./ticket-paths.ts";
 import { DEFAULT_KEYWORDS, type Ticket } from "./source.ts";
@@ -317,6 +318,8 @@ export async function followTicketTexts(ctx: PoolContext): Promise<void> {
     const text = texts.get(entry.ticket.key);
     if (text === undefined) continue;
     const read = ticketReadOf({ description: text.description, updatedAt: text.updatedAt }, ctx.now());
+    // The Region of a ticket whose text changed is the one the overlap hold claims for it (A11-374).
+    noteRegion(ctx, entry.ticket.key, read.description);
     if (entry.phase === "queued") markStale(ctx, entry, read);
     else if (entry.phase === "finished") followFinished(ctx, entry, read);
     else tellLiveRun(ctx, entry, read);

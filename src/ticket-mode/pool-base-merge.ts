@@ -22,7 +22,7 @@ import { log, messageOf, update } from "./pool-state.ts";
 import type { PoolContext } from "./pool-context.ts";
 import type { PullFeedback } from "../plugins/contracts/code-host.ts";
 import { find, replace, reviewRound, SETTLED, type Entry, type PullRequest, type Queue } from "./queue/queue-entries-and-outcomes.ts";
-import { roundsLeft } from "./queue/queue-transitions.ts";
+import { conflictFields, conflictRoundFeedback, conflictRoundLeft, type ConflictOn } from "./queue/queue-conflict-rounds.ts";
 import { type BaseMergeStep, logEvent, shortReason } from "./queue/run-log.ts";
 import { conflictLine } from "./worker-files.ts";
 
@@ -42,12 +42,13 @@ const MERGE_GRACE_MS = 10 * 60_000;
 const PUSHED: ReadonlySet<string> = new Set(["ready-pr", "reviewed"]);
 
 /** Whether the board has done what it does for `head` already: a try that made a decision (an update, a real conflict), a wait for a worker that still holds the branch is not one, nor is a refusal, the cap is while no round is left, and a conflict held for a person is while the run stays one no worker is woken for. */
-function triedAt(known: BaseMerge | undefined, head: string, entry: Entry): boolean {
+function triedAt(known: BaseMerge | undefined, head: string, entry: Entry, { url, now }: { url: string; now: number }): boolean {
   if (known === undefined || known.head !== head) return false;
   if (known.step === "waiting" || known.step === "refused") return false;
   // A conflict held for a person is decided again once the run is one the board answers (a Respond, an approval): the round then names the files and the merge command.
   if (known.step === "held") return !resumesOnConflict(entry);
-  return known.step === "capped" ? !roundsLeft(entry) : true;
+  // A conflict held for the cap is read again once it is old enough for the base to have moved (A11-374), as a merge the host accepted is: a base that moved earns a round.
+  return known.step === "capped" ? !conflictRoundLeft(entry, { [url]: { base: known.baseSha ?? null } }) && now - (known.at ?? now) < MERGE_GRACE_MS : true;
 }
 
 /** Remember `next` for the pull request, and say it on the run's card and in the log when it is a step the board takes and it is new for the head (the card reads each step once for a head). */
@@ -72,27 +73,34 @@ function listingPlace(ctx: PoolContext, url: string, base: string | null): Reado
  * The files a real conflict touches, from a dry merge of the pull request's head into its base in the repository's clone: `git merge-tree --write-tree --name-only` exits 1 on a conflict and prints the merged tree's id and then the
  * conflicted files. Null when they cannot be listed: a fetch or a merge that failed, or a merge that finds no conflict. Never rejects.
  */
-async function conflictFilesOf(ctx: PoolContext, place: NonNullable<ReturnType<typeof listingPlace>>, head: string): Promise<readonly string[] | null> {
+async function conflictFilesOf(ctx: PoolContext, place: NonNullable<ReturnType<typeof listingPlace>>, head: string): Promise<Listing> {
   const { clone, number, repo, base } = place;
   try {
     await ctx.git(clone, ["fetch", "--quiet", "origin", base, `pull/${number}/head`]);
     await ctx.git(clone, ["merge-tree", "--write-tree", "--name-only", "--no-messages", `origin/${base}`, head]);
-    return null;
+    return { files: null, baseSha: await baseShaOf(ctx, clone, base) };
   } catch (err) {
     const { code, stdout } = err as { code?: unknown; stdout?: unknown };
     if (code !== 1 || typeof stdout !== "string") {
       log(`${repo} #${number}: the files its conflict touches could not be listed (${messageOf(err).split("\n")[0]})`);
-      return null;
+      return { files: null, baseSha: null };
     }
     const files = stdout.split("\n").slice(1).map((line) => line.trim()).filter((line) => line !== "");
-    return files.length === 0 ? null : files;
+    return { files: files.length === 0 ? null : files, baseSha: await baseShaOf(ctx, clone, base) };
   }
 }
 
-/** `listing`, or null when it has not settled within `ms` (a fetch or a merge that hangs must not leave the pull request unanswered for ever) (the board then starts the round without the files). Never rejects, and leaves no timer behind. */
-function listedWithin(ms: number, listing: Promise<readonly string[] | null>): Promise<readonly string[] | null> {
+/** The commit `origin/<base>` is at in `clone`, which the listing fetched, or null when it cannot be read. It tells a conflict at a base that moved from one at a base that did not (A11-374). Never rejects. */
+const baseShaOf = (ctx: PoolContext, clone: string, base: string): Promise<string | null> =>
+  ctx.git(clone, ["rev-parse", `origin/${base}`]).then((out) => (typeof out === "string" ? out.trim() || null : null)).catch(() => null);
+
+/** What the listing of a conflict found: the files it touches (null when they could not be listed) and the commit its base was at (null when not read). */
+type Listing = Readonly<{ files: readonly string[] | null; baseSha: string | null }>;
+
+/** `listing`, or one that found nothing when it has not settled within `ms` (a fetch or a merge that hangs must not leave the pull request unanswered for ever) (the board then starts the round without the files). Never rejects, and leaves no timer behind. */
+function listedWithin(ms: number, listing: Promise<Listing>): Promise<Listing> {
   let timer: ReturnType<typeof setTimeout> | undefined;
-  const late = new Promise<null>((resolve) => { timer = setTimeout(() => { log("the files of a conflict were not listed in time, so its round starts without them"); resolve(null); }, ms); });
+  const late = new Promise<Listing>((resolve) => { timer = setTimeout(() => { log("the files of a conflict were not listed in time, so its round starts without them"); resolve({ files: null, baseSha: null }); }, ms); });
   return Promise.race([listing, late]).finally(() => clearTimeout(timer));
 }
 
@@ -100,15 +108,15 @@ function listedWithin(ms: number, listing: Promise<readonly string[] | null>): P
  * A real conflict's decision, once its files are known (or known to be unlistable): a round when the run has one left, and the cap otherwise. A finished run's own pull request that the board starts no round for, since the run is a person's (a run handed
  * back is not woken for a conflict, {@link resumesOnConflict}), is `held`: its card says the conflict, and its Respond carries it (A11-293).
  */
-function decideRound(ctx: PoolContext, entry: Entry, { url, read }: HeadedPull, files: readonly string[] | null): void {
+function decideRound(ctx: PoolContext, entry: Entry, { url, read }: HeadedPull, { files, baseSha }: Listing): void {
   const latest = find(ctx.store.get(), entry.ticket.key) ?? entry;
-  remember(ctx, latest, url, read.base, { head: read.head, step: conflictStep(latest, url), files });
+  remember(ctx, latest, url, read.base, { head: read.head, step: conflictStep(latest, url, baseSha), files, baseSha });
 }
 
-/** The step a real conflict on `url` is decided as: `held` for a finished run's own pull request that no worker is woken for, else `round` while the run has one left and `capped` once it has not. PURE. */
-function conflictStep(entry: Entry, url: string): "held" | "round" | "capped" {
+/** The step a real conflict on `url` is decided as: `held` for a finished run's own pull request that no worker is woken for, else `round` while the conflict earns one (a conflict round counts toward no cap, except at a base that did not move since the last one, A11-374) and `capped` once it does not. PURE. */
+function conflictStep(entry: Entry, url: string, baseSha: string | null): "held" | "round" | "capped" {
   if (ownsPull(entry, url) && !resumesOnConflict(entry)) return "held";
-  return roundsLeft(entry) ? "round" : "capped";
+  return conflictRoundLeft(entry, { [url]: { base: baseSha } }) ? "round" : "capped";
 }
 
 /**
@@ -119,7 +127,7 @@ function listThenDecide(ctx: PoolContext, entry: Entry, pull: HeadedPull): Promi
   const { url, read } = pull;
   const place = listingPlace(ctx, url, read.base);
   if (place === null) {
-    decideRound(ctx, entry, pull, null);
+    decideRound(ctx, entry, pull, { files: null, baseSha: null });
     return null;
   }
   ctx.baseMerges.set(url, { head: read.head, step: "listing" });
@@ -163,7 +171,7 @@ export function mergeBaseInto(ctx: PoolContext, entry: Entry, pull: OpenPull): P
   const known = ctx.baseMerges.get(url);
   const unmoved = acceptedButUnmoved(ctx, known, head);
   if (unmoved && kind === "merging") return listThenDecide(ctx, entry, { url, read: { ...read, head } });
-  if (!unmoved && triedAt(known, head, entry)) return null;
+  if (!unmoved && triedAt(known, head, entry, { url, now: ctx.now() })) return null;
   // A pull request held red on main is brought up to date once main is green (A11-215), not before: merging a branch that is only behind would take the red in.
   const held = entry.checkHeads?.[url];
   if (kind === "behind" && held?.step === "not-ours" && held.head === head) return null;
@@ -201,15 +209,15 @@ const isConcluded = (entry: Entry): boolean => CONCLUDED.has(entry.outcome?.kind
 /**
  * The round that merges the base into pull requests of the ticket's earlier steps that conflict (A11-286), ahead of whatever the ticket was queued for. PURE.
  * A queued entry is replaced by a review round over `pulls`, and itself stashed as the round's `afterRound`; a finished one is replaced by a review round over its own open pull requests and `pulls`, as the A11-89 round is. The round counts as
- * one of the board's own, and logs a `round` of cause `conflict`. The queue as it was when the run cannot take one: it is gone, it holds a workspace, it is a round already, or the board's rounds are used up.
+ * not one of the board's own, unless its base has not moved since the last conflict round on a pull request (A11-374), and logs a `round` of cause `conflict`. The queue as it was when the run cannot take one: it is gone, it holds a workspace, it is a round already, or its base did not move and the board's rounds are used up.
  */
-export function keptPullRound(queue: Queue, key: string, pulls: readonly PullRequest[], feedback: string, now: number): Queue {
+export function keptPullRound(queue: Queue, key: string, pulls: readonly PullRequest[], feedback: string, now: number, on: ConflictOn): Queue {
   const entry = find(queue, key);
-  if (entry === undefined || !takesRound(entry) || !roundsLeft(entry)) return queue;
+  if (entry === undefined || !takesRound(entry) || !conflictRoundLeft(entry, on)) return queue;
   const review = [...(entry.phase === "finished" ? openPulls(entry) : []), ...pulls].filter(({ url }, at, all) => all.findIndex((pull) => pull.url === url) === at);
-  const round: Entry = { ...reviewRound(entry, review, now), feedback, rounds: (entry.rounds ?? 0) + 1, ...(entry.phase === "queued" ? { afterRound: entry } : {}) };
+  const round: Entry = { ...reviewRound(entry, review, now), feedback: conflictRoundFeedback(queue, entry, on, feedback), ...conflictFields(entry, on), ...(entry.phase === "queued" ? { afterRound: entry } : {}) };
   const queued = { ...queue, entries: [...queue.entries.filter((e) => e.ticket.key !== key), round] };
-  return logEvent(queued, key, now, { kind: "round", cause: "conflict", reason: shortReason(feedback) });
+  return logEvent(queued, key, now, { kind: "round", cause: "conflict", reason: shortReason(round.feedback ?? feedback) });
 }
 
 /** Whether a round ended on a pull request, with its workspace closed, and its ticket is not settled by the tracker: it pushed, and the step it held back is still wanted. PURE. */
@@ -224,7 +232,9 @@ export function restoreAfterRound(queue: Queue, key: string, now: number): Queue
   if (entry?.afterRound === undefined || !hasPushed(entry)) return queue;
   const stashed = entry.afterRound;
   const rounds = entry.rounds ?? stashed.rounds;
-  const restored = replace(queue, key, () => ({ ...stashed, ...(rounds === undefined ? {} : { rounds }), queuedAt: now }));
+  // What the conflict round counted of the pull requests' conflicts is kept with it (A11-374): the step it held back was queued before them.
+  const conflicts = { ...(entry.conflictRounds === undefined ? {} : { conflictRounds: entry.conflictRounds }), ...(entry.conflictBase === undefined ? {} : { conflictBase: entry.conflictBase }) };
+  const restored = replace(queue, key, () => ({ ...stashed, ...(rounds === undefined ? {} : { rounds }), ...conflicts, queuedAt: now }));
   return logEvent(restored, key, now, { kind: "requeued", why: "conflict-round" });
 }
 
@@ -289,7 +299,7 @@ function startRound(ctx: PoolContext, key: string, ready: readonly OpenPull[]): 
   if (ready.length === 0) return false;
   const queue = ctx.store.get();
   // A pass of the pool that is filling slots holds the queue's entries from before this await: replacing a queued entry under it would start its old brief as the round. The next sweep decides again.
-  const round = ctx.tickState.busy ? queue : keptPullRound(queue, key, ready.map(({ url }) => ({ repo: parsePull(url)?.repo ?? "", url })), roundFeedback(ctx, ready), ctx.now());
+  const round = ctx.tickState.busy ? queue : keptPullRound(queue, key, ready.map(({ url }) => ({ repo: parsePull(url)?.repo ?? "", url })), roundFeedback(ctx, ready), ctx.now(), Object.fromEntries(ready.map(({ url }) => [url, { base: ctx.baseMerges.get(url)?.baseSha ?? null, files: ctx.baseMerges.get(url)?.files }])));
   if (round === queue) {
     for (const { url } of ready) ctx.baseMerges.delete(url);
     return false;
