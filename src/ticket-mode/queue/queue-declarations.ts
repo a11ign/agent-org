@@ -50,10 +50,15 @@ const remainsOf = (declaration: Declaration | null, pullCount: number): string |
  * say), or work to do (`step 2 of 2: the docs`, which asks a person, A11-168) is a remainder. PURE.
  */
 function finishesRun(words: string, merged: ReadonlySet<string>): boolean {
-  if (merged.size === 0 || !saysCompletesOnMerge(words)) return false;
-  const step = stepNamed(words);
-  return (step === null || step.step === step.of) && pullsNamedIn(words).every((url) => merged.has(url));
+  if (merged.size === 0 || !saysCompletesOnMerge(words) || namesLaterStep(words)) return false;
+  return pullsNamedIn(words).every((url) => merged.has(url));
 }
+
+/** Whether the words name a plan step that is not the last: `step 1 of 3`. The last step (`step 2 of 2`) is the run's own. */
+const namesLaterStep = (words: string): boolean => {
+  const step = stepNamed(words);
+  return step !== null && step.step !== step.of;
+};
 
 /**
  * What a run's merged pull requests declare, from the bodies read. `partial`, with the first such body's words, when a body's `Partial:` line names a plan step, or when the run has exactly one pull request
@@ -99,6 +104,9 @@ export function recordDeclared(queue: Queue, key: string, declared: PullDeclared
   });
 }
 
+/** Whether an outcome's `partial` words agree with a body that closes the ticket: nothing remains (A11-239), or the ticket completes when the run's pull requests merge and no earlier step is named (A11-394). */
+const agreesWithClose = (outcome: string): boolean => saysNothingRemains(outcome) || (saysCompletesOnMerge(outcome) && !namesLaterStep(outcome));
+
 /**
  * `entry` with its `partial` as the declaration says. A disagreement is a `Closes` against an outcome that has a `partial` naming work to do (not one that says nothing remains), or a `Partial:` against an outcome with none or one that names another step;
  * different words for the same step are none. `pull` is the declaration as the card names it. PURE.
@@ -108,8 +116,8 @@ function followed(entry: Entry, declared: PullDeclared, pull: string): Entry {
   const overruled = (words: string | null): PartialOverruled => ({ outcome: words, pull, urls: declared.urls });
   switch (declared.kind) {
     case "none": return entry;
-    // An outcome whose own words say nothing remains agrees with `Closes` (A11-239), as does one that says the ticket completes when the pull requests merge (A11-394): no disagreement to show.
-    case "closes": return outcome === undefined || saysNothingRemains(outcome) || saysCompletesOnMerge(outcome) ? whole : { ...whole, partialOverruled: overruled(outcome) };
+    // An outcome whose own words say nothing remains agrees with `Closes` (A11-239), as does one that says the ticket completes when the pull requests merge and names no earlier step (A11-394): no disagreement to show.
+    case "closes": return outcome === undefined || agreesWithClose(outcome) ? whole : { ...whole, partialOverruled: overruled(outcome) };
     case "partial": {
       const agrees = outcome !== undefined && !namesOtherStep(outcome, declared.remains);
       return { ...whole, partial: declared.remains, ...(agrees ? {} : { partialOverruled: overruled(outcome ?? null) }) };

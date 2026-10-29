@@ -44,8 +44,8 @@ export function saysNothingRemains(words: string): boolean {
   return clauses.some((clause) => NOTHING_REMAINS.has(clause)) && clauses.every((clause) => NOTHING_REMAINS.has(clause) || SAYS_DONE.has(clause));
 }
 
-/** A clause that says the ticket completes once pull requests have merged: `the ticket completes when both have merged`. */
-const COMPLETES_ON_MERGE = /^the ticket (?:completes|is complete|is completed|closes|is done|is finished) (?:when|once) .*\b(?:have|has|are|is) merged$/;
+/** A clause that says the ticket completes once pull requests have merged: `the ticket completes when both have merged`. One that waits on a step (`when step 3 has merged`) is not: a step is work, not a pull request. */
+const COMPLETES_ON_MERGE = /^the ticket (?:completes|is complete|is completed|closes|is done|is finished) (?:when|once) (?!.*\bstep\b).*\b(?:have|has|are|is) merged$/;
 /** A pull request's web address in a `Partial:` line: its dots are not clause breaks. */
 const PULL_URL = /https?:\/\/github\.com\/([\w.-]+\/[\w.-]+)\/pull\/(\d+)/gi;
 const PULL_REFERENCE = /(?<![\w/.#-])([\w.-]+\/[\w.-]+)#(\d+)\b/g;

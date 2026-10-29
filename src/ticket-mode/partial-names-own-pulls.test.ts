@@ -67,7 +67,7 @@ test("A11-254: step 2 of 2 with every pull request of the run merged closes the 
 
 test("what still remains stays a remainder", () => {
   const merged = new Set([WEB, BOARD, LAB].map((url) => url.toLowerCase()));
-  const remainders: [string, number][] = [["step 1 of 3: x", 1], ["step 2 of 2: the docs", 1], ["step 2 of 2: the rest", 2], ["step 2 of 3: the view; the ticket completes when step 3 has merged", 1], ["the docs", 1],
+  const remainders: [string, number][] = [["step 1 of 3: x", 1], ["step 2 of 2: the docs", 1], ["the docs remain. The ticket completes when step 3 has merged", 1], ["step 2 of 2: the rest", 2], ["step 2 of 3: the view; the ticket completes when step 3 has merged", 1], ["the docs", 1],
     ["step 1 of 3: x; the ticket completes when both have merged", 2], ["the ticket completes when a11ign/control#150 has merged", 1], ["the ticket completes when #150 has merged", 1]];
   for (const [words, count] of remainders) assert.equal(declare([read(WEB, words)], count, merged).kind, "partial", words);
   assert.equal(declare([read(WEB, "the ticket completes when a11ign/lab#150 has merged")], 1, new Set()).kind, "partial");
@@ -84,6 +84,8 @@ test("A11-394: an outcome that says the ticket completes on merge agrees with a 
   const closes = { kind: "closes" as const, urls: [WEB] };
   const [same] = recordDeclared(queueOf(finished({ partial: A11_370_WORDS })), "A11-370", closes, "Closes").entries;
   assert.equal(same.partialOverruled, undefined);
+  const [later] = recordDeclared(queueOf(finished({ partial: "step 1 of 3: x. The ticket completes when step 3 has merged" })), "A11-370", closes, "Closes").entries;
+  assert.notEqual(later.partialOverruled, undefined, "an outcome that still names an earlier step disagrees with `Closes`");
   const [other] = recordDeclared(queueOf(finished({ partial: "the docs" })), "A11-370", closes, "Closes").entries;
   assert.equal(other.partialOverruled?.outcome, "the docs");
 });
@@ -91,7 +93,7 @@ test("A11-394: an outcome that says the ticket completes on merge agrees with a 
 test("A11-394: `saysCompletesOnMerge` reads a clause of the line that says the ticket completes once pull requests have merged", () => {
   const says = ["the ticket completes when both have merged", "The ticket is done once all of them are merged", "**The ticket completes when all of them have merged**; the rest is the After-merge line",
     "one of two. The ticket closes when a11ign/lab#150 has merged", `the ticket is complete once ${LAB} has merged`, `${LAB}, the ticket is complete once ${CONTROL} has merged`];
-  const not = ["the ticket completes later", "the docs remain", "none of it has merged", "the ticket completes when the docs are written", "", "this has merged, and the ticket remains open"];
+  const not = ["the ticket completes when step 3 has merged", "the ticket completes later", "the docs remain", "none of it has merged", "the ticket completes when the docs are written", "", "this has merged, and the ticket remains open"];
   assert.deepEqual(says.map(saysCompletesOnMerge), says.map(() => true));
   assert.deepEqual(not.map(saysCompletesOnMerge), not.map(() => false));
 });
