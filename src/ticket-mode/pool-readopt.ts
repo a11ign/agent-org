@@ -10,7 +10,7 @@
 //
 // A RUN ALREADY MARKED CRASHED WHOSE PANE IS WORKING IS TAKEN BACK on the next watch pass (`readoptCrashed`). Only `working` counts: an idle or done pane beside a crashed run may be a worker that has finished.
 
-import { readAgents, rootPaneOf, type ListedAgent } from "../herdr-agents.ts";
+import { readAgentsAsync, rootPaneOf, type ListedAgent } from "../herdr-agents.ts";
 import { closeWorkspaceLater } from "./pool-close.ts";
 import { type PoolContext } from "./pool-context.ts";
 import { filedOf } from "./pool-board-runs.ts";
@@ -37,15 +37,19 @@ function seatOrLog(agent: ListedAgent, what: string): Readonly<{ workspace: stri
   return seat;
 }
 
+/** How long the start's listing waits for herdr, in ms: the cut the synchronous call had. The wait holds no loop. */
+const LISTING_MS = 30_000;
+
 /**
  * After a restart: every run the file holds as `starting` or `running` is looked up in herdr's listing by its name. One that herdr lists with a pane is adopted ({@link adoptRun}); one it does not list, or lists with
  * its pane gone, ended lost in a restart and is queued again once if the board has no pull request on record for it ({@link loseInRestart}); its worktree is kept either way. A parked run herdr no longer lists is unparked, keeping its
  * outcome. A publish run or a new-ticket run is adopted the same way when it was starting, and failed when herdr no longer has it. It reads herdr's listing and the queue file and nothing else: a run herdr lists is
  * adopted as it is, its pane sent no key, no prompt and no second start (A11-78).
  */
-export function reconcile(ctx: PoolContext): void {
-  const { herdr, session, store } = ctx;
-  const agents = readAgents((args) => herdr(args), session);
+export async function reconcile(ctx: PoolContext): Promise<void> {
+  const { herdrCall, session, store } = ctx;
+  // Listed without holding the loop (A11-282): an instance reconciles with herdr at every start, and each unknown agent it lists is a pane read besides.
+  const agents = await readAgentsAsync((args) => herdrCall(args, LISTING_MS), session);
   if (agents === null) return;
   const listed = new Map(agents.map((agent) => [agent.label, agent]));
   const withPane = (name: string): ListedAgent | undefined => {

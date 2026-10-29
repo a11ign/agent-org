@@ -81,7 +81,7 @@ test("A11-169: after `current` moves, a new round names the new folder and recor
   const next = binNow();
   made.status.set("t-nbf-2", "working");
   const after = made.restart({ hook: hookOf(next) });
-  after.reconcile();
+  await after.reconcile();
   await after.tick();
   assert.equal(made.entry("NBF-1").toolRoot, dirname(dirname(next)), "the new round is on the new version");
   assert.equal(made.entry("NBF-1").toolVersion, "v0.280.0");
@@ -116,7 +116,7 @@ test("A11-169: a version folder stays in use while a run holds a workspace, park
   assert.deepEqual(toolRootsInUse(made.store.get()), [root], "a parked run still names it");
   assert.deepEqual(runVersions(made.store.get()).map((run) => [run.key, run.toolVersion]), [["NBF-1", "v0.273.0"], ["NBF-2", "v0.273.0"]]);
   made.pool.stop("NBF-1");
-  made.pool.close("NBF-2");
+  await made.pool.close("NBF-2");
   assert.deepEqual(toolRootsInUse(made.store.get()), [], "nothing holds a workspace");
 });
 

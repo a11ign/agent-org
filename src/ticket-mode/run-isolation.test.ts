@@ -142,10 +142,10 @@ const herdrListing = (labels: readonly string[] | null) => (args: string[]): str
 
 /** A pool context that holds only what the sweep reads: the base, the clock, the queue's entries and the workspaces herdr lists in the board's session (none unless a test names them). */
 const sweepCtx = (base: string | undefined, entries: readonly Partial<Entry>[], now: number, listed: readonly string[] | null = []): PoolContext =>
-  ({ runTmpBase: base, now: () => now, store: { get: () => ({ entries }) }, herdr: herdrListing(listed), settings: { herdrSession: "tickets" }, deps: {}, legacySweep: newLegacySweepState() }) as unknown as PoolContext;
+  ({ runTmpBase: base, now: () => now, store: { get: () => ({ entries }) }, herdr: herdrListing(listed), herdrCall: async (args: string[]) => herdrListing(listed)(args), settings: { herdrSession: "tickets" }, deps: {}, legacySweep: newLegacySweepState() }) as unknown as PoolContext;
 const ended = (key: string): Partial<Entry> => ({ ticket: { key } as Entry["ticket"], phase: "finished" });
 
-test("A11-279: the sweep leaves a directory modified inside the grace, a name that is not run-t-, a symlink's target, and everything when the pool has no base", () => {
+test("A11-279: the sweep leaves a directory modified inside the grace, a name that is not run-t-, a symlink's target, and everything when the pool has no base", async () => {
   const base = tmpDir("run-isolation-");
   const elsewhere = tmpDir("run-isolation-target-");
   writeFileSync(join(elsewhere, "keep.txt"), "not a run's");
@@ -156,14 +156,14 @@ test("A11-279: the sweep leaves a directory modified inside the grace, a name th
   symlinkSync(elsewhere, join(base, "run-t-OLD", "link"));
   const t = Date.now();
   utimesSync(join(base, "run-t-OLD"), new Date(t - SWEEP_GRACE_MS - 1000), new Date(t - SWEEP_GRACE_MS - 1000));
-  sweepRunTmp(sweepCtx(undefined, [], t));
+  await sweepRunTmp(sweepCtx(undefined, [], t));
   assert.deepEqual(readdirSync(base).toSorted(), ["other", "run-20261025T150000Z-1-abc", "run-t-NEW", "run-t-OLD"], "no base: nothing is swept");
-  sweepRunTmp(sweepCtx(base, [], t));
+  await sweepRunTmp(sweepCtx(base, [], t));
   assert.deepEqual(readdirSync(base).toSorted(), ["other", "run-20261025T150000Z-1-abc", "run-t-NEW"], "the old run's directory goes; the new one, a test run's root and another name stay");
   assert.deepEqual(readdirSync(elsewhere), ["keep.txt"], "the symlink is removed as itself, never followed");
 });
 
-test("A11-279: the sweep removes one entry per call and at most MAX_REMOVALS_PER_PASS a pass, and finishes over passes", () => {
+test("A11-279: the sweep removes one entry per call and at most MAX_REMOVALS_PER_PASS a pass, and finishes over passes", async () => {
   const base = tmpDir("run-isolation-");
   const dir = runTmpDir(base, "A11-1");
   mkdirSync(join(dir, "nested"), { recursive: true });
@@ -174,15 +174,15 @@ test("A11-279: the sweep removes one entry per call and at most MAX_REMOVALS_PER
   utimesSync(dir, old, old);
   const count = (path: string): number => readdirSync(path, { withFileTypes: true }).reduce((sum, entry) => sum + (entry.isDirectory() ? 1 + count(join(path, entry.name)) : 1), 0);
   assert.equal(count(dir), files + 1);
-  sweepRunTmp(sweepCtx(base, [ended("A11-1")], t));
+  await sweepRunTmp(sweepCtx(base, [ended("A11-1")], t));
   assert.equal(count(dir), files + 1 - MAX_REMOVALS_PER_PASS, "a pass removes its budget and no more");
   assert.ok(existsSync(dir));
   utimesSync(dir, old, old);
-  sweepRunTmp(sweepCtx(base, [ended("A11-1")], t));
+  await sweepRunTmp(sweepCtx(base, [ended("A11-1")], t));
   assert.equal(existsSync(dir), false, "the next pass finishes it");
 });
 
-test("A11-279: the sweep keeps the directory of a live run, of a run that holds a workspace, and of a batch's run, whatever their age", () => {
+test("A11-279: the sweep keeps the directory of a live run, of a run that holds a workspace, and of a batch's run, whatever their age", async () => {
   const base = tmpDir("run-isolation-");
   const old = new Date(Date.now() - SWEEP_GRACE_MS - 1000);
   for (const id of ["A11-1", "A11-2", "b-1", "A11-4"]) { mkdirSync(runTmpDir(base, id)); utimesSync(runTmpDir(base, id), old, old); }
@@ -192,35 +192,35 @@ test("A11-279: the sweep keeps the directory of a live run, of a run that holds 
     { ticket: { key: "A11-3" } as Entry["ticket"], phase: "starting", batch: "b-1" },
     ended("A11-4"),
   ];
-  sweepRunTmp(sweepCtx(base, entries, Date.now()));
+  await sweepRunTmp(sweepCtx(base, entries, Date.now()));
   assert.deepEqual(readdirSync(base).toSorted(), ["run-t-A11-1", "run-t-A11-2", "run-t-b-1"]);
 });
 
-test("A11-279: a base that does not exist is nothing to sweep", () => {
-  assert.doesNotThrow(() => sweepRunTmp(sweepCtx(join(tmpDir("run-isolation-"), "missing"), [], Date.now())));
+test("A11-279: a base that does not exist is nothing to sweep", async () => {
+  await assert.doesNotReject(sweepRunTmp(sweepCtx(join(tmpDir("run-isolation-"), "missing"), [], Date.now())));
 });
 
-test("A11-279: the sweep touches the directory of a held run on every pass and makes it again if it is gone, so the tmpfiles rule and another instance's sweep never find it old", () => {
+test("A11-279: the sweep touches the directory of a held run on every pass and makes it again if it is gone, so the tmpfiles rule and another instance's sweep never find it old", async () => {
   const base = tmpDir("run-isolation-");
   const t = Date.now();
   const old = new Date(t - 3 * SWEEP_GRACE_MS);
   mkdirSync(runTmpDir(base, "A11-1"));
   utimesSync(runTmpDir(base, "A11-1"), old, old);
   const entries: Partial<Entry>[] = [{ ticket: { key: "A11-1" } as Entry["ticket"], phase: "running" }, { ticket: { key: "A11-2" } as Entry["ticket"], phase: "finished", workspace: "w2" }];
-  sweepRunTmp(sweepCtx(base, entries, t));
+  await sweepRunTmp(sweepCtx(base, entries, t));
   assert.equal(statSync(runTmpDir(base, "A11-1")).mtimeMs, t, "touched to the pool's clock");
   assert.ok(existsSync(runTmpDir(base, "A11-2")), "a parked run's directory that the tmpfiles rule removed is made again");
   // Another instance's sweep, a pass later and with no entry for either, leaves both: they are inside its grace.
-  sweepRunTmp(sweepCtx(base, [], t + SWEEP_GRACE_MS - 1));
+  await sweepRunTmp(sweepCtx(base, [], t + SWEEP_GRACE_MS - 1));
   assert.deepEqual(readdirSync(base).toSorted(), ["run-t-A11-1", "run-t-A11-2"]);
 });
 
-test("A11-279: a run's directory that is a symlink is removed as itself and its target is left", () => {
+test("A11-279: a run's directory that is a symlink is removed as itself and its target is left", async () => {
   const base = tmpDir("run-isolation-");
   const elsewhere = tmpDir("run-isolation-target-");
   writeFileSync(join(elsewhere, "keep.txt"), "not a run's");
   symlinkSync(elsewhere, join(base, "run-t-LINK"));
-  sweepRunTmp(sweepCtx(base, [], Date.now()));
+  await sweepRunTmp(sweepCtx(base, [], Date.now()));
   assert.deepEqual([readdirSync(base), readdirSync(elsewhere)], [[], ["keep.txt"]]);
 });
 
@@ -232,25 +232,25 @@ function baseWithOld(labels: readonly string[], t: number): string {
   return base;
 }
 
-test("A11-303: the sweep keeps the directory of a session herdr lists though no queue entry owns it (a reviewer, a new-ticket run), touches it, and takes it once herdr no longer lists it", () => {
+test("A11-303: the sweep keeps the directory of a session herdr lists though no queue entry owns it (a reviewer, a new-ticket run), touches it, and takes it once herdr no longer lists it", async () => {
   const t = Date.now();
   const base = baseWithOld(["reviewer-nbl-ui-7", "reviewer-nbl-ui-8"], t);
   writeFileSync(join(runTmpDir(base, "reviewer-nbl-ui-8"), "ae-pw-leftover"), "from an acceptance run");
   utimesSync(runTmpDir(base, "reviewer-nbl-ui-8"), new Date(t - 3 * SWEEP_GRACE_MS), new Date(t - 3 * SWEEP_GRACE_MS));
-  sweepRunTmp(sweepCtx(base, [], t, ["reviewer-nbl-ui-7"]));
+  await sweepRunTmp(sweepCtx(base, [], t, ["reviewer-nbl-ui-7"]));
   assert.deepEqual(readdirSync(base), ["run-t-reviewer-nbl-ui-7"], "the listed reviewer's directory stays, the unlisted one's is gone");
   assert.equal(statSync(runTmpDir(base, "reviewer-nbl-ui-7")).mtimeMs, t, "and is touched, so the tmpfiles rule and another instance's sweep find it young");
-  sweepRunTmp(sweepCtx(base, [], t + SWEEP_GRACE_MS - 1, []));
+  await sweepRunTmp(sweepCtx(base, [], t + SWEEP_GRACE_MS - 1, []));
   assert.deepEqual(readdirSync(base), ["run-t-reviewer-nbl-ui-7"], "the pass that no longer lists it is inside the grace of the last touch");
-  sweepRunTmp(sweepCtx(base, [], t + SWEEP_GRACE_MS, []));
+  await sweepRunTmp(sweepCtx(base, [], t + SWEEP_GRACE_MS, []));
   assert.deepEqual(readdirSync(base), [], "and once the grace has passed with the workspace gone, so is it");
 });
 
-test("A11-303: herdr that cannot be listed takes no directory a queue entry does not own, and a directory of an ended queue run is taken without asking herdr", () => {
+test("A11-303: herdr that cannot be listed takes no directory a queue entry does not own, and a directory of an ended queue run is taken without asking herdr", async () => {
   const t = Date.now();
   const base = baseWithOld(["reviewer-nbl-ui-7", "A11-1"], t);
-  sweepRunTmp(sweepCtx(base, [ended("A11-1")], t, null));
+  await sweepRunTmp(sweepCtx(base, [ended("A11-1")], t, null));
   assert.deepEqual(readdirSync(base), ["run-t-reviewer-nbl-ui-7"], "no listing says nothing of the reviewer, so its directory is left; the ended run's is its queue entry's to say");
-  sweepRunTmp(sweepCtx(base, [], t, []));
+  await sweepRunTmp(sweepCtx(base, [], t, []));
   assert.deepEqual(readdirSync(base), [], "listed, and not there, it goes");
 });

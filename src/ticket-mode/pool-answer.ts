@@ -15,7 +15,7 @@ import { logAnswered, moveBriefing, recordAnswer } from "./queue/queue-answer.ts
 import { herdrRefusal } from "./pool-herdr.ts";
 import { type PoolContext } from "./pool-context.ts";
 import { runPlace, update } from "./pool-state.ts";
-import { agentTarget } from "./pool-resume.ts";
+import { agentTargetAsync } from "./pool-resume.ts";
 import { type TicketSource } from "./source.ts";
 import { RELAY_DECISION } from "./brief-decisions.ts";
 import { descriptionHash, ticketReadOf } from "./ticket-read.ts";
@@ -39,6 +39,9 @@ export function dateOf(at: number): string {
 }
 
 /** Whether a name is not one non-empty line of at most {@link WHO_CHARS} characters. PURE. */
+/** How long the board waits for herdr to take a person's answer to a run, in ms: the cut the synchronous call had. The wait holds no loop (A11-282). */
+const DELIVER_MS = 30_000;
+
 const badName = (who: string): boolean => who.trim() === "" || /[\r\n]/.test(who) || who.trim().length > WHO_CHARS;
 
 /** Why the request itself is refused, or null: the answer is text of at most {@link ANSWER_CHARS}, and a name is one line of at most {@link WHO_CHARS}. PURE. */
@@ -110,14 +113,14 @@ async function writeAnswer(ctx: PoolContext, entry: Entry, given: Answer): Promi
  * Send the run its answer, if a run is waiting for it: one message to the agent of a parked run, which the pool then sees working again and resumes (`watchParked`). A run whose workspace is gone gets nothing, and
  * the answer says so. Throws {@link AnswerNotDelivered} when herdr refuses the message.
  */
-function deliver(ctx: PoolContext, key: string, told: Told): Answered {
-  const { herdr, now, settings, store } = ctx;
+async function deliver(ctx: PoolContext, key: string, told: Told): Promise<Answered> {
+  const { herdrCall, now, settings, store } = ctx;
   const current = find(store.get(), key);
   if (current === undefined || !isParked(current) || current.outcome?.kind !== "needs-human") {
     return { written: true, delivered: false, why: `${key}'s run has no workspace open or is no longer waiting, so nothing is waiting for the answer: it is in the ticket, and the run that works the ticket next reads it first` };
   }
   try {
-    herdr(["--session", settings.herdrSession, "agent", "prompt", agentTarget(ctx, runPlace(ctx, current)), messageOf(current, told)]);
+    await herdrCall(["--session", settings.herdrSession, "agent", "prompt", await agentTargetAsync(ctx, runPlace(ctx, current)), messageOf(current, told)], DELIVER_MS);
   } catch (err) {
     throw new AnswerNotDelivered(`${key}'s answer is in the ticket, but herdr would not take it to the run (${herdrRefusal(err)}): answer again to send it, and nothing is written twice`);
   }
@@ -137,7 +140,7 @@ export async function answer(ctx: PoolContext, key: string, given: Answer): Prom
   if (answering.has(key)) throw new Error(`an answer to ${key} is being written: send yours when it has been`);
   answering.add(key);
   try {
-    return deliver(ctx, key, await writeAnswer(ctx, entry, given));
+    return await deliver(ctx, key, await writeAnswer(ctx, entry, given));
   } finally {
     answering.delete(key);
   }

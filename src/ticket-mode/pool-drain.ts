@@ -35,6 +35,9 @@ export const defaultStartUpdate = (): void => {
   }
 };
 
+/** How long a workspace close may take, in ms: the cut the synchronous call had. The wait holds no loop (A11-282). */
+const CLOSE_MS = 30_000;
+
 const storeOf = (ctx: PoolContext): DrainStore => ctx.deps.drain ?? defaultDrainStore();
 
 /**
@@ -48,10 +51,11 @@ export function isDraining(ctx: PoolContext): boolean {
  * Close a run's workspace, to stop it `forWhat` (the log's words: "for the update"). True when it is closed or already gone; false, said in the log, when herdr refuses for another reason: the agent may still be
  * running, so the run is not queued again beside it, and the next tick tries again.
  */
-export function closedOrGone(ctx: PoolContext, entry: Entry, forWhat: string): boolean {
+export async function closedOrGone(ctx: PoolContext, entry: Entry, forWhat: string): Promise<boolean> {
   if (entry.workspace === undefined) return true;
   try {
-    ctx.herdr(["--session", ctx.session.session, "workspace", "close", entry.workspace]);
+    // Asked without holding the loop (A11-282): a close takes 250 ms to 1 s, and the board thread answers every write meanwhile.
+    await ctx.herdrCall(["--session", ctx.session.session, "workspace", "close", entry.workspace], CLOSE_MS);
     return true;
   } catch (err) {
     const why = `${herdrRefusal(err)} ${herdrReason(err)}`;
@@ -62,9 +66,9 @@ export function closedOrGone(ctx: PoolContext, entry: Entry, forWhat: string): b
 }
 
 /** Stop one live run's agent and record that it was stopped for the update: its workspace is closed, and the run is queued again with the session its agent had. False when the workspace would not close. */
-function stopEntry(ctx: PoolContext, entry: Entry, target: string): boolean {
+async function stopEntry(ctx: PoolContext, entry: Entry, target: string): Promise<boolean> {
   const { claudeSessions, now } = ctx;
-  if (!closedOrGone(ctx, entry, "for the update")) return false;
+  if (!await closedOrGone(ctx, entry, "for the update")) return false;
   const id = entry.workspace === undefined ? undefined : claudeSessions.get(entry.workspace);
   forgetRun(ctx, runPlace(ctx, entry).name);
   update(ctx, (queue) => requeueForUpdate(queue, entry.ticket.key, target, now(), id));
@@ -72,11 +76,13 @@ function stopEntry(ctx: PoolContext, entry: Entry, target: string): boolean {
 }
 
 /** The keys of the tickets whose run is stopped, and the others stopped: the publish run and the new-ticket runs, which have no ticket to queue again. */
-function stopLiveRuns(ctx: PoolContext, target: string, at: string): string[] {
+async function stopLiveRuns(ctx: PoolContext, target: string, at: string): Promise<string[]> {
   const { store } = ctx;
   const stopped: string[] = [];
-  for (const entry of store.get().entries.filter(isLive)) {
-    if (stopEntry(ctx, entry, target)) stopped.push(entry.ticket.key);
+  for (const listed of store.get().entries.filter(isLive)) {
+    // Each close is asked without holding the loop, so the queue moves between two runs: a run that ended meanwhile is not stopped for the update.
+    const entry = store.get().entries.find((e) => e.ticket.key === listed.ticket.key);
+    if (entry !== undefined && isLive(entry) && await stopEntry(ctx, entry, target)) stopped.push(entry.ticket.key);
   }
   const { publish } = store.get();
   if (publish !== undefined && LIVE.has(publish.phase)) {
@@ -96,7 +102,7 @@ function stopLiveRuns(ctx: PoolContext, target: string, at: string): string[] {
  * With a drain record whose deadline has passed and a run still live, stops every live run and queues it again, records it in the drain record, and starts the update. Nothing happens before the deadline,
  * with no record, or with no live run. A record that cannot be read has no deadline to read, so it forces nothing.
  */
-export function forceDrain(ctx: PoolContext): void {
+export async function forceDrain(ctx: PoolContext): Promise<void> {
   const { now, store } = ctx;
   const drain = storeOf(ctx);
   const read = drain.read();
@@ -104,7 +110,7 @@ export function forceDrain(ctx: PoolContext): void {
   const { record } = read;
   const live = store.get().entries.some(isLive) || (store.get().publish !== undefined && LIVE.has(store.get().publish!.phase)) || (store.get().writers ?? []).some(writerLive);
   if (!live || now() < Date.parse(record.deadline)) return;
-  const stopped = stopLiveRuns(ctx, record.target, clockOf(now()));
+  const stopped = await stopLiveRuns(ctx, record.target, clockOf(now()));
   log(`stopping ${stopped.length} ${stopped.length === 1 ? "run" : "runs"} for the update to ${record.target} (${stopped.join(", ")}): the wait of the update ended at ${record.deadline}`);
   drain.write({ ...record, forcedAt: record.forcedAt ?? new Date(now()).toISOString(), stopped: [...new Set([...record.stopped, ...stopped])] });
   (ctx.deps.startUpdate ?? defaultStartUpdate)();

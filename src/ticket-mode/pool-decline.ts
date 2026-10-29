@@ -17,7 +17,7 @@ import { herdrRefusal } from "./pool-herdr.ts";
 import { log, runMembers, updateEach } from "./pool-state.ts";
 import { type PoolContext } from "./pool-context.ts";
 import { type RunPlace } from "./pool-paths.ts";
-import { agentTarget } from "./pool-resume.ts";
+import { agentTargetAsync } from "./pool-resume.ts";
 import { declineMessage, type PanePrompt, readSafetyPrompt } from "./safety-prompt.ts";
 
 /** The safety prompts the pool answers No to on one run. The next is left for a person, who sees its first line. */
@@ -29,11 +29,14 @@ export const MAX_SAFETY_DECLINES = 3;
  */
 export const TELL_WINDOW_MS = 5 * 60_000;
 
+/** How long the board waits for herdr on a read, an Esc or a message, in ms: the cut the synchronous call had. The wait holds no loop (A11-282). */
+const HERDR_MS = 30_000;
+
 /** What the pane of the run's agent shows, or null when it cannot be read or shows no dialog. */
-export function readPrompt(ctx: PoolContext, place: RunPlace): PanePrompt | null {
-  const { herdr, settings } = ctx;
+export async function readPrompt(ctx: PoolContext, place: RunPlace): Promise<PanePrompt | null> {
+  const { herdrCall, settings } = ctx;
   try {
-    return readSafetyPrompt(herdr(["--session", settings.herdrSession, "agent", "read", agentTarget(ctx, place), "--source", "visible"]));
+    return readSafetyPrompt(await herdrCall(["--session", settings.herdrSession, "agent", "read", await agentTargetAsync(ctx, place), "--source", "visible"], HERDR_MS));
   } catch {
     return null;
   }
@@ -46,11 +49,11 @@ const mayDecline = (entry: Entry): boolean => entry.talk !== true && (entry.decl
  * Answer a safety prompt No on this run's agent, and record it on every member of the run. True when it did, so the run is not waiting on a person. A prompt the pool does not
  * recognise, one past the bound, one on a talk session, and an Esc herdr refuses, are all left alone (false).
  */
-export function declineSafetyPrompt(ctx: PoolContext, entry: Entry, place: RunPlace, prompt: PanePrompt): boolean {
-  const { herdr, now, settings } = ctx;
+export async function declineSafetyPrompt(ctx: PoolContext, entry: Entry, place: RunPlace, prompt: PanePrompt): Promise<boolean> {
+  const { herdrCall, now, settings } = ctx;
   if (prompt.kind !== "safety" || !mayDecline(entry)) return false;
   try {
-    herdr(["--session", settings.herdrSession, "agent", "send-keys", agentTarget(ctx, place), "esc"]);
+    await herdrCall(["--session", settings.herdrSession, "agent", "send-keys", await agentTargetAsync(ctx, place), "esc"], HERDR_MS);
   } catch (err) {
     log(`${entry.batch ?? entry.ticket.key}: its safety prompt on \`${prompt.command}\` could not be declined (${herdrRefusal(err)})`);
     return false;
@@ -58,7 +61,7 @@ export function declineSafetyPrompt(ctx: PoolContext, entry: Entry, place: RunPl
   const { command, warning, agent } = prompt;
   updateEach(ctx, runMembers(ctx, entry), (queue, key) => declinedPrompt(queue, key, { command, warning, ...(agent === undefined ? {} : { agent }) }, now()));
   log(`${entry.batch ?? entry.ticket.key}: declined a Claude Code safety prompt${agent === undefined ? "" : ` from the ${agent} subagent`} on \`${command}\`${warning === "" ? "" : ` ("${warning}")`}`);
-  tellDeclined(ctx, entry, place);
+  await tellDeclined(ctx, entry, place);
   return true;
 }
 
@@ -73,13 +76,13 @@ const refusedAsBlocked = (err: unknown): boolean => ["stdout", "stderr", "messag
  * Send the agent of a run its decline's message, once: which command was refused and why. A message herdr refuses leaves the decline untold, for the next pass that finds the
  * agent not blocked ({@link retellDeclined}). True when the message was sent.
  */
-export function tellDeclined(ctx: PoolContext, entry: Entry, place: RunPlace): boolean {
-  const { herdr, settings } = ctx;
+export async function tellDeclined(ctx: PoolContext, entry: Entry, place: RunPlace): Promise<boolean> {
+  const { herdrCall, settings } = ctx;
   // The entry the caller holds may predate the decline it records: read the queue's.
   const current = ctx.store.get().entries.find((e) => e.ticket.key === entry.ticket.key) ?? entry;
   if (!untoldDecline(ctx, current) || current.declined === undefined) return false;
   try {
-    herdr(["--session", settings.herdrSession, "agent", "prompt", agentTarget(ctx, place), declineMessage(current.declined)]);
+    await herdrCall(["--session", settings.herdrSession, "agent", "prompt", await agentTargetAsync(ctx, place), declineMessage(current.declined)], HERDR_MS);
   } catch (err) {
     if (!refusedAsBlocked(err)) log(`${entry.batch ?? entry.ticket.key}: its agent could not be told its safety prompt was declined (${herdrRefusal(err)})`);
     return false;
@@ -92,6 +95,6 @@ export function tellDeclined(ctx: PoolContext, entry: Entry, place: RunPlace): b
  * The pass that finds a run's agent not blocked sends the message an earlier pass could not (herdr refuses a message to a blocked agent). True when it sent it: the status read
  * before the message is not the agent's answer to it, so that pass ends nothing.
  */
-export function retellDeclined(ctx: PoolContext, entry: Entry, place: RunPlace, seen: string): boolean {
-  return seen !== "blocked" && tellDeclined(ctx, entry, place);
+export async function retellDeclined(ctx: PoolContext, entry: Entry, place: RunPlace, seen: string): Promise<boolean> {
+  return seen !== "blocked" && await tellDeclined(ctx, entry, place);
 }

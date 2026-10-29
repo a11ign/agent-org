@@ -91,7 +91,7 @@ test("A11-250: an answer herdr will not take is in the ticket and says so (502 i
 test("A11-250: a run whose workspace is gone is not waiting: the answer is in the ticket, and the route says nothing was sent", async () => {
   const made = answerFixture();
   await made.endsOn(ASKED);
-  made.pool.close("NBF-1");
+  await made.pool.close("NBF-1");
   assert.equal(made.entry("NBF-1").workspace, undefined);
   const done = await made.pool.answer("NBF-1", { answer: "Keep it.", who: "the chairman" });
   assert.equal(done.written, true);

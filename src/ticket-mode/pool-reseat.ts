@@ -4,7 +4,7 @@
 // WHY A RESTART AND NOT AN `export`. herdr restores a pane's directory and Claude session and not the `--env` of `workspace create` (its `session.json` holds `cwd` and `agent_session`), and the gh wrapper reads the Claude
 // process's own environment. Variables typed into the pane's shell never reach a Claude that is already running, so the run is started again the way a review run resumes a worker: close its workspace, open one with
 // {@link runEnvOf}'s environment, and start `claude --resume <session>` in the same folder, its first prompt the resume prompt. The conversation, the worktree and the plan are all where they were.
-import { readAgents } from "../herdr-agents.ts";
+import { readAgentsAsync } from "../herdr-agents.ts";
 import { closeWorkspaceLater } from "./pool-close.ts";
 import { type PoolContext } from "./pool-context.ts";
 import { type RunPlace } from "./pool-paths.ts";
@@ -23,9 +23,12 @@ function sessionOf(ctx: PoolContext, entry: Entry): string | undefined {
 }
 
 /** The workspace to close: the one the run's record holds, else the one herdr lists under its label. */
-function workspaceOf(ctx: PoolContext, entry: Entry, place: RunPlace): string | undefined {
-  return entry.workspace ?? readAgents((args) => ctx.herdr(args), ctx.session)?.find((agent) => agent.label === place.name)?.workspace;
+async function workspaceOf(ctx: PoolContext, entry: Entry, place: RunPlace): Promise<string | undefined> {
+  return entry.workspace ?? (await readAgentsAsync((args) => ctx.herdrCall(args, HERDR_MS), ctx.session))?.find((agent) => agent.label === place.name)?.workspace;
 }
+
+/** How long the board waits for herdr to list or close, in ms: the cut the synchronous call had. The wait holds no loop (A11-282). */
+const HERDR_MS = 30_000;
 
 /** Record the board's resume of a run, from the pane it is now in. PURE. */
 const recordRestored = (workspace: string, pane: string, note: ResumeNote) => (queue: Queue, key: string): Queue =>
@@ -40,15 +43,15 @@ async function reseatRun(ctx: PoolContext, entry: Entry, note: ResumeNote): Prom
   const who = entry.batch ?? entry.ticket.key;
   const place = runPlace(ctx, entry);
   const session = sessionOf(ctx, entry);
-  const workspace = workspaceOf(ctx, entry, place);
-  const missing = (why: string): void => {
+  const workspace = await workspaceOf(ctx, entry, place);
+  const missing = (why: string): Promise<void> => {
     log(`${who} keeps the pane that lost its environment: ${why}`);
-    resumeRun(ctx, entry, place, { ...note, environment: "missing" });
+    return resumeRun(ctx, entry, place, { ...note, environment: "missing" });
   };
   if (session === undefined) return missing("it has no Claude session to resume");
   if (workspace === undefined) return missing("herdr lists no workspace for it");
   try {
-    ctx.herdr(["--session", ctx.settings.herdrSession, "workspace", "close", workspace]);
+    await ctx.herdrCall(["--session", ctx.settings.herdrSession, "workspace", "close", workspace], HERDR_MS);
   } catch (err) {
     return missing(`herdr would not close its workspace ${workspace} (${messageOf(err).split("\n")[0]})`);
   }

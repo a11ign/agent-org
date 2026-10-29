@@ -7,13 +7,14 @@
 //
 // THE BOARD THREAD KEEPS THEM and posts them in its snapshot (`thread-messages.ts`); the request thread serves them. A figure that needs the queue is worked out from the queue (`runFiguresOf`, PURE) and from the pool's memory
 // of its passes (`pool-figures.ts`); the loop, the holds and the calls are measured where they happen (`loop-delay.ts`, `blocking-ledger.ts`, `call-outcomes.ts`).
+import { HOLD_MS } from "./blocking-ledger.ts";
 import type { CallFigures } from "./call-outcomes.ts";
 import type { LoopReading, LoopSpan } from "./loop-delay.ts";
 import type { Queue } from "./queue/queue-entries-and-outcomes.ts";
 import { slotsHeld } from "./queue/queue-transitions.ts";
 
-/** A synchronous call that holds the loop this long, in ms, is a hold: the p99 the header warns at, so a hold is a call the warning would name. */
-export const HOLD_MS = 100;
+/** A synchronous call that holds the loop this long, in ms, is a hold: the p99 the header warns at, so a hold is a call the warning would name. Defined beside the journal's line, which says every one (A11-282). */
+export { HOLD_MS };
 /** How far back the hold count looks, in ms. */
 export const HOLD_WINDOW_MS = 3_600_000;
 

@@ -20,15 +20,15 @@ test("A11-279: parseEnviron reads the NUL-separated pairs of /proc/<pid>/environ
   assert.deepEqual(parseEnviron(""), {});
 });
 
-test("A11-279: livePaneEnv asks herdr for the pane's claude process and reads that process's environment; a failed read is null", () => {
+test("A11-279: livePaneEnv asks herdr for the pane's claude process and reads that process's environment; a failed read is null", async () => {
   const asked: string[][] = [];
   const read: number[] = [];
-  const env = livePaneEnv((args) => { asked.push(args); return infoOf([{ name: "claude", pid: 77 }]); }, "tickets", (pid) => { read.push(pid); return "AGENT_ORG_TICKET=A11-1\0"; });
-  assert.deepEqual(env("w1:p1"), { AGENT_ORG_TICKET: "A11-1" });
+  const env = livePaneEnv(async (args) => { asked.push(args); return infoOf([{ name: "claude", pid: 77 }]); }, "tickets", (pid) => { read.push(pid); return "AGENT_ORG_TICKET=A11-1\0"; });
+  assert.deepEqual(await env("w1:p1"), { AGENT_ORG_TICKET: "A11-1" });
   assert.deepEqual([asked, read], [[["--session", "tickets", "pane", "process-info", "--pane", "w1:p1"]], [77]]);
-  assert.equal(livePaneEnv(() => infoOf([]), "tickets", () => "X=1\0")("w1:p1"), null, "no claude process in the pane");
-  assert.equal(livePaneEnv(() => { throw new Error("pane_not_found"); }, "tickets")("w1:p1"), null, "herdr refuses");
-  assert.equal(livePaneEnv(() => infoOf([{ name: "claude", pid: 77 }]), "tickets", () => { throw new Error("EACCES"); })("w1:p1"), null, "/proc refuses");
+  assert.equal(await livePaneEnv(async () => infoOf([]), "tickets", () => "X=1\0")("w1:p1"), null, "no claude process in the pane");
+  assert.equal(await livePaneEnv(async () => { throw new Error("pane_not_found"); }, "tickets")("w1:p1"), null, "herdr refuses");
+  assert.equal(await livePaneEnv(async () => infoOf([{ name: "claude", pid: 77 }]), "tickets", () => { throw new Error("EACCES"); })("w1:p1"), null, "/proc refuses");
 });
 
 test("A11-279: lostKeys lists the keys the pane lacks or holds with another value, except the host file's path, which only has to be there", () => {

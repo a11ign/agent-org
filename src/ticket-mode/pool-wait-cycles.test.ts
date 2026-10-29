@@ -92,7 +92,11 @@ test("A11-272: when the ticket it waited on is done, the released run starts aga
 });
 
 test("A11-272: a wait on a ticket that is in no cycle is still let go only once its first reading finds the ticket not done", async () => {
-  const run = await incident({ paths: [], max: 1 });
+  // The reading takes a turn of the event loop, as a tracker's answer does: the pass that starts it is over before it ends, however many microtasks the pass takes (A11-282 made its herdr calls asynchronous).
+  const source = createFakeTracker([fakeTicket(WAITER), fakeTicket(BLOCKER)]);
+  const stateTypes = source.stateTypes!;
+  source.stateTypes = async (keys) => { await flush(); return stateTypes(keys); };
+  const run = await incident({ paths: [], max: 1, source });
   assert.equal(run.entry(BLOCKER).phase, "queued", "held for the one slot, and on no file");
   await run.write(WAITER, WAITS_ON_BLOCKER);
   assert.equal(run.entry(WAITER).phase, "running", "no cycle: the first tick only starts the reading");

@@ -9,6 +9,7 @@ import { type RunPlace, worktreesIn } from "./pool-paths.ts";
 import { checkRound, conflictRound, feedbackRound, markResumed, observe, observePublish, recordCheckHeads, recordPullFiles, recordRepos, recordStackBase, roundsLeft, unpark, watchWorking } from "./queue/queue-transitions.ts";
 import { conflictRoundLeft, type ConflictOn } from "./queue/queue-conflict-rounds.ts";
 import { answerStartDialog, fill } from "./pool-start.ts";
+import { closeWorkspaceLater } from "./pool-close.ts";
 import { refreshStartReads } from "./pool-start-reads.ts";
 import { declineSafetyPrompt, readPrompt, retellDeclined, untoldDecline } from "./pool-decline.ts";
 import { join } from "node:path";
@@ -22,8 +23,9 @@ import { type Background, BACKGROUND_GONE, BACKGROUND_GONE_MS, type Entry, propo
 // eslint-disable-next-line clean-code/no-duplication -- import list: the rule matches statement shape, and imports are not duplicated logic
 import { deadlineOf, wakeRefused } from "./wait-on/wait-note.ts";
 import { wakePrompt } from "./wait-on/wait-prompt.ts";
-import { reseatMoved, resumeAfterRestart, sendToAgent, watchIdle } from "./pool-resume.ts";
+import { reseatMoved, resumeAfterRestart, sendToAgentAsync, watchIdle } from "./pool-resume.ts";
 import { sessionResultsFrom } from "./session-answers.ts";
+// eslint-disable-next-line clean-code/no-duplication -- import list: the rule matches statement shape, and imports are not duplicated logic
 import { fleetJobStatusVia, type WaitSeams } from "./wait-on/wait-read.ts";
 import { judgedWait, pollWhenDue } from "./wait-on/wait-watch.ts";
 import type { Judged } from "./wait-on/wait-verdict.ts";
@@ -131,11 +133,11 @@ async function watch(ctx: PoolContext): Promise<void> {
   readoptCrashed(ctx, agents);
   // A run whose workspace a restart brought back under a new id is reached there; then a run left at a prompt is resumed in this pass, before the watch below could end it for having no outcome (A11-279).
   reseatMoved(ctx, agents);
-  watchRunning(ctx, status, resumeAfterRestart(ctx, status));
+  await watchRunning(ctx, status, await resumeAfterRestart(ctx, status));
   watchParked(ctx, status);
   rereadUnreadable(ctx);
-  watchPublish(ctx, status);
-  watchWriters(ctx, status);
+  await watchPublish(ctx, status);
+  await watchWriters(ctx, status);
 }
 
 /**
@@ -143,10 +145,13 @@ async function watch(ctx: PoolContext): Promise<void> {
  * watched once, through its first ticket: the others have no agent of their own. A run `resumed` this pass is not ended for having no outcome, nor woken for its wait or told of a decline: the status read
  * before its resume prompt is not its answer to it, and the resume already says to re-check its waits. Every run still running is watched for sitting idle at a prompt ({@link watchIdle}, A11-279).
  */
-function watchRunning(ctx: PoolContext, status: ReadonlyMap<string, string>, resumed: ReadonlySet<string>): void {
+async function watchRunning(ctx: PoolContext, status: ReadonlyMap<string, string>, resumed: ReadonlySet<string>): Promise<void> {
   const { misses, startedHere, store } = ctx;
   const watched = new Set<string>();
-  for (const entry of store.get().entries.filter((e) => e.phase === "running")) {
+  for (const listed of store.get().entries.filter((e) => e.phase === "running")) {
+    // The panes are read without holding the loop (A11-282), so the queue moves while a run is watched: each run is taken as the queue holds it now, and one that ended meanwhile is left.
+    const entry = store.get().entries.find((e) => e.ticket.key === listed.ticket.key);
+    if (entry?.phase !== "running") continue;
     const key = entry.ticket.key;
     const { name, dir, folder } = runPlace(ctx, entry);
     if (watched.has(name)) continue;
@@ -163,10 +168,10 @@ function watchRunning(ctx: PoolContext, status: ReadonlyMap<string, string>, res
     // The pull requests the worker opened so far are the run's, whatever its outcome will list (A11-358).
     recordOpenedPulls(ctx, entry);
     const sitting = !["working", "idle", "done"].includes(seen);
-    if (sitting && answerStartDialog(ctx, runPlace(ctx, entry))) continue;
+    if (sitting && await answerStartDialog(ctx, runPlace(ctx, entry))) continue;
     // A dialog that is not a start dialog (A11-174): a Claude Code safety prompt is answered No and the agent told why, any other is left for a person, with its first line.
-    const prompt = sitting ? readPrompt(ctx, runPlace(ctx, entry)) : null;
-    if (prompt !== null && declineSafetyPrompt(ctx, entry, runPlace(ctx, entry), prompt)) continue;
+    const prompt = sitting ? await readPrompt(ctx, runPlace(ctx, entry)) : null;
+    if (prompt !== null && await declineSafetyPrompt(ctx, entry, runPlace(ctx, entry), prompt)) continue;
     updateEach(ctx, runMembers(ctx, entry), (queue, member) => observe(queue, member, seen, prompt?.firstLine, ctx.now()));
     const latest = () => store.get().entries.find((e) => e.ticket.key === key) ?? entry;
     const current = latest();
@@ -180,19 +185,19 @@ function watchRunning(ctx: PoolContext, status: ReadonlyMap<string, string>, res
         // A run resumed this pass already has the one prompt it needs: its wake and its decline wait for a status read after it (A11-279).
         if (resumed.has(name)) continue;
         // A plan attach or a result write being tried again keeps its retry note on the card for minutes: the stall watch must not read that as an agent gone quiet, nor prompt the agent (A11-216, A11-304).
-        if (!ctx.attachRetries.has(name) && !ctx.writeRetries.has(name)) watchStall(ctx, current, seen);
+        if (!ctx.attachRetries.has(name) && !ctx.writeRetries.has(name)) await watchStall(ctx, current, seen);
         // The pull requests it waits on or opened are read like the run's own: a review asking for changes on one is told to it at once, not at its `until` (A11-358).
         watchWaitedPulls(ctx, latest(), seen);
-        retellDeclined(ctx, latest(), runPlace(ctx, entry), seen);
-        watchIdle(ctx, latest(), seen);
+        await retellDeclined(ctx, latest(), runPlace(ctx, entry), seen);
+        await watchIdle(ctx, latest(), seen);
       }
       continue;
     }
     // The message a refused one waits for, before an idle run with no outcome is called over: the status read before it is not the agent's answer to it (A11-174).
-    const justTold = retellDeclined(ctx, current, runPlace(ctx, entry), seen);
-    if (seen === "working") watchStall(ctx, latest(), seen);
+    const justTold = await retellDeclined(ctx, current, runPlace(ctx, entry), seen);
+    if (seen === "working") await watchStall(ctx, latest(), seen);
     else if (!justTold && !resumed.has(name) && stoppedWithNoOutcome(ctx, latest(), seen)) end(ctx, latest(), { kind: "no-outcome" });
-    watchIdle(ctx, latest(), seen);
+    await watchIdle(ctx, latest(), seen);
   }
   // What was read of a wait belongs to a run that is still running: a run that ended or was stopped leaves nothing behind.
   for (const name of ctx.waitPolls.keys()) if (!watched.has(name)) ctx.waitPolls.delete(name);
@@ -247,13 +252,12 @@ function watchParked(ctx: PoolContext, status: ReadonlyMap<string, string>): voi
  * and the round that starts next would open beside it. A workspace that is gone already is no refusal worth saying; any other is logged, and the run is unparked as it was.
  */
 function closeLeftWorkspace(ctx: PoolContext, entry: Entry): void {
-  const { herdr, settings } = ctx;
-  if (entry.workspace === undefined) return;
-  try {
-    herdr(["--session", settings.herdrSession, "workspace", "close", entry.workspace]);
-  } catch (err) {
-    if (!herdrRefusal(err).includes("workspace_not_found")) log(`${entry.ticket.key}: its workspace ${entry.workspace} could not be closed as the run was unparked (${herdrRefusal(err)})`);
-  }
+  const { workspace } = entry;
+  if (workspace === undefined) return;
+  // Asked beside the pass (A11-282): the pass's fill waits for it, so the round that starts next never opens beside it.
+  closeWorkspaceLater(ctx, workspace, (err) => {
+    if (!herdrRefusal(err).includes("workspace_not_found")) log(`${entry.ticket.key}: its workspace ${workspace} could not be closed as the run was unparked (${herdrRefusal(err)})`);
+  });
 }
 
 /**
@@ -328,13 +332,13 @@ const wakeLine = (who: string, woke: Woke): string =>
  * Move a working run's idle clock on `seen`, and log once when the run is first marked stalled. A run that declared the events it waits on has them read, off the tick, while it is idle (A11-245); when the board first
  * judges the wait over, or past its deadline, the note's `woke` says so, and the worker is prompted once. Nothing is ended and no key is sent.
  */
-function watchStall(ctx: PoolContext, entry: Entry, seen: string): void {
+async function watchStall(ctx: PoolContext, entry: Entry, seen: string): Promise<void> {
   const { now, settings, stallMs, store, waitPolls } = ctx;
   const { name } = runPlace(ctx, entry);
   const find = () => store.get().entries.find((e) => e.ticket.key === entry.ticket.key)?.working;
   const before = find();
   const wasResumed = before?.resumed === true;
-  const background = seen === "working" ? null : paneBackground(ctx, entry);
+  const background = seen === "working" ? null : await paneBackground(ctx, entry);
   if (before !== undefined && (seen === "idle" || seen === "done")) pollWhenDue(waitPolls, name, before, now, waitSeamsOf(ctx, entry, before));
   const judged = before === undefined ? null : judgedWait(waitPolls, name, before);
   // One time for every ticket of a batch, so a wake they share carries the same `at` on each.
@@ -342,8 +346,8 @@ function watchStall(ctx: PoolContext, entry: Entry, seen: string): void {
   updateEach(ctx, runMembers(ctx, entry), (queue, member) => watchWorking(queue, member, seen, at, stallMs, background, judged));
   const note = find();
   if (before?.stalled !== true && note?.stalled === true) log(stallLine(entry.batch ?? entry.ticket.key, note, settings.stallMinutes));
-  if (!wasResumed && note?.resumed === true) promptBackgroundGone(ctx, entry);
-  if (before?.woke === undefined && note?.woke !== undefined) wakeWorker(ctx, entry, note, note.woke, judged);
+  if (!wasResumed && note?.resumed === true) await promptBackgroundGone(ctx, entry);
+  if (before?.woke === undefined && note?.woke !== undefined) await wakeWorker(ctx, entry, note, note.woke, judged);
 }
 
 /**
@@ -363,10 +367,10 @@ function waitSeamsOf(ctx: PoolContext, entry: Entry, note: WorkingNote): WaitSea
  * Prompt a run's worker, once, for the wait the note's `woke` says ended or passed its deadline (A11-245). `woke` was written to the note before this is called, so a restart or a repeated tick never sends it twice. A prompt herdr
  * refuses is counted and the wake is offered again on the next pass, up to {@link MAX_WAKE_TRIES}, after which the run is marked stalled with the refusal.
  */
-function wakeWorker(ctx: PoolContext, entry: Entry, note: WorkingNote, woke: Woke, judged: Judged | null): void {
+async function wakeWorker(ctx: PoolContext, entry: Entry, note: WorkingNote, woke: Woke, judged: Judged | null): Promise<void> {
   const who = entry.batch ?? entry.ticket.key;
   const text = wakePrompt(woke, note.waits === undefined ? null : judged?.verdict ?? null, deadlineOf(note));
-  const refusal = sendToAgent(ctx, runPlace(ctx, entry), text);
+  const refusal = await sendToAgentAsync(ctx, runPlace(ctx, entry), text);
   if (refusal === null) return log(wakeLine(who, woke));
   updateEach(ctx, runMembers(ctx, entry), (queue, member) => replace(queue, member, (held) => (held.working === undefined ? held : { ...held, working: wakeRefused(held.working, refusal, woke) })));
   log(`${who} could not be prompted for its wait: ${refusal}`);
@@ -376,11 +380,11 @@ function wakeWorker(ctx: PoolContext, entry: Entry, note: WorkingNote, woke: Wok
  * The background work a run's pane shows, as the board's {@link Background}: `live` when its status line counts a shell or a Monitor, `none` when
  * it counts neither, and null when herdr cannot read the pane, so the thirty-minute rule decides alone.
  */
-function paneBackground(ctx: PoolContext, entry: Entry): Background {
-  const { herdr, settings } = ctx;
+async function paneBackground(ctx: PoolContext, entry: Entry): Promise<Background> {
+  const { herdrCall, settings } = ctx;
   if (entry.pane === undefined) return null;
   try {
-    const counts = paneBackgroundWork(herdr(["--session", settings.herdrSession, "pane", "read", entry.pane, "--source", "visible", "--lines", "6"]));
+    const counts = paneBackgroundWork(await herdrCall(["--session", settings.herdrSession, "pane", "read", entry.pane, "--source", "visible", "--lines", "6"], HERDR_READ_MS));
     return counts.shells + counts.monitors > 0 ? "live" : "none";
   } catch {
     return null;
@@ -388,8 +392,8 @@ function paneBackground(ctx: PoolContext, entry: Entry): Background {
 }
 
 /** Tell a run's worker, once, that its background work is gone: it checks it and carries on. A refusal is said, and nothing else is sent. */
-function promptBackgroundGone(ctx: PoolContext, entry: Entry): void {
-  const refusal = sendToAgent(ctx, runPlace(ctx, entry), BACKGROUND_GONE_PROMPT);
+async function promptBackgroundGone(ctx: PoolContext, entry: Entry): Promise<void> {
+  const refusal = await sendToAgentAsync(ctx, runPlace(ctx, entry), BACKGROUND_GONE_PROMPT);
   if (refusal !== null) log(`${entry.batch ?? entry.ticket.key} could not be told its background work is gone: ${refusal}`);
 }
 
@@ -399,10 +403,12 @@ function promptBackgroundGone(ctx: PoolContext, entry: Entry): void {
  * different: when its agent ends its turn with no outcome, the run is Waiting for the person, who answers in its terminal. It keeps its workspace, its
  * pane and its slot, and resumes when its agent works again. It fails only when its agent exits, or when nobody answers for too long (A11-129).
  */
-function watchWriters(ctx: PoolContext, status: ReadonlyMap<string, string>): void {
+async function watchWriters(ctx: PoolContext, status: ReadonlyMap<string, string>): Promise<void> {
   const { finishing, misses, now, startedHere, store } = ctx;
-  for (const run of store.get().writers ?? []) {
-    if (run.phase !== "running") continue;
+  for (const listed of store.get().writers ?? []) {
+    // A start dialog is answered without holding the loop (A11-282): each run is taken as the queue holds it now.
+    const run = store.get().writers?.find((w) => w.id === listed.id);
+    if (run?.phase !== "running") continue;
     const place = writerPlace(ctx, run);
     const overdue = writerOverdue(run, now());
     if (overdue !== null) {
@@ -416,7 +422,7 @@ function watchWriters(ctx: PoolContext, status: ReadonlyMap<string, string>): vo
     }
     misses.delete(place.name);
     if (["working", "idle", "done"].includes(seen)) startedHere.delete(place.name);
-    if (!["working", "idle", "done"].includes(seen) && answerStartDialog(ctx, place)) continue;
+    if (!["working", "idle", "done"].includes(seen) && await answerStartDialog(ctx, place)) continue;
     if (seen === "working") {
       update(ctx, (queue) => writerResumed(observeWriter(queue, run.id), run.id, now()));
       continue;
@@ -478,7 +484,7 @@ function stoppedWithoutOutcome(run: WriterRun, seen: string): boolean {
 const readPublishResult = ({ publisher }: PoolContext, outcomeText: string, dir: string) => (publisher === undefined ? publishResult(outcomeText, dir) : publisher.result(outcomeText, dir));
 
 /** The publish run's status, from the same listing as the ticket runs': it ends once its outcome file is there and its agent is idle or done. */
-function watchPublish(ctx: PoolContext, status: ReadonlyMap<string, string>): void {
+async function watchPublish(ctx: PoolContext, status: ReadonlyMap<string, string>): Promise<void> {
   const { misses, now, startedHere, store } = ctx;
   const publish = store.get().publish;
   if (publish?.phase !== "running") return;
@@ -492,7 +498,9 @@ function watchPublish(ctx: PoolContext, status: ReadonlyMap<string, string>): vo
   }
   misses.delete(place.name);
   if (["working", "idle", "done"].includes(seen)) startedHere.delete(place.name);
-  if (!["working", "idle", "done"].includes(seen) && answerStartDialog(ctx, place)) return;
+  if (!["working", "idle", "done"].includes(seen) && await answerStartDialog(ctx, place)) return;
+  // The dialog was answered without holding the loop (A11-282): the publish run may have ended meanwhile.
+  if (store.get().publish?.phase !== "running") return;
   update(ctx, (queue) => observePublish(queue, seen));
   const outcomePath = join(place.dir, OUTCOME_FILE);
   if ((seen === "idle" || seen === "done") && existsSync(outcomePath)) endPublish(ctx, publish, readPublishResult(ctx, readFileSync(outcomePath, "utf8"), place.dir));
@@ -527,9 +535,9 @@ export async function tick(ctx: PoolContext): Promise<void> {
       // What is wrong with the host is put on the board's banner after the serves, so a serve that came back clears its alert in this pass; the slow reads of the host run beside the pass, not in it (A11-279).
       refreshHostAlerts(ctx);
       // The private temp directories of runs that hold no workspace any more are removed, within a budget of entries a pass (A11-279).
-      sweepRunTmp(ctx);
+      await sweepRunTmp(ctx);
       // A draining update's deadline (A11-169): the runs still live are stopped and queued again before the pass fills slots, which a drain starts nothing in.
-      forceDrain(ctx);
+      await forceDrain(ctx);
       // A run whose worker waits on a ticket not done lets go of its slot and its files, and is queued behind it, before the pass fills slots (A11-272).
       const releasing = releaseTicketWaits(ctx);
       if (releasing !== null) await releasing;
@@ -671,7 +679,7 @@ async function watchEach(ctx: PoolContext): Promise<void> {
       }
       continue;
     }
-    if (resumeUnwatched(ctx, entry, readable, checks, removals)) queued = true;
+    if (await resumeUnwatched(ctx, entry, readable, checks, removals)) queued = true;
   }
   flagRecorded(ctx, recorded);
   if (queued) void tick(ctx);
@@ -947,7 +955,7 @@ function clearResolvedConflict(ctx: PoolContext, entry: Entry, open: readonly { 
  * nothing at the cap; red checks at the cap hand the run to a person, whatever it ended on, and close nothing. Its workspace is closed first, because a second workspace would take
  * the same herdr name (`queue.ts` `retry`). Refused, the run stays parked and the next watch asks again. Returns whether a round was queued.
  */
-function resumeUnwatched(ctx: PoolContext, entry: Entry, readable: readonly { url: string; read: PullFeedback }[], checks: CheckAnswer, removals: QueueAnswer): boolean {
+async function resumeUnwatched(ctx: PoolContext, entry: Entry, readable: readonly { url: string; read: PullFeedback }[], checks: CheckAnswer, removals: QueueAnswer): Promise<boolean> {
   const { now } = ctx;
   const key = entry.ticket.key;
   const red = [checks.feedback, removals.feedback].filter((line): line is string => line !== null);
@@ -967,7 +975,7 @@ function resumeUnwatched(ctx: PoolContext, entry: Entry, readable: readonly { ur
     return false;
   }
   try {
-    close(ctx, key);
+    await close(ctx, key);
   } catch (err) {
     log(`${key}: its workspace could not be closed, so the ${red.length === 0 ? "conflict" : "red checks"} round was not started (${err instanceof Error ? err.message : String(err)})`);
     recordWithoutRound(ctx, entry, checks, removals);

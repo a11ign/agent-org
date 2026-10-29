@@ -37,7 +37,7 @@ export async function respond(ctx: PoolContext, key: string): Promise<void> {
   const entry = store.get().entries.find((e) => e.ticket.key === key);
   const parked = entry !== undefined && isParked(entry);
   respondQueued(parked ? unpark(store.get(), key) : store.get(), key, now(), found);
-  if (parked) close(ctx, key);
+  if (parked) await close(ctx, key);
   update(ctx, (queue) => respondQueued(queue, key, now(), found));
 }
 
@@ -55,14 +55,14 @@ export async function retryRun(ctx: PoolContext, key: string): Promise<void> {
   const answerable = parked && entry.outcome?.kind !== "wrong-repo";
   const refusal = retryRefusal(answerable ? entry : { ...entry, workspace: undefined });
   if (refusal !== null) throw new Error(`${refusal}, so it was not retried`);
-  const named = entry.outcome?.kind === "wrong-repo" ? organisationRepoNamed(ctx, entry.outcome.where) : null;
+  const named = entry.outcome?.kind === "wrong-repo" ? await organisationRepoNamed(ctx, entry.outcome.where) : null;
   const repo = named === null ? null : await cloneForRetry(ctx, named, key);
   const current = store.get().entries.find((e) => e.ticket.key === key);
   if (current === undefined) throw new Error(`${key} left the board while its repository was cloned, so it was not retried`);
   // Retried by someone else while the clone ran (a second press of the button): it is queued, which is what was asked.
   if (current.phase !== "finished") return;
   if (JSON.stringify(current.outcome) !== JSON.stringify(entry.outcome)) throw new Error(`${key} ended differently while its repository was cloned, so it was not retried`);
-  if (parked) close(ctx, key);
+  if (parked) await close(ctx, key);
   update(ctx, (queue) => (repo === null ? retryQueued(queue, key, now()) : placedIn(retryQueued(queue, key, now()), key, repo)));
 }
 
@@ -139,7 +139,7 @@ export async function dismiss(ctx: PoolContext, key: string): Promise<void> {
   // The ticket goes back first: a refused restore then leaves the run exactly as it was, parked and answerable. A refused close after it leaves the
   // ticket where it was put, and the run on the board, for Dismiss to try again.
   await restoreWorkingState(ctx, key);
-  if (isParked(entry)) close(ctx, key);
+  if (isParked(entry)) await close(ctx, key);
   update(ctx, (next) => dismissFinished(next, key, ctx.now()));
 }
 

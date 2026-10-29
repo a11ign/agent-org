@@ -12,6 +12,9 @@ import { type PoolContext } from "./pool-context.ts";
 /** An agent's statuses that mean it is not doing anything: its workspace is a leftover, and is closed. Any other status (working, blocked on a person) holds the start back. */
 const LEFTOVER: ReadonlySet<string> = new Set(["idle", "done", "unknown"]);
 
+/** How long the board waits for herdr to list or close, in ms: the cut the synchronous call had. The wait holds no loop (A11-282). */
+const HERDR_MS = 30_000;
+
 /** One herdr workspace and the agent in it: its id, its label, its agent's name and Claude session, and what its agent is doing. */
 type Occupant = Readonly<{ workspace: string; label: string; name: string | null; session: string | null; status: string }>;
 
@@ -19,11 +22,11 @@ type Occupant = Readonly<{ workspace: string; label: string; name: string | null
 const resumes = (entry: Entry): boolean => entry.phase === "queued" && (entry.review !== undefined || entry.talk === true);
 
 /** Every workspace herdr lists with its agent, or null when herdr could not be asked. An agent with no workspace id is not listed: it cannot be closed. */
-function readOccupants(ctx: PoolContext): Occupant[] | null {
-  const { herdr, settings } = ctx;
+async function readOccupants(ctx: PoolContext): Promise<Occupant[] | null> {
+  const { herdrCall, settings } = ctx;
   try {
-    const workspaces = JSON.parse(herdr(["--session", settings.herdrSession, "workspace", "list"]))?.result?.workspaces;
-    const agents = JSON.parse(herdr(["--session", settings.herdrSession, "agent", "list"]))?.result?.agents;
+    const workspaces = JSON.parse(await herdrCall(["--session", settings.herdrSession, "workspace", "list"], HERDR_MS))?.result?.workspaces;
+    const agents = JSON.parse(await herdrCall(["--session", settings.herdrSession, "agent", "list"], HERDR_MS))?.result?.agents;
     if (!Array.isArray(workspaces) || !Array.isArray(agents)) return null;
     const known = new Map<string, Occupant>(workspaces.filter((w) => typeof w?.workspace_id === "string").map((w) => [String(w.workspace_id),
       { workspace: String(w.workspace_id), label: String(w.label ?? ""), name: null, session: null, status: String(w.agent_status ?? "unknown") }]));
@@ -46,10 +49,10 @@ function holdersOf(ctx: PoolContext, entry: Entry, occupants: readonly Occupant[
 }
 
 /** Close the workspace of a leftover agent. Returns why herdr would not, or null once it is closed. */
-function closeLeftover(ctx: PoolContext, entry: Entry, occupant: Occupant): string | null {
-  const { herdr, settings } = ctx;
+async function closeLeftover(ctx: PoolContext, entry: Entry, occupant: Occupant): Promise<string | null> {
+  const { herdrCall, settings } = ctx;
   try {
-    herdr(["--session", settings.herdrSession, "workspace", "close", occupant.workspace]);
+    await herdrCall(["--session", settings.herdrSession, "workspace", "close", occupant.workspace], HERDR_MS);
     forgetRun(ctx, runPlace(ctx, entry).name);
     return null;
   } catch (err) {
@@ -62,7 +65,7 @@ function closeLeftover(ctx: PoolContext, entry: Entry, occupant: Occupant): stri
  * holds it back, with the wait recorded on each; so does a parked run's pane, which is the person's to answer or close and is never a leftover (A11-171). An agent that is idle,
  * done or has no pane is the run's own leftover, and its workspace is closed first, once, said in the log and on each. A workspace herdr will not close holds it back too.
  */
-function settleSession(ctx: PoolContext, members: readonly Entry[], holders: readonly Occupant[], parked: ReadonlySet<string>): void {
+async function settleSession(ctx: PoolContext, members: readonly Entry[], holders: readonly Occupant[], parked: ReadonlySet<string>): Promise<void> {
   const [entry] = members;
   const what = entry.talk === true ? "this talk session" : "this round";
   const working = holders.find((o) => !LEFTOVER.has(o.status));
@@ -71,7 +74,7 @@ function settleSession(ctx: PoolContext, members: readonly Entry[], holders: rea
   let refused: { workspace: string; why: string } | null = null;
   if (working === undefined) {
     for (const occupant of holders.filter((o) => !parked.has(o.workspace))) {
-      const why = closeLeftover(ctx, entry, occupant);
+      const why = await closeLeftover(ctx, entry, occupant);
       if (why === null) closed.push(occupant.workspace);
       else refused = { workspace: occupant.workspace, why };
     }
@@ -100,16 +103,16 @@ function byRun(entries: readonly Entry[]): Entry[][] {
  * starts beside a Talk session that holds its Claude session or its name, and a Talk never starts beside a round. Nothing is read when no such run is queued, or the queue is
  * paused, and herdr that cannot be asked changes nothing.
  */
-export function settleSessions(ctx: PoolContext): void {
+export async function settleSessions(ctx: PoolContext): Promise<void> {
   const queue = ctx.store.get();
   const waiting = queue.entries.filter(resumes);
   if (waiting.length === 0 || queue.paused) return;
-  const occupants = readOccupants(ctx);
+  const occupants = await readOccupants(ctx);
   if (occupants === null) return;
   const parked = new Set(queue.entries.filter(isParked).flatMap(({ workspace }) => (workspace === undefined ? [] : [workspace])));
   for (const members of byRun(waiting)) {
     try {
-      settleSession(ctx, members, holdersOf(ctx, members[0], occupants), parked);
+      await settleSession(ctx, members, holdersOf(ctx, members[0], occupants), parked);
     } catch (err) {
       log(`${members[0].ticket.key}: what holds its session could not be settled: ${messageOf(err)}`);
     }

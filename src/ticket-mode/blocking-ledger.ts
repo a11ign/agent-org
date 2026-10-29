@@ -9,7 +9,7 @@
 //
 // THE CALL SITE IS THE CODE THAT ASKED, as `path:line` from the checkout's root: the first frame of the stack outside Node, this file and the SEAMS, the modules whose one job
 // is to hand a spawn on (`realExec`, the `gh` runner made of it, and the counter every code-host `gh` passes through), which would otherwise stand for every plugin call at once. A call that holds the loop
-// SLOW_MS or more is written to stderr as one line when it returns.
+// HOLD_MS or more is written to stderr as one line when it returns: the same threshold `/api/health` counts a hold at, so every hold the board's figure counts is a line in the journal with its site (A11-282).
 import childProcess from "node:child_process";
 import { syncBuiltinESMExports } from "node:module";
 import { basename, dirname, join, relative } from "node:path";
@@ -17,8 +17,11 @@ import { fileURLToPath } from "node:url";
 
 const HERE = fileURLToPath(import.meta.url);
 const CHECKOUT = join(dirname(HERE), "..", "..");
-/** A call that holds the loop this long, in ms, is logged as it returns. */
-export const SLOW_MS = 250;
+/**
+ * A synchronous call that holds the loop this long, in ms, is a hold: logged as it returns, and counted in `syncHolds` on `/api/health` (`health-figures.ts` re-exports it). ONE CONSTANT FOR BOTH: the journal once hid
+ * every hold between 100 and 250 ms that the figure counted, so four fixes were each a guess at the next biggest line (A11-282).
+ */
+export const HOLD_MS = 100;
 /** The modules that only pass a spawn on: a frame in one of them is not the call site. Paths from the checkout's root. */
 const SEAMS: readonly string[] = ["src/plugins/real-seams.ts", "plugins/github/gh.ts", "plugins/github/call-counter.ts", "src/herdr-agents.ts", "src/ticket-mode/pool-herdr.ts"];
 const SYNC_SPAWNS = ["spawnSync", "execFileSync", "execSync"] as const;
@@ -101,7 +104,7 @@ export function createBlockingLedger({ now = () => performance.now(), err = (lin
     account.totalMs += ms;
     account.maxMs = Math.max(account.maxMs, ms);
     sites.set(key, account);
-    if (ms >= SLOW_MS) err(`${name}: a synchronous ${program} held the loop ${Math.round(ms)} ms, at ${site}\n`);
+    if (ms >= HOLD_MS) err(`${name}: a synchronous ${program} held the loop ${Math.round(ms)} ms, at ${site}\n`);
     onCall?.({ site, program, ms });
   }
 

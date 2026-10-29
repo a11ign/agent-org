@@ -16,7 +16,7 @@
 // look, and the brief carries the changed lines and the replies. That takes something new each time, and for a pull request a run holds, each re-review is one of the run's rounds (`countRereview`), started only once its worker has
 // stopped working, in whatever state the run is (`mayRereview`, A11-274), and while a round is left: a dispute ends at the cap, handed to a person.
 
-import { earlierReviewWord, type Look, readReviewerMemory, replyAuthorsOf, type Repost, REVIEWER_LOGIN, reviewedRepositoriesOf, type ReviewerPort, type ReviewState, reviewPostedAt, reviewVerdict, splitHeadKey, reviewWordAt, standingBlock, writeReviewerMemory } from "./reviewer-port.ts";
+import { earlierReviewWord, type Look, readReviewerMemory, replyAuthorsOf, type Repost, REVIEWER_LOGIN, reviewedRepositoriesOf, type ReviewerPort, type ReviewState, reviewPostedAt, reviewVerdict, splitHeadKey, reviewWordAt, standingBlock, warmOrigins, writeReviewerMemory } from "./reviewer-port.ts";
 import { log, messageOf, update } from "./pool-state.ts";
 import { REVIEW_LEASE_MS } from "../ticket-port/review-claim.ts";
 import { type Entry } from "./queue/queue-entries-and-outcomes.ts";
@@ -698,6 +698,7 @@ export async function reviewNewHeads(ctx: PoolContext): Promise<void> {
   adoptRememberedReviewers(ctx);
   const listed = new Set<string>();
   let unlisted = false;
+  await warmOrigins(settings.clones);
   for (const repository of reviewedRepositoriesOf(settings.clones)) {
     const urls = await codeHost.openPullUrlsOf(repository);
     if (urls === null) {
@@ -733,6 +734,7 @@ export async function startGreenReviewers(ctx: PoolContext): Promise<void> {
   const { codeHost, refusedHeads, reviewer, reviewerStarted, settings } = ctx;
   if (reviewer === undefined) return;
   adoptRememberedReviewers(ctx);
+  await warmOrigins(settings.clones);
   for (const repository of reviewedRepositoriesOf(settings.clones)) {
     for (const url of (await codeHost.openPullUrlsOf(repository)) ?? []) {
       const state = await codeHost.readReviewState(url);
@@ -771,6 +773,7 @@ async function listWhileOff(ctx: PoolContext): Promise<void> {
   if (ctx.reviewerState !== "off-required") return;
   let repositories: string[];
   try {
+    await warmOrigins(settings.clones);
     repositories = reviewedRepositoriesOf(settings.clones);
   } catch (err) {
     // Said once, not on every sweep: the gate that does not load does not load the next time either.

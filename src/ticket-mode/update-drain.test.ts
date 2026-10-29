@@ -121,7 +121,7 @@ test("A11-169: the publish run and a new-ticket run that are live at the deadlin
 test("A11-169: /api/config tells the page the instance's version and the draining update, and /api/queue the same for its polling", async () => {
   const dir = tmpDir("ticket-update-");
   const settings = parseTicketSettings({ clones: { "nbl-ui-netbox": "/r/netbox" }, stateDir: dir });
-  const pool = { tick: async () => {}, reviewNewHeads: () => {}, stopWriterRun: () => {}, stop: () => {}, close: () => {}, dismiss: async () => {}, remove: async () => {}, reconcile: () => {}, ensureSession: async () => {}, refreshTracker: async () => {}, watchFeedback: () => {}, releaseReviewers: () => {}, retargetStacked: () => {}, rebaseStacked: async () => {}, applyEdit: async () => {}, discardEdit: () => {}, respond: async () => {} };
+  const pool = { tick: async () => {}, reviewNewHeads: () => {}, stopWriterRun: () => {}, stop: () => {}, close: async () => {}, dismiss: async () => {}, remove: async () => {}, reconcile: async () => {}, ensureSession: async () => {}, refreshTracker: async () => {}, watchFeedback: () => {}, releaseReviewers: () => {}, retargetStacked: () => {}, rebaseStacked: async () => {}, applyEdit: async () => {}, discardEdit: () => {}, respond: async () => {} };
   const drain = memoryDrain();
   const { api } = createBoard({ settings, source: createFakeTracker([]), codeHost: createFakeCodeHost(), key: "a".repeat(48), queuePath: join(dir, "queue.json"), choicePath: join(dir, "choice.json"), pool,
     poolDeps: { drain }, version: "v0.273.0", next: () => null, now: () => at(13, 0) });

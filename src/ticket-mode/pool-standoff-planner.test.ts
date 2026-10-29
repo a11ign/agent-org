@@ -29,6 +29,8 @@ async function plannerRound() {
   await settled();
   /** The planner ends its round with `decision`, having written `plan` into its plan folder when it amended. */
   const decide = async (decision: "amended" | "upheld", plan?: string) => {
+    // The clock is a stand-in far older than the files it is compared with: a run that ended after its outcome was written must not read the file again as the outcome written after it ended, however many passes run (A11-282).
+    clock.ms = Date.now() + MINUTE;
     writeFileSync(join(dir, STANDOFF_DECISION_FILE), JSON.stringify({ decision, reason: decision === "amended" ? "The limit cannot be met by this entry point." : "The entry point can be split." }));
     if (plan !== undefined) writeFileSync(join(dir, "plan", "NBF-1-0001-plan-first.md"), plan);
     writeFileSync(join(dir, "outcome.json"), JSON.stringify({ kind: "reviewed" }));
@@ -89,6 +91,8 @@ test("A11-290: the planner AMENDS the decision: the amended plan is attached, th
 
 test("A11-290: a planner round that decides nothing, or whose amended plan the board refuses, is handed to a person with the reason, never lost", async () => {
   const none = await plannerRound();
+  // The clock is a stand-in far older than the file it is compared with: a run that ended after the file was written must not read it again as the outcome written after it ended, however many passes run (A11-282).
+  clock.ms = Date.now() + MINUTE;
   writeFileSync(join(none.dir, "outcome.json"), JSON.stringify({ kind: "reviewed" }));
   none.fixture.status.set(herdrName("NBF-1"), "idle");
   await none.pool.tick();

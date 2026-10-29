@@ -8,7 +8,7 @@
 import { type OpenedPull } from "./brief-ticket-text.ts";
 import { type PoolContext } from "./pool-context.ts";
 import { log, messageOf } from "./pool-state.ts";
-import { reviewedRepositoriesOf } from "./reviewer-port.ts";
+import { reviewedRepositoriesOf, warmOrigins } from "./reviewer-port.ts";
 import { pullsOf } from "./board-view/view-types-and-filters.ts";
 import { type Entry, type PullRequest } from "./queue/queue-entries-and-outcomes.ts";
 import { DEFAULT_KEYWORDS, type Keywords } from "./source.ts";
@@ -29,6 +29,7 @@ async function ticketPullsOf(ctx: PoolContext, key: string): Promise<readonly Na
   const { codeHost, settings } = ctx;
   if (codeHost.pullsNaming === undefined) return [];
   try {
+    await warmOrigins(settings.clones);
     const found = await codeHost.pullsNaming(key, reviewedRepositoriesOf(settings.clones));
     if (found === null) {
       log(`${key}: the pull requests that name it could not be listed, so none is told to its worker or answered by Respond`);

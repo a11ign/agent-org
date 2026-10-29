@@ -73,7 +73,7 @@ export async function refreshTracker(ctx: PoolContext): Promise<void> {
   // A ticket the tracker's integration completed on a partial merge is put back first, so the same sweep queues the next step (A11-178).
   for (const entry of earlyCompletions(store.get())) await undoEarlyCompletion(ctx, entry);
   // A parked needs-human run whose pull requests merged lets go of its workspace, which the next-step and plan-count sweeps below require (A11-258).
-  releaseMergedBlockers(ctx);
+  await releaseMergedBlockers(ctx);
   await readPlanSteps(ctx);
   queueNextSteps(ctx);
   await completeMerged(ctx);
