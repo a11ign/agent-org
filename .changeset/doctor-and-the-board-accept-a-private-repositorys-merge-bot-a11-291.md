@@ -1,5 +1,0 @@
----
-"agent-org": minor
----
-
-Doctor and the board accept the merge bot of a private repository (A11-291, the chairman's decision: Private repositories get a merge bot, not a ruleset). GitHub Free offers a private repository no ruleset and no merge queue, so a11ign's private repositories (`plugin`, `auth-capture-check`) merge a pull request with `.github/workflows/merge-bot.yml`, which merges one that is approved at its current head with a green `gate`. The code host contract is 1.27: `MergeFlow.private` and `MergeFlow.mergeBot`, read in the same one query as the rest. A repository has a merge flow when it allows auto-merge and holds the arm workflow, or is private and holds the merge bot. Doctor's `merge flow` row passes a private repository by the bot and asks for the bot (not a ruleset) of one without; the card says "the merge bot has not merged it" or "no merge bot" for such a repository; and a pull request that adds the arm workflow or the merge bot to a repository with neither is a first install, on the card and in the body `pr:open` checks.
