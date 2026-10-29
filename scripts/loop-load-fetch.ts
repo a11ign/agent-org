@@ -11,8 +11,10 @@ import { offlineFetch } from "../src/offline-fetch.ts";
 
 const REFUSAL = JSON.stringify({ errors: [{ message: "loop-load: the network is off" }] });
 
-/** A server on a port of its own that answers every request with a 401. It does not keep the process alive. */
-const refusing = http.createServer((_request, response) => { response.writeHead(401, { "content-type": "application/json" }).end(REFUSAL); }).listen(0, "127.0.0.1").unref();
+/** A server on a port of its own that answers every request with a 401. It does not keep the process alive, and is listening before anything else runs. */
+const refusing = http.createServer((_request, response) => { response.writeHead(401, { "content-type": "application/json" }).end(REFUSAL); }).unref();
+await new Promise<void>((listening) => { refusing.listen(0, "127.0.0.1", listening); });
+const refusalPort = (refusing.address() as { port: number }).port;
 
 const offline = offlineFetch(globalThis.fetch);
 globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -23,15 +25,31 @@ globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
   }
 }) as typeof fetch;
 
-const LOOPBACK = new Set(["127.0.0.1", "localhost", "[::1]"]);
-/** Whether a request is for a host this process must not reach: any address but loopback. */
-const isRefused = (url: URL | null): url is URL => url !== null && !LOOPBACK.has(url.hostname);
-const realHttps = https.request;
-(https as { request: unknown }).request = (...args: Parameters<typeof https.request>) => {
-  const [first, ...rest] = args;
-  const url = first instanceof URL ? first : typeof first === "string" ? new URL(first) : null;
-  const address = refusing.address();
-  if (!isRefused(url) || address === null || typeof address === "string") return realHttps(...args);
-  return http.request(new URL(`${url.pathname}${url.search}`, `http://127.0.0.1:${address.port}`), ...(rest as [http.RequestOptions?]));
-};
+const LOOPBACK = new Set(["127.0.0.1", "localhost", "[::1]", "::1"]);
+
+/** The host a request is for, from the URL, the address or the options it was made with, or null when none is named. */
+function hostOf(first: unknown): { hostname: string; path: string } | null {
+  if (first instanceof URL || typeof first === "string") {
+    const url = first instanceof URL ? first : new URL(first);
+    return { hostname: url.hostname, path: `${url.pathname}${url.search}` };
+  }
+  const options = first as { hostname?: string; host?: string; path?: string } | null;
+  const hostname = options?.hostname ?? options?.host;
+  return typeof hostname === "string" ? { hostname, path: options?.path ?? "/" } : null;
+}
+
+/** A request made to refuse: for any host but loopback it is made to the stand-in server instead, whatever form the caller gave the address in. */
+function refusingRequest(real: typeof http.request): typeof http.request {
+  return ((...args: Parameters<typeof http.request>) => {
+    const target = hostOf(args[0]);
+    if (target === null || LOOPBACK.has(target.hostname)) return real(...args);
+    const options = args.find((argument): argument is http.RequestOptions => typeof argument === "object" && !(argument instanceof URL) && argument !== null);
+    const onResponse = args.find((argument): argument is (response: http.IncomingMessage) => void => typeof argument === "function");
+    return http.request({ ...options, protocol: "http:", hostname: "127.0.0.1", host: undefined, port: refusalPort, path: target.path, agent: false }, ...(onResponse === undefined ? [] : [onResponse]));
+  }) as typeof http.request;
+}
+
+const [realHttp, realHttps] = [http.request, https.request];
+(http as { request: unknown }).request = refusingRequest(realHttp);
+(https as { request: unknown }).request = refusingRequest(realHttps as typeof http.request);
 syncBuiltinESMExports();

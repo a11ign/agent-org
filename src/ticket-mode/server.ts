@@ -697,9 +697,14 @@ const runStartupProgram = (program: string): Promise<{ status: number | null; er
 /** Runs `program` as a module in a child of this Node, and answers how it ended. Not a synchronous spawn, so the board thread's loop is not held while the child works (A11-282). Never rejects. */
 export function runNodeProgram(program: string, timeoutMs: number): Promise<{ status: number | null; error?: Error }> {
   return new Promise((done) => {
-    const child = spawn(process.execPath, ["--input-type=module", "-e", program], { stdio: ["ignore", "inherit", "inherit"], timeout: timeoutMs });
-    child.once("error", (error) => done({ status: null, error }));
-    child.once("close", (status) => done({ status }));
+    try {
+      const child = spawn(process.execPath, ["--input-type=module", "-e", program], { stdio: ["ignore", "inherit", "inherit"], timeout: timeoutMs });
+      child.once("error", (error) => done({ status: null, error }));
+      // A child ended by a signal, such as the timeout's, has no status: it is said with what ended it, as `spawnSync` said it.
+      child.once("close", (status, signal) => done(signal === null ? { status } : { status: null, error: new Error(`the check was ended by ${signal} (it is given ${timeoutMs / 1000} s)`) }));
+    } catch (error) {
+      done({ status: null, error: error instanceof Error ? error : new Error(String(error)) });
+    }
   });
 }
 

@@ -864,6 +864,12 @@ test("A11-282: the start-up child runs without holding this thread's loop, and i
   }
 });
 
+test("A11-282: a start-up child ended by a signal is a failed check that says so, and a program that cannot be run is an answer and not a throw", async () => {
+  const cut = await runNodeProgram("setTimeout(() => {}, 60_000)", 300);
+  assert.equal(cut.status, null);
+  assert.match(cut.error?.message ?? "", /ended by SIGTERM/);
+});
+
 test("the instance mints a worker terminal's code for its key only, and says why there is none when the terminal is not set", async () => {
   const port = await freePort();
   const made = board(port, {}, { mintTerminal: async () => ({ code: "123456" }) });

@@ -93,9 +93,9 @@ const BACKGROUND_GONE_PROMPT = "your background work is gone; check it and carry
  * `agent start` completes, and a start that a dialog held up past its wait never does (measured 2026-10-13, `name: null` on a running worker).
  */
 async function readSessionIds(ctx: PoolContext): Promise<Map<string, string>> {
-  const { herdrAsync, settings } = ctx;
+  const { settings } = ctx;
   try {
-    const agents = JSON.parse(await herdrAsync(["--session", settings.herdrSession, "agent", "list"], HERDR_READ_MS))?.result?.agents;
+    const agents = JSON.parse(await listingRun(ctx)(["--session", settings.herdrSession, "agent", "list"]))?.result?.agents;
     if (!Array.isArray(agents)) return new Map();
     return new Map(agents.filter((a) => a?.workspace_id && a?.agent_session?.value).map((a) => [String(a.workspace_id), String(a.agent_session.value)]));
   } catch {
@@ -106,11 +106,24 @@ async function readSessionIds(ctx: PoolContext): Promise<Map<string, string>> {
 /** How long a pass waits for one of herdr's listings, in ms: the cut a synchronous `herdr` call has always had. The wait holds no loop (A11-282). */
 const HERDR_READ_MS = 30_000;
 
+/** What herdr answers for a seat or pane that has ended, which every caller reads as gone and which the journal does not need on every pass. */
+const GONE_ANSWERS = ["agent_not_found", "pane_not_found"];
+
+/**
+ * A call to herdr that holds no loop (A11-282), saying herdr's own refusal on stderr when it fails, as the synchronous `herdrRun` did: a herdr that is down left its error in the journal on every pass, and the watch that
+ * stops on it must not do so in silence. The refusal is still thrown, for the caller that reads it.
+ */
+const listingRun = (ctx: PoolContext) => (args: string[]): Promise<string> => ctx.herdrAsync(args, HERDR_READ_MS).catch((err: unknown) => {
+  const said = String((err as Error)?.message ?? err).split("\n").slice(1).join(" ").trim() || String((err as Error)?.message ?? err).split("\n")[0];
+  if (!GONE_ANSWERS.some((answer) => said.includes(answer))) process.stderr.write(`${said}\n`);
+  throw err;
+});
+
 /** Read each live and parked run's status once: record any live run that has ended, and resume any parked one a person has answered. */
 async function watch(ctx: PoolContext): Promise<void> {
-  const { claudeSessions, herdrAsync, session } = ctx;
+  const { claudeSessions, session } = ctx;
   // The two listings are asked of herdr without holding the loop (A11-282): a synchronous call held every write and every card for as long as herdr took, on every pass.
-  const agents = await readAgentsAsync((args) => herdrAsync(args, HERDR_READ_MS), session);
+  const agents = await readAgentsAsync(listingRun(ctx), session);
   if (agents === null) return;
   const status = new Map(agents.map((agent) => [agent.label, agent.status]));
   for (const [workspace, id] of await readSessionIds(ctx)) claudeSessions.set(workspace, id);

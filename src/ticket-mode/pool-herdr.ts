@@ -13,7 +13,7 @@ export const defaultHerdr: Herdr = (args, timeoutMs = 30_000) => herdrRun(args, 
 export type HerdrAsync = (args: string[], timeoutMs: number) => Promise<string>;
 
 export const defaultHerdrAsync: HerdrAsync = (args, timeoutMs) => new Promise((resolve, reject) => {
-  execFile("herdr", args, { encoding: "utf8", timeout: timeoutMs }, (err, stdout, stderr) => (err ? reject(Object.assign(err, { stdout, stderr })) : resolve(stdout)));
+  execFile("herdr", args, { encoding: "utf8", timeout: timeoutMs }, (err, stdout) => (err ? reject(Object.assign(err, { stdout })) : resolve(stdout)));
 });
 
 export const defaultWait = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));

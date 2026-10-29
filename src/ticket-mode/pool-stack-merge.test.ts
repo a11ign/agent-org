@@ -183,6 +183,21 @@ test("A11-282: the sweep of the bases asks the code host's asynchronous sweep wh
   assert.deepEqual(entry().retargets, { [BOTTOM]: note }, "and its note is the card's, as the synchronous sweep's is");
 });
 
+test("A11-282: a run a person queued again while the sweep waited on GitHub is left alone: nothing is handed to the arm bot and no note is written over it", async () => {
+  const note = `Needs retarget: ${BOTTOM} still targets nbf-1-fit, whose branch is gone: retarget it by hand`;
+  const { host, sweep, entry, ctx } = world({
+    run: (urls) => finishedRun(urls, { [BOTTOM]: ready(BOTTOM_HEAD), [ABOVE]: ready(ABOVE_HEAD) }, { blockers: [{ key: "NBF-0", state: "started", status: "In Review", branch: "nbf-1-fit", pulls: {} }] }),
+    codeHost: (fake) => ({ ...fake, sweepRetargetsAsync: async () => {
+      // Retry landed while GitHub was being asked: the run is queued again.
+      (ctx.store.set as (queue: Queue) => void)({ entries: [{ ...entry(), phase: "queued" }] } as unknown as Queue);
+      return { [ABOVE]: note };
+    } }),
+  });
+  await sweep();
+  assert.deepEqual(requested(host), [], "the run is no longer finished, so its pull requests are not handed to the arm bot");
+  assert.equal(entry().retargets, undefined, "and the note the sweep found is not written over the queued run");
+});
+
 test("A11-238: a base the sweep retargeted this pass does not leave the pull request out of the stack merge", async () => {
   const { host, sweep, entry } = world({
     run: (urls) => finishedRun(urls, { [BOTTOM]: ready(BOTTOM_HEAD), [ABOVE]: ready(ABOVE_HEAD) }, { blockers: [{ key: "NBF-0", state: "started", status: "In Review", branch: "nbf-1-fit", pulls: {} }] }),
