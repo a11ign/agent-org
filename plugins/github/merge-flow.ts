@@ -202,43 +202,100 @@ function repositoryFlowOf(answer: any): RepositoryFlow | null {
   };
 }
 
+/** Whether `owner` is a login that is safe to put in a query (no slash, space, quote or backslash). */
+const isOwner = (owner: string): boolean => /^[^/\s"\\]+$/.test(owner);
+
+/** The query for one page of organisation `owner`'s repositories, after `after` (null for the first). */
+const pageQuery = (owner: string, after: string | null): string =>
+  `query { organization(login: "${owner}") { repositories(first: 100${after === null ? "" : `, after: ${JSON.stringify(after)}`}) { pageInfo { hasNextPage endCursor } nodes { ${REPOSITORY_FIELDS} } } } }`;
+
+/** What one page of an organisation's listing says: the whole answer (`listed`), that GitHub finds no organisation by that login, that the listing cannot be read, or the repositories of this page and the cursor of the next (undefined on the last page). */
+type Page = "not an organisation" | null | Readonly<{ listed: readonly ListedRepository[]; after: string | undefined }>;
+
+/** The page in `data`, an answer of {@link pageQuery}. */
+function pageOf(owner: string, data: Record<string, unknown> | null): Page {
+  if (data !== null && data.organization === null) return "not an organisation";
+  const repositories = (data?.organization as any)?.repositories;
+  if (!Array.isArray(repositories?.nodes)) return null;
+  const listed: ListedRepository[] = [];
+  for (const node of repositories.nodes) {
+    if (typeof node?.name !== "string") return null;
+    listed.push({ repository: `${owner}/${node.name}`, archived: node.isArchived === true, flow: repositoryFlowOf(node) });
+  }
+  if (repositories.pageInfo?.hasNextPage !== true) return { listed, after: undefined };
+  return typeof repositories.pageInfo.endCursor === "string" ? { listed, after: repositories.pageInfo.endCursor } : null;
+}
+
+/** The listing of an organisation written once, as steps: each yields the query for a page and is told the `data` that answered it (A11-395), so the synchronous and the asynchronous read below ask in their own way and judge alike. */
+type PageSteps = Generator<string, readonly ListedRepository[] | "not an organisation" | null, Record<string, unknown> | null>;
+
+function* organisationPages(owner: string): PageSteps {
+  const listed: ListedRepository[] = [];
+  let after: string | null = null;
+  for (let page = 0; page < MAX_PAGES; page += 1) {
+    const read = pageOf(owner, yield pageQuery(owner, after));
+    if (read === null || read === "not an organisation") return read;
+    listed.push(...read.listed);
+    if (read.after === undefined) return listed;
+    after = read.after;
+  }
+  return null;
+}
+
 /**
  * EVERY REPOSITORY OF ORGANISATION `owner`, with its merge flow (A11-274), so a repository no clone and no list names is read too: a new one is listed the day it is made. One call per hundred repositories. "not an organisation"
  * where GitHub finds no organisation by that login (a user's account), and null where the listing could not be read whole: a page that failed is never read as a shorter list.
  */
 export function readOrganisationFlows(owner: string, run: Gh): readonly ListedRepository[] | "not an organisation" | null {
-  if (!/^[^/\s"\\]+$/.test(owner)) return null;
-  const listed: ListedRepository[] = [];
-  let after: string | null = null;
+  if (!isOwner(owner)) return null;
+  const steps = organisationPages(owner);
   try {
-    for (let page = 0; page < MAX_PAGES; page += 1) {
-      const cursor: string = after === null ? "" : `, after: ${JSON.stringify(after)}`;
-      const data = dataOf(run, `query { organization(login: "${owner}") { repositories(first: 100${cursor}) { pageInfo { hasNextPage endCursor } nodes { ${REPOSITORY_FIELDS} } } } }`);
-      if (data !== null && data.organization === null) return "not an organisation";
-      const repositories = (data?.organization as any)?.repositories;
-      if (!Array.isArray(repositories?.nodes)) return null;
-      for (const node of repositories.nodes) {
-        if (typeof node?.name !== "string") return null;
-        listed.push({ repository: `${owner}/${node.name}`, archived: node.isArchived === true, flow: repositoryFlowOf(node) });
-      }
-      if (repositories.pageInfo?.hasNextPage !== true) return listed;
-      after = typeof repositories.pageInfo.endCursor === "string" ? repositories.pageInfo.endCursor : null;
-      if (after === null) return null;
-    }
+    let next = steps.next();
+    while (!next.done) next = steps.next(dataOf(run, next.value));
+    return next.value;
   } catch {
     return null;
   }
-  return null;
 }
 
-/** {@link readOrganisationFlows}'s reading of each of `repositories` by name (`owner/name`), for an owner that is not an organisation: one call for all, and null for a repository that could not be read. */
-export function readRepositoryFlows(repositories: readonly string[], run: Gh): Readonly<Record<string, ListedRepository | null>> {
-  const read = readAliased(repositories, REPOSITORY_FIELDS, (answer) => {
-    const flow = repositoryFlowOf(answer);
-    return flow === null ? null : { archived: answer.isArchived === true, flow };
-  }, run);
-  return Object.fromEntries(repositories.map((repository) => {
+/** {@link readOrganisationFlows} without holding the process still (A11-395): the pages are read one after the other. */
+export async function readOrganisationFlowsAsync(owner: string, run: AsyncGh): Promise<readonly ListedRepository[] | "not an organisation" | null> {
+  if (!isOwner(owner)) return null;
+  const steps = organisationPages(owner);
+  try {
+    let next = steps.next();
+    while (!next.done) next = steps.next(await dataOfAsync(run, next.value));
+    return next.value;
+  } catch {
+    return null;
+  }
+}
+
+/** One repository's answer as {@link REPOSITORY_FIELDS} asked it, with whether it is archived, or null when it says neither the setting nor whether it is private. */
+function archivedFlowOf(answer: any): { archived: boolean; flow: RepositoryFlow } | null {
+  const flow = repositoryFlowOf(answer);
+  return flow === null ? null : { archived: answer.isArchived === true, flow };
+}
+
+/** What {@link readRepositoryFlows} makes of the answers `read` by name: each repository's listing, or null. */
+const listedByName = (repositories: readonly string[], read: Readonly<Record<string, { archived: boolean; flow: RepositoryFlow } | null>>): Readonly<Record<string, ListedRepository | null>> =>
+  Object.fromEntries(repositories.map((repository) => {
     const answer = read[repository] ?? null;
     return [repository, answer === null ? null : { repository, ...answer }];
   }));
+
+/** {@link readOrganisationFlows}'s reading of each of `repositories` by name (`owner/name`), for an owner that is not an organisation: one call for all, and null for a repository that could not be read. */
+export function readRepositoryFlows(repositories: readonly string[], run: Gh): Readonly<Record<string, ListedRepository | null>> {
+  return listedByName(repositories, readAliased(repositories, REPOSITORY_FIELDS, archivedFlowOf, run));
+}
+
+/** {@link readRepositoryFlows} without holding the process still (A11-395). */
+export async function readRepositoryFlowsAsync(repositories: readonly string[], run: AsyncGh): Promise<Readonly<Record<string, ListedRepository | null>>> {
+  const { named, none } = aliasesOf<{ archived: boolean; flow: RepositoryFlow }>(repositories);
+  if (named.length === 0) return listedByName(repositories, none);
+  try {
+    return listedByName(repositories, answeredBy(named, none, await dataOfAsync(run, queryOf(named, REPOSITORY_FIELDS)), archivedFlowOf));
+  } catch {
+    return listedByName(repositories, none);
+  }
 }

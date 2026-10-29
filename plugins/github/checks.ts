@@ -34,7 +34,7 @@ export function githubRepositoriesOf(deps: Pick<PluginDeps, "clones" | "exec">):
 }
 
 /** {@link githubRepositoriesOf} without holding the process still (A11-356). */
-async function githubRepositoriesOfAsync(deps: Pick<PluginDeps, "clones" | "execAsync">): Promise<string[]> {
+export async function githubRepositoriesOfAsync(deps: Pick<PluginDeps, "clones" | "execAsync">): Promise<string[]> {
   const remotes = await Promise.all(Object.values(deps.clones).map((path) => originOfAsync(path, deps)));
   return [...new Set(remotes.flatMap((remote) => {
     const repo = remote === null ? null : githubRepoOf(remote);
