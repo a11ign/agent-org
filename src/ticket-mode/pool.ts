@@ -103,6 +103,7 @@
 import { ensureSession, talkTo } from "./pool-start.ts";
 import { applyEdit, discardEdit, dismiss, remove, respond, retryRun, stop, stopWriterRun } from "./pool-actions.ts";
 import { cloneMissing } from "./pool-org-repos.ts";
+import { closesSettledWithin } from "./pool-close.ts";
 import { answer, type Answer } from "./pool-answer.ts";
 import { close } from "./pool-settle.ts";
 import { tick, watchFeedback } from "./pool-watch.ts";
@@ -203,6 +204,7 @@ export function createPool(store: QueueStore, deps: PoolDeps) {
     figures: () => poolFigures(ctx),
     /** The instance is stopping (A11-363): no run starts from now on, so the runs still starting are the last. */
     endStarts: () => noteStopping(ctx),
+    settleCloses: (limitMs: number) => closesSettledWithin(ctx, limitMs),
   };
 }
 

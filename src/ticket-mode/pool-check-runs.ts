@@ -12,7 +12,7 @@ import { applyMigration, giveToAgent, isCheckRun, MAX_BOARD_CHECK_RUNS, MAX_RUN_
 import { afterMergeChecksPath, changeChecks, loadChecks } from "./after-merge/store.ts";
 import { capabilityRequest, missingCapabilities, parkCheck, recordCapabilityRequest, routeParked } from "./after-merge/capability.ts";
 import { awaitsWindow, reopenClosedTooSoon, scheduleWindows } from "./after-merge/window.ts";
-import { closedNote } from "../herdr-agents.ts";
+import { closeWorkspaceLater } from "./pool-close.ts";
 import { type PoolContext } from "./pool-context.ts";
 import { forgetRun, log, messageOf, update, writerAgentRunning, writerPlace } from "./pool-state.ts";
 import { endWriter } from "./pool-board-runs.ts";
@@ -48,9 +48,8 @@ function closeVerified(ctx: PoolContext, id: string, verdict: VerifyOutcome): vo
 
 /** Close a check run's workspace, and forget its run. */
 function closeCheckRun(ctx: PoolContext, run: WriterRun): void {
-  const { herdr, session } = ctx;
   const { name } = writerPlace(ctx, run);
-  if (run.workspace) closedNote((args) => herdr(args), run.workspace, session);
+  if (run.workspace) closeWorkspaceLater(ctx, run.workspace);
   forgetRun(ctx, name);
 }
 

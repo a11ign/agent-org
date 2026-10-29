@@ -1,7 +1,7 @@
 // @ts-check
 // module: the herdr seam -- the calls the pool makes to herdr and their defaults, herdr's server command, and the names its runs are given
 
-import { herdrAgentName, herdrRefusal, herdrRun } from "../herdr-agents.ts";
+import { herdrAgentName, herdrRefusal, herdrRun, herdrRunAsync } from "../herdr-agents.ts";
 import { execFile, spawn } from "node:child_process";
 import { defaultServiceDeps, serviceState, unitFor, type ServiceDeps } from "../install/service.ts";
 
@@ -15,6 +15,13 @@ export type HerdrAsync = (args: string[], timeoutMs: number) => Promise<string>;
 export const defaultHerdrAsync: HerdrAsync = (args, timeoutMs) => new Promise((resolve, reject) => {
   execFile("herdr", args, { encoding: "utf8", timeout: timeoutMs }, (err, stdout) => (err ? reject(Object.assign(err, { stdout })) : resolve(stdout)));
 });
+
+/**
+ * herdr without holding the loop, for the calls whose refusal is read or said (A11-282): the pane a start opens, the listings it settles on and the close of an ended run's workspace. `herdrRunAsync` carries herdr's own
+ * stderr on the error and says it on this process's stderr, as the synchronous `herdrRun` did, so a card quotes herdr's reason and not the command line. `defaultHerdrAsync` is left bare: `agent start`'s
+ * busy-pane retry reads its error as it is.
+ */
+export const defaultHerdrCall: HerdrAsync = (args, timeoutMs) => herdrRunAsync(args, timeoutMs);
 
 export const defaultWait = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 

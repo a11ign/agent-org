@@ -12,7 +12,7 @@ import type { CodeHost, MergeFlow } from "../plugins/contracts/code-host.ts";
 import { type ReviewerState, reviewerStateOf, startsReviewers } from "./concern-states.ts";
 import type { Publisher } from "../plugins/contracts/publisher.ts";
 import type { Reviewer } from "../plugins/contracts/reviewer.ts";
-import { defaultHerdr, defaultHerdrAsync, defaultWait, type Herdr, type HerdrAsync, type HerdrService } from "./pool-herdr.ts";
+import { defaultHerdr, defaultHerdrAsync, defaultHerdrCall, defaultWait, type Herdr, type HerdrAsync, type HerdrService } from "./pool-herdr.ts";
 import { log } from "./pool-state.ts";
 import { newHostAlertState, type HostAlertReads, type HostAlertState } from "./host-alerts.ts";
 import { newLegacySweepState, type LegacySweepState, type LegacyTmp } from "./legacy-tmp.ts";
@@ -25,6 +25,7 @@ import { type RestackDone } from "./stack-restack.ts";
 import type { WaitPolls } from "./wait-on/wait-watch.ts";
 import type { WaitSeams } from "./wait-on/wait-read.ts";
 import type { RestartReads } from "./pool-resume.ts";
+import type { WorkspaceCloses } from "./pool-close.ts";
 import { livePaneEnv, type PaneEnv } from "./run-env.ts";
 import type { ServeCheck } from "../install/service.ts";
 import type { ExposureState } from "./pool-exposure.ts";
@@ -137,6 +138,8 @@ export type PoolContext = Readonly<{
   deps: PoolDeps;
   herdr: Herdr;
   herdrAsync: HerdrAsync;
+  /** The async herdr calls whose refusal is read or said (a start's pane and listings, a workspace close): herdr's own reason on the error (A11-282). */
+  herdrCall: HerdrAsync;
   wait: (ms: number) => Promise<void>;
   now: () => number;
   /** The `tickets.preflight` commands, asked before a run starts: a failure holds every start, and says why. */
@@ -251,6 +254,8 @@ export type PoolContext = Readonly<{
   legacySweep: LegacySweepState;
   /** The background reads of the queued runs' blockers, heads and plans, which a start is decided on (A11-364). */
   startReads: StartReadsState;
+  /** The `herdr workspace close` calls that are out, which a start waits for (A11-282). */
+  workspaceCloses: WorkspaceCloses;
   /** Asks for a pass now (A11-364): `createPool` sets it to its tick, and work that queues a run after the pass decided calls it (a plan attached, a run moved to the repository its worker named). Nothing until then, as in a context no pool made. */
   wake: { run: () => void };
 }>;
@@ -262,6 +267,7 @@ export function newPoolContext(store: QueueStore, deps: PoolDeps): PoolContext {
   const herdr = deps.herdr ?? defaultHerdr;
   const injected = deps.herdr;
   const herdrAsync: HerdrAsync = deps.herdrAsync ?? (injected ? async (args, timeoutMs) => injected(args, timeoutMs) : defaultHerdrAsync);
+  const herdrCall: HerdrAsync = deps.herdrAsync ?? (injected ? async (args, timeoutMs) => injected(args, timeoutMs) : defaultHerdrCall);
   const wait = deps.wait ?? defaultWait;
   const now = deps.now ?? Date.now;
   const gate = createGate(settings.preflight, deps.preflight ?? shellPreflight, now);
@@ -327,12 +333,12 @@ export function newPoolContext(store: QueueStore, deps: PoolDeps): PoolContext {
   /** The new-ticket runs whose drafts are being read, by id, so a tick that sees the same outcome meanwhile reads them once. */
   const finishing = new Set<string>();
   return {
-    store, settings, source, codeHost, hook, deps, herdr, herdrAsync, wait, now, gate, transcripts, git, feedbackIgnores, hostFile, stallMs, session, misses, answered, rebasing: new Set<string>(),
+    store, settings, source, codeHost, hook, deps, herdr, herdrAsync, herdrCall, wait, now, gate, transcripts, git, feedbackIgnores, hostFile, stallMs, session, misses, answered, rebasing: new Set<string>(),
     startedHere, attaching, cloning: new Map<string, Promise<string>>(), cloneSweep: { busy: false }, attachRetries, writeRetries, telling: new Set<string>(), answering: new Set<string>(), pendingMoves, removing, batches, reviewerOn, reviewerFile, reviewerMemory, reviewer, reviewerState, offPulls: new Set<string>(), publisher: deps.publisher, reviewerStarted, reviewerResumed,
     reviewerReposts, reviewerRereviewed, closing, pullReads, refusedHeads, greenSeen, reviewerDropped, claudeSessions, finishing, tickState: { busy: false, again: false }, fillState: newFillState(), ownLogin: { value: null }, flakes: flakeLog(settings.stateDir, now), repliesRead: new Set<string>(), baseMerges: new Map<string, BaseMerge>(), mergeFlows: new Map(), settledPulls: new Set<string>(), listingMs: deps.listingMs ?? 60_000, readMs: deps.readMs ?? READ_TIMEOUT_MS, idleSaid: { reason: null }, keptSweep: { busy: false, done: Promise.resolve() }, stackMergeAsked: new Map<string, StackMergeAsk>(), restacked: new Map<string, RestackDone>(), restackSaid: new Set<string>(), waitPolls: new Map(), pullReadAt: new Map<string, number>(), recordSaid: new Set<string>(), waitReading: new Set<string>(), restart: { read: false },
     reseating: new Map<string, Reseat>(), envLost: new Map<string, readonly string[]>(), paneEnv: deps.paneEnv ?? livePaneEnv(herdr, settings.herdrSession),
     exposure: { at: null, checks: [], said: new Map<string, string>() }, hostAlerts: newHostAlertState(), runTmpBase: deps.privateTmpBase === undefined ? undefined : resolve(deps.privateTmpBase), legacySweep: newLegacySweepState(),
-    startReads: { pending: new Set<Promise<void>>(), reading: new Set<string>() }, wake: { run: () => {} },
+    startReads: { pending: new Set<Promise<void>>(), reading: new Set<string>() }, workspaceCloses: new Set<Promise<void>>(), wake: { run: () => {} },
   };
 }
 

@@ -62,7 +62,7 @@ import { afterMergeRoute } from "./after-merge/route.ts";
 import { sessionAnswerRoute } from "./session-answers.ts";
 import { sessionAsksRoute } from "./session-asks.ts";
 import { startHealth } from "./health-route.ts";
-import { STARTS_WAIT_MS, untilNoneStarting } from "./shutdown-wait.ts";
+import { CLOSES_WAIT_MS, STARTS_WAIT_MS, untilNoneStarting } from "./shutdown-wait.ts";
 import { startingRunCount } from "./queue/queue-readopt.ts";
 import { answerKeyed, holdsRun, plansOf, readChoice, type ReadBoard, readRoute, type SavedChoice, terminalRunFor, trackerReads, writersViewOf } from "./read-routes.ts";
 import { queueView, type QueueView } from "./queue-view.ts";
@@ -101,7 +101,7 @@ export type BoardDeps = Readonly<{
   hostPath?: string;
   queuePath: string;
   choicePath: string;
-  pool?: Sweeping<Pick<ReturnType<typeof createPool>, "tick" | "stop" | "close" | "dismiss" | "remove" | "respond" | "reconcile" | "ensureSession" | "refreshTracker" | "watchFeedback" | "releaseReviewers" | "retargetStacked" | "rebaseStacked" | "applyEdit" | "discardEdit" | "stopWriterRun" | "reviewNewHeads"> & Partial<Pick<ReturnType<typeof createPool>, "retry" | "cloneMissing" | "startGreenReviewers" | "held" | "figures" | "endStarts" | "hostAlerts" | "pullReviews" | "claimWarning" | "talk" | "reviewerState" | "answer">>>;
+  pool?: Sweeping<Pick<ReturnType<typeof createPool>, "tick" | "stop" | "close" | "dismiss" | "remove" | "respond" | "reconcile" | "ensureSession" | "refreshTracker" | "watchFeedback" | "releaseReviewers" | "retargetStacked" | "rebaseStacked" | "applyEdit" | "discardEdit" | "stopWriterRun" | "reviewNewHeads"> & Partial<Pick<ReturnType<typeof createPool>, "retry" | "cloneMissing" | "startGreenReviewers" | "held" | "figures" | "endStarts" | "settleCloses" | "hostAlerts" | "pullReviews" | "claimWarning" | "talk" | "reviewerState" | "answer">>>;
   poolDeps?: Omit<PoolDeps, "settings" | "source" | "codeHost" | "hook">;
   now?: () => number;
   /**
@@ -822,6 +822,7 @@ async function serve(): Promise<void> {
       board.pool.endStarts?.();
       void untilNoneStarting({ starting: () => startingRunCount(board.store.get()) })
         .then((left) => { if (left > 0) process.stderr.write(`ticket:serve: ${left} run${left === 1 ? " was" : "s were"} still starting after ${STARTS_WAIT_MS / 1000} s, so the instance stops anyway\n`); })
+        .then(() => board.pool.settleCloses?.(CLOSES_WAIT_MS))
         .finally(() => endNow(signal));
     });
   }

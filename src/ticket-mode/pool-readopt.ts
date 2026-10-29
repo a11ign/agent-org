@@ -10,7 +10,8 @@
 //
 // A RUN ALREADY MARKED CRASHED WHOSE PANE IS WORKING IS TAKEN BACK on the next watch pass (`readoptCrashed`). Only `working` counts: an idle or done pane beside a crashed run may be a worker that has finished.
 
-import { closedNote, readAgents, rootPaneOf, type ListedAgent } from "../herdr-agents.ts";
+import { readAgents, rootPaneOf, type ListedAgent } from "../herdr-agents.ts";
+import { closeWorkspaceLater } from "./pool-close.ts";
 import { type PoolContext } from "./pool-context.ts";
 import { filedOf } from "./pool-board-runs.ts";
 import { log, messageOf, publishPlace, runMembers, runPlace, update, updateEach, writerPlace } from "./pool-state.ts";
@@ -94,8 +95,8 @@ function requeueOrLose(ctx: PoolContext, members: readonly Entry[], leftover: Li
 }
 
 /** A workspace herdr still lists with no pane is closed first, so the run queued again does not open a second under its name. */
-function closeLeftover({ herdr, session }: PoolContext, leftover: ListedAgent | undefined): void {
-  if (leftover?.workspace !== undefined) closedNote((args) => herdr(args), leftover.workspace, session);
+function closeLeftover(ctx: PoolContext, leftover: ListedAgent | undefined): void {
+  if (leftover?.workspace !== undefined) closeWorkspaceLater(ctx, leftover.workspace);
 }
 
 /** A publish run caught `starting` is adopted when herdr lists its pane, and one herdr no longer has fails. */
