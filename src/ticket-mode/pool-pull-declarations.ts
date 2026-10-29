@@ -6,8 +6,7 @@
 // is `queue/queue-declarations.ts`'s; this file asks the code host.
 import { DEFAULT_KEYWORDS } from "./source.ts";
 import { declarationOf } from "./ticket-references.ts";
-import { declarationsDue, declare, mergedPullUrls, recordDeclared, type ReadDeclaration } from "./queue/queue-declarations.ts";
-import { pullsOf } from "./board-view/view-types-and-filters.ts";
+import { declarationsDue, declare, mergedPullSet, mergedPullUrls, recordDeclared, runPullUrls, type ReadDeclaration } from "./queue/queue-declarations.ts";
 import { pullLabel } from "./board-view/pull-label.ts";
 import type { Entry } from "./queue/queue-entries-and-outcomes.ts";
 import { log, messageOf, update } from "./pool-state.ts";
@@ -26,7 +25,7 @@ export async function readPullDeclarations(ctx: PoolContext): Promise<void> {
     const key = entry.ticket.key;
     const read = codeHost.readMergedFindings === undefined ? [] : await readBodies(entry, codeHost.readMergedFindings.bind(codeHost));
     if (read === null) continue;
-    const declared = declare(read.map(({ url, body }): ReadDeclaration => ({ url, declaration: declarationOf(body, key, keywords) })), pullsOf(entry).length);
+    const declared = declare(read.map(({ url, body }): ReadDeclaration => ({ url, declaration: declarationOf(body, key, keywords) })), runPullUrls(entry).length, mergedPullSet(entry));
     update(ctx, (queue) => recordDeclared(queue, key, declared, keywords.closing));
     const overruled = store.get().entries.find((e) => e.ticket.key === key)?.partialOverruled;
     if (overruled !== undefined) log(`${key}: ${overruled.urls.map(pullLabel).join(", ")} said ${overruled.pull}, but its outcome said ${overruled.outcome === null ? "nothing remains" : `Partial: ${overruled.outcome}`}; the board followed the pull request`);

@@ -9,7 +9,7 @@ import { stepNamed } from "../board-view/plan-steps.ts";
 import { pullsOf } from "../board-view/view-types-and-filters.ts";
 import type { BlockerPullDeclared, PartialOverruled, PullDeclared } from "../board-view/pull-declared.ts";
 import { replace, type Entry, type Queue } from "./queue-entries-and-outcomes.ts";
-import { declarationOf, saysNothingRemains, type Declaration } from "../ticket-references.ts";
+import { declarationOf, pullsNamedIn, saysCompletesOnMerge, saysNothingRemains, type Declaration } from "../ticket-references.ts";
 import type { Keywords } from "../source.ts";
 
 /** One merged pull request's body, read: its address, and what the body declares of the ticket (null for nothing). */
@@ -19,26 +19,59 @@ export type ReadDeclaration = Readonly<{ url: string; declaration: Declaration |
 export const mergedPullUrls = (entry: Entry): string[] => pullsOf(entry).map(({ url }) => url).filter((url) => entry.pullStates?.[url] === "merged");
 
 /**
+ * Every pull request the run has (A11-394), each once: its own ({@link pullsOf}: the outcome's or the round's, and the hook's record of what it opened), then every other the tracker links that is merged or open, less the ones of
+ * the plan steps merged before this run. The outcome can leave one out (A11-370's listed one of its two), the tracker's link is the one record that holds it. One that closed unmerged is no work of the run. PURE.
+ */
+export function runPullUrls(entry: Entry): string[] {
+  const earlier = new Set((entry.steps ?? []).flatMap(({ prs }) => prs));
+  const own = pullsOf(entry).map(({ url }) => url);
+  const linked = Object.entries(entry.pullStates ?? {}).filter(([url, state]) => (state === "merged" || state === "open") && !earlier.has(url)).map(([url]) => url);
+  return [...new Set([...own, ...linked])];
+}
+
+/** The addresses the tracker records merged, as last read: what a `Partial:` line that names pull requests is checked against. PURE. */
+export const mergedPullSet = (entry: Entry): ReadonlySet<string> => new Set(Object.entries(entry.pullStates ?? {}).filter(([, state]) => state === "merged").map(([url]) => url.toLowerCase()));
+
+/**
  * The finished runs whose merged pull requests' bodies are still to be read (A11-181): all their pull requests have merged or closed with one merged, nothing has been recorded yet, the tracker has not
- * canceled the ticket, and no person is known to have completed it. A parked run is read too: the put-back of a ticket the tracker completed does not wait for a workspace to close (A11-178). PURE.
+ * canceled the ticket, and no person is known to have completed it. A parked run is read too: the put-back of a ticket the tracker completed does not wait for a workspace to close (A11-178). A run with a pull
+ * request in {@link runPullUrls} still open is read when that has merged, since the sibling rule counts it and the declaration is recorded once (A11-394). PURE.
  */
 export const declarationsDue = (queue: Queue): Entry[] => queue.entries.filter((entry) => entry.phase === "finished" && entry.declared === undefined && entry.completedBy !== "person"
-  && entry.trackerState !== "canceled" && entry.trackerState !== "duplicate" && settledByPulls(entry) === "completed");
+  && entry.trackerState !== "canceled" && entry.trackerState !== "duplicate" && settledByPulls(entry) === "completed" && runPullUrls(entry).every((url) => entry.pullStates?.[url] !== "open"));
 
 /** The `Partial:` words of a declaration that makes the run partial: they name a plan step, or the run has exactly one pull request. Sibling pull requests' free words make none (see {@link declare}). PURE. */
 const remainsOf = (declaration: Declaration | null, pullCount: number): string | null =>
   declaration?.kind === "partial" && (pullCount === 1 || stepNamed(declaration.remains) !== null) ? declaration.remains : null;
 
 /**
+ * Whether a `Partial:` line only describes the run's own pull requests, every one of which has merged (A11-394): its words say the ticket completes when pull requests have merged ({@link saysCompletesOnMerge}), they
+ * name no step that is not the last (`step 2 of 2` is the run's own), and every pull request they name is in `merged`. A line that names a step before the last, a pull request not recorded merged (another ticket's,
+ * say), or work to do (`step 2 of 2: the docs`, which asks a person, A11-168) is a remainder. PURE.
+ */
+function finishesRun(words: string, merged: ReadonlySet<string>): boolean {
+  if (merged.size === 0 || !saysCompletesOnMerge(words) || namesLaterStep(words)) return false;
+  return pullsNamedIn(words).every((url) => merged.has(url));
+}
+
+/** Whether the words name a plan step that is not the last: `step 1 of 3`. The last step (`step 2 of 2`) is the run's own. */
+const namesLaterStep = (words: string): boolean => {
+  const step = stepNamed(words);
+  return step !== null && step.step !== step.of;
+};
+
+/**
  * What a run's merged pull requests declare, from the bodies read. `partial`, with the first such body's words, when a body's `Partial:` line names a plan step, or when the run has exactly one pull request
  * and its body has a `Partial:` line; else `closes` when any body closes the ticket; else `none`. A run of several pull requests whose bodies say `Refs` with a `Partial:` line in free words is the brief's own
- * convention for pull requests that finish the ticket together (`worker-files.ts`: each `Partial:` names the run's other pull requests), so that is `none`, not a remainder. PURE.
+ * convention for pull requests that finish the ticket together (`worker-files.ts`: each `Partial:` names the run's other pull requests), so that is `none`, not a remainder. `merged` is what the tracker records merged;
+ * a `Partial:` line that only describes the run's own pull requests, all of which are in it ({@link finishesRun}), is read as `Closes` (A11-394). PURE.
  */
-export function declare(read: readonly ReadDeclaration[], pullCount: number): PullDeclared {
+export function declare(read: readonly ReadDeclaration[], pullCount: number, merged: ReadonlySet<string> = new Set()): PullDeclared {
   const urls = read.map(({ url }) => url);
-  const remains = read.map(({ declaration }) => remainsOf(declaration, pullCount)).find((words) => words !== null);
+  const declarations = read.map(({ declaration }): Declaration | null => declaration?.kind === "partial" && finishesRun(declaration.remains, merged) ? { kind: "closes" } : declaration);
+  const remains = declarations.map((declaration) => remainsOf(declaration, pullCount)).find((words) => words !== null);
   if (remains !== undefined && remains !== null) return { kind: "partial", remains, urls };
-  return { kind: read.some(({ declaration }) => declaration?.kind === "closes") ? "closes" : "none", urls };
+  return { kind: declarations.some((declaration) => declaration?.kind === "closes") ? "closes" : "none", urls };
 }
 
 /**
@@ -71,6 +104,9 @@ export function recordDeclared(queue: Queue, key: string, declared: PullDeclared
   });
 }
 
+/** Whether an outcome's `partial` words agree with a body that closes the ticket: nothing remains (A11-239), or the ticket completes when the run's pull requests merge and no earlier step is named (A11-394). */
+const agreesWithClose = (outcome: string): boolean => saysNothingRemains(outcome) || (saysCompletesOnMerge(outcome) && !namesLaterStep(outcome));
+
 /**
  * `entry` with its `partial` as the declaration says. A disagreement is a `Closes` against an outcome that has a `partial` naming work to do (not one that says nothing remains), or a `Partial:` against an outcome with none or one that names another step;
  * different words for the same step are none. `pull` is the declaration as the card names it. PURE.
@@ -80,8 +116,8 @@ function followed(entry: Entry, declared: PullDeclared, pull: string): Entry {
   const overruled = (words: string | null): PartialOverruled => ({ outcome: words, pull, urls: declared.urls });
   switch (declared.kind) {
     case "none": return entry;
-    // An outcome whose own words say nothing remains agrees with `Closes` (A11-239): no disagreement to show.
-    case "closes": return outcome === undefined || saysNothingRemains(outcome) ? whole : { ...whole, partialOverruled: overruled(outcome) };
+    // An outcome whose own words say nothing remains agrees with `Closes` (A11-239), as does one that says the ticket completes when the pull requests merge and names no earlier step (A11-394): no disagreement to show.
+    case "closes": return outcome === undefined || agreesWithClose(outcome) ? whole : { ...whole, partialOverruled: overruled(outcome) };
     case "partial": {
       const agrees = outcome !== undefined && !namesOtherStep(outcome, declared.remains);
       return { ...whole, partial: declared.remains, ...(agrees ? {} : { partialOverruled: overruled(outcome ?? null) }) };
