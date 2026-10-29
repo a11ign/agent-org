@@ -245,21 +245,53 @@ function noteAbsence({ session, pr, event, ticks, complete, agentless }: { sessi
 export function closeReviewer(session: string, deps: { run: (args: string[]) => string; warn: (line: string) => void; }) {
   const ids = workspaceIdsOf(deps.run, session);
   if (ids.length === 0) {
-    deps.warn(`reviewer teardown: "${session}" is finished but no workspace is listed under its label -- left running.`);
+    deps.warn(noWorkspaceWarning(session));
     return false;
   }
   const failed = ids.filter((id) => !closeWorkspace(session, id, deps));
-  if (ids.length > 1) deps.warn(`reviewer teardown: "${session}" held ${ids.length} workspaces (${ids.join(", ")}); ${ids.length - failed.length} closed.`);
+  if (ids.length > 1) deps.warn(manyWorkspacesWarning(session, ids, failed.length));
   return failed.length === 0;
 }
+
+/** {@link closeReviewer} without holding the loop (A11-379): the same listing, the same closes in the same order, the same warnings and answer, over an async runner. */
+export async function closeReviewerAsync(session: string, deps: { run: (args: string[]) => Promise<string>; warn: (line: string) => void; }): Promise<boolean> {
+  const ids = await workspaceIdsOfAsync(deps.run, session);
+  if (ids.length === 0) {
+    deps.warn(noWorkspaceWarning(session));
+    return false;
+  }
+  const failed: string[] = [];
+  for (const id of ids) if (!await closeWorkspaceAsync(session, id, deps)) failed.push(id);
+  if (ids.length > 1) deps.warn(manyWorkspacesWarning(session, ids, failed.length));
+  return failed.length === 0;
+}
+
+const noWorkspaceWarning = (session: string) => `reviewer teardown: "${session}" is finished but no workspace is listed under its label -- left running.`;
+
+const manyWorkspacesWarning = (session: string, ids: string[], failed: number) => `reviewer teardown: "${session}" held ${ids.length} workspaces (${ids.join(", ")}); ${ids.length - failed} closed.`;
+
+const closeWorkspaceArgs = (id: string) => ["--session", "org", "workspace", "close", id];
+
+const notClosedWarning = (session: string, id: string, err: unknown) => `reviewer teardown: "${session}" (${id}) could not be closed (${firstLine(err)}) -- retried next tick.`;
 
 /** One `workspace close`; `false`, with a warning, when it would not. */
 function closeWorkspace(session: string, id: string, deps: { run: (args: string[]) => string; warn: (line: string) => void; }) {
   try {
-    deps.run(["--session", "org", "workspace", "close", id]);
+    deps.run(closeWorkspaceArgs(id));
     return true;
   } catch (err) {
-    deps.warn(`reviewer teardown: "${session}" (${id}) could not be closed (${firstLine(err)}) -- retried next tick.`);
+    deps.warn(notClosedWarning(session, id, err));
+    return false;
+  }
+}
+
+/** {@link closeWorkspace} over an async runner. */
+async function closeWorkspaceAsync(session: string, id: string, deps: { run: (args: string[]) => Promise<string>; warn: (line: string) => void; }) {
+  try {
+    await deps.run(closeWorkspaceArgs(id));
+    return true;
+  } catch (err) {
+    deps.warn(notClosedWarning(session, id, err));
     return false;
   }
 }
@@ -784,9 +816,25 @@ export const SESSIONS_FILE = roleBriefPath("sessions.json").absolute;
  */
 export function workspaceIdsOf(run: (args: string[]) => string, label: string): string[] {
   try {
-    const list = JSON.parse(run(["--session", "org", "workspace", "list"]))?.result?.workspaces;
-    return (Array.isArray(list) ? list : []).filter((w) => w.label === label && typeof w.workspace_id === "string").map((w) => w.workspace_id);
+    return idsListedUnder(run(WORKSPACE_LIST_ARGS), label);
   } catch {
     return [];
   }
+}
+
+/** {@link workspaceIdsOf} over an async runner. */
+export async function workspaceIdsOfAsync(run: (args: string[]) => Promise<string>, label: string): Promise<string[]> {
+  try {
+    return idsListedUnder(await run(WORKSPACE_LIST_ARGS), label);
+  } catch {
+    return [];
+  }
+}
+
+const WORKSPACE_LIST_ARGS = ["--session", "org", "workspace", "list"];
+
+/** The ids of the workspaces `raw` (herdr's `workspace list` answer) lists under `label`. Throws when `raw` is not JSON. PURE. */
+function idsListedUnder(raw: string, label: string): string[] {
+  const list = JSON.parse(raw)?.result?.workspaces;
+  return (Array.isArray(list) ? list : []).filter((w) => w.label === label && typeof w.workspace_id === "string").map((w) => w.workspace_id);
 }
