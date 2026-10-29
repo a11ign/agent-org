@@ -8,7 +8,8 @@
 // THE CLONE IS THE SAME AS THE EXISTING ONES: the repository's https address as `origin`, with the credentials the host's git already uses for the workers (the credential helper of its global git config, which `host:check`
 // holds in place), cloned beside the existing clones and added to the host file's `clones` under the repository's name. A name the host file already holds is never touched.
 //
-// THE READS ARE SYNCHRONOUS, AS THE CODE HOST'S ARE; ONLY THE CLONE IS NOT, so the board keeps answering while a large repository comes down.
+// THE READS ARE SYNCHRONOUS, AS THE CODE HOST'S ARE, EXCEPT THE CLONE SWEEP'S (A11-282): the sweep lists the organisation with `readOrganisationAsync`, which asks the code host's `readRepositoriesAsync` where it has one, so the listing does not
+// hold the board thread. The clone is not synchronous either, so the board keeps answering while a large repository comes down.
 import { existsSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import type { CodeHost, HostRepository } from "../plugins/contracts/code-host.ts";
@@ -62,6 +63,24 @@ export function readOrganisation(clones: Clones, codeHost: CodeHost): OrgReading
   const owners = ownersOf(clones, codeHost);
   if (owners.length === 0) return { unreadable: "no clone names the organisation: none has an origin the code host knows" };
   const lists = owners.map((login) => listing.readRepositories({ login, kind: "organisation" }));
+  const failed = owners.find((_owner, at) => lists[at] === null);
+  if (failed !== undefined) return { unreadable: `the repositories of ${failed} could not be listed` };
+  return { repositories: lists.flatMap((list) => list ?? []) };
+}
+
+/**
+ * {@link readOrganisation} without holding the process still (A11-282): the owners' lists are asked together through the code host's `readRepositoriesAsync`, and through its synchronous `readRepositories` for a host that has none (contract
+ * before 2.2). The answer is the same.
+ */
+export async function readOrganisationAsync(clones: Clones, codeHost: CodeHost): Promise<OrgReading> {
+  const listing = codeHost.repositories;
+  if (listing === undefined) return { unreadable: "the code host lists no repositories" };
+  const owners = ownersOf(clones, codeHost);
+  if (owners.length === 0) return { unreadable: "no clone names the organisation: none has an origin the code host knows" };
+  const lists = await Promise.all(owners.map((login) => {
+    const owner = { login, kind: "organisation" } as const;
+    return listing.readRepositoriesAsync === undefined ? listing.readRepositories(owner) : listing.readRepositoriesAsync(owner);
+  }));
   const failed = owners.find((_owner, at) => lists[at] === null);
   if (failed !== undefined) return { unreadable: `the repositories of ${failed} could not be listed` };
   return { repositories: lists.flatMap((list) => list ?? []) };

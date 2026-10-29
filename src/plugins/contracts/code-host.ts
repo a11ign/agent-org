@@ -1,5 +1,5 @@
 // @ts-check
-// module: the code host contract, version 2.1 -- what ticket mode asks of the place pull requests live (A11-158)
+// module: the code host contract, version 2.2 -- what ticket mode asks of the place pull requests live (A11-158)
 //
 // A TYPE FILE: it imports nothing at run time. It is SYNCHRONOUS, because the readers of it are, EXCEPT THE READS THE INSTANCE'S LOOP MAKES ON A SWEEP (contract 2.0), which answer a promise: the ticket port's gate (`ticket-port/port.ts`) and ticket
 // mode's injected `gh: (args) => string` (`pool-context.ts`). It is written from the GitHub operations ticket mode makes today, and carries `CodeHostPort`'s four
@@ -9,6 +9,7 @@
 //
 // ROW MODE'S GITHUB OPERATIONS are an optional `rows` group of this contract, not a second plugin (`docs/adr/0002-row-mode-github-is-an-optional-part-of-the-code-host-contract.md`); the group is declared in `code-host-rows.ts`.
 //
+// 2.2 (A11-282): `repositories.readRepositoriesAsync`, OPTIONAL: the organisation's repositories answering a promise, which the board's clone sweep reads, so a `gh repo list` of a second no longer holds the board thread. A host without it is read through `readRepositories`, as before; a minor only adds.
 // 2.1 (A11-365): `readCallCounts`, OPTIONAL: how many calls the host has made to the place pull requests live (`GithubCallCounts`: in total, in the last minute, by kind, how many a conditional read answered as unchanged, and the current and last sweep), which `/api/health` serves so a day's rate can be read from the board; and `refreshPull`, OPTIONAL: drop what the host holds of the repository of a pull request, so the next read of it is a fresh one. A host may read a repository's pull requests ONCE per sweep and share the reading (the GitHub plugin does), so a read is as old as the sweep; a caller that records what it read to compare it later (the head and the description a stand-off round is given) refreshes first. A plugin of 2.0 is read as one that counts none and holds nothing back, and `/api/health` then says no counts.
 // 2.0 (A11-356): `readOwnLogin`, `readPullFeedback`, `readReviewState`, `readReplies`, `readPullState`, `openPullUrlsOf`, `readBranchCi`, `openDependencyPulls` and `readMergedFindings` ANSWER A PROMISE, where they answered the value, which is a MAJOR change: the board's loop made them on every sweep, and a synchronous `gh` held it for a second each (755 holds in 10 minutes). A promise resolves to what the read answered before, `null` for "could not ask" included, and REJECTS where the read threw (`readReviewState` where the reviewer's gate does not load). A host reads them without holding the process still, and reads the open pull requests of a repository once for every pull request and every caller of it. A plugin of major 1 is refused (`READ_MAJORS`), since its reads answer the value.
 // 1.28 (A11-342): `PullFeedback.blocked` and `PullFeedback.cancelledRequired`, both OPTIONAL: whether the host says the pull request is BLOCKED from merging (GitHub's `mergeStateStatus: BLOCKED`), and the cancelled runs of its required checks on the head when every non-green run of a required check there is a cancelled one; and `rerunRuns`, OPTIONAL: rerun whole runs, which is how the board answers an approved, armed pull request that sits BLOCKED behind a cancelled duplicate run of its required check (a concurrency group cancelled one of two runs of one head, and the cancelled `gate` blocks the merge though the other run's `gate` is green). A plugin of 1.27 is read as one that says none of the three, and the board then reruns nothing.
@@ -63,7 +64,7 @@ import type { CodeHostRows } from "./code-host-rows.ts";
 export type { ChangeFacts, ChangeRef, CodeHostEvent, CodeHostEventKind, CodeHostPort, CodeHostRows };
 
 /** The code host contract's version, `<major>.<minor>`: a minor only adds, and a major breaks (`src/plugins/version.ts`). */
-export const CODE_HOST_CONTRACT_VERSION = "2.1";
+export const CODE_HOST_CONTRACT_VERSION = "2.2";
 
 /** The account the host's dependency bot opens its pull requests as (contract 1.19): the only author {@link CodeHost.openDependencyPulls} returns. */
 export const DEPENDENCY_PULL_AUTHOR = "dependabot[bot]";
@@ -335,6 +336,11 @@ export interface CodeHostRepositories {
   readOwners(): readonly RepositoryOwner[] | null;
   /** The owner's repositories the account can reach, archived ones left out, by name. Null: could not ask, or a list cut off at its limit. */
   readRepositories(owner: RepositoryOwner): readonly HostRepository[] | null;
+  /**
+   * {@link CodeHostRepositories.readRepositories} answering a promise (contract 2.2), OPTIONAL: the board's clone sweep lists the organisation's repositories with it, so the board thread's loop is not held for the second `gh repo list` takes. A host without it is
+   * read through the synchronous one.
+   */
+  readRepositoriesAsync?(owner: RepositoryOwner): Promise<readonly HostRepository[] | null>;
   /** The repository a git remote URL names on this host, or null for another host's URL. Pure: it reads nothing. */
   repositoryOfRemote(url: string): HostRepository | null;
   /** The command {@link CodeHostRepositories.cloneRepository} runs, as a person would type it, for onboard to show before it runs. */

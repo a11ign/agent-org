@@ -85,20 +85,48 @@ export function readAgents(run: (args: string[]) => string = defaultRun, { sessi
   } catch {
     return null;
   }
-  let agents: ListedAgent[];
-  let panes: Map<string, string>;
-  try {
-    const parsed = JSON.parse(raw);
-    const workspaces = parsed?.result?.workspaces;
-    if (!Array.isArray(workspaces)) return null;
-    agents = workspaces.map((w) => ({ label: String(w.label ?? ""), status: String(w.agent_status ?? "unknown"), ...(typeof w?.workspace_id === "string" ? { workspace: w.workspace_id } : {}) }));
-    panes = new Map(workspaces.flatMap((w): [string, string][] => (typeof w?.workspace_id === "string" ? [[String(w.label ?? ""), rootPaneOf(w.workspace_id)]] : [])));
-  } catch {
-    return null;
-  }
+  const listed = parseWorkspaces(raw);
+  if (listed === null) return null;
+  const { agents, panes } = listed;
   if (agents.some((a) => a.status === "unknown")) markPaneless(agents, panes, run, session);
   sayPaneless(agents.filter((a) => a.paneless === true), say);
   return agents;
+}
+
+/**
+ * {@link readAgents} without holding the process still (A11-282): the same listing, the same `null` for a herdr that could not be asked, the same paneless marking and the same one line, with `run` answering a promise. The board thread's tick
+ * lists the session on every pass, and a synchronous `herdr` held its loop, and with it every write, for as long as herdr took to answer (4 s under load, 2026-10-28).
+ */
+export async function readAgentsAsync(run: (args: string[]) => Promise<string>, { session = ORG_SESSION, say = defaultSay }: SessionOption & { say?: (line: string) => void; } = {}): Promise<ListedAgent[] | null> {
+  let raw;
+  try {
+    raw = await run(["--session", session, "workspace", "list"]);
+  } catch {
+    return null;
+  }
+  const listed = parseWorkspaces(raw);
+  if (listed === null) return null;
+  const { agents, panes } = listed;
+  for (const agent of agents) {
+    const pane = panes.get(agent.label);
+    if (agent.status === "unknown" && pane !== undefined && await paneNotFoundAsync(run, pane, session)) agent.paneless = true;
+  }
+  sayPaneless(agents.filter((a) => a.paneless === true), say);
+  return agents;
+}
+
+/** The agents and the root pane of each, by label, that `herdr workspace list` printed, or `null` for an answer that is not a listing. */
+function parseWorkspaces(raw: string): { agents: ListedAgent[]; panes: Map<string, string> } | null {
+  try {
+    const workspaces = JSON.parse(raw)?.result?.workspaces;
+    if (!Array.isArray(workspaces)) return null;
+    return {
+      agents: workspaces.map((w) => ({ label: String(w.label ?? ""), status: String(w.agent_status ?? "unknown"), ...(typeof w?.workspace_id === "string" ? { workspace: w.workspace_id } : {}) })),
+      panes: new Map(workspaces.flatMap((w): [string, string][] => (typeof w?.workspace_id === "string" ? [[String(w.label ?? ""), rootPaneOf(w.workspace_id)]] : []))),
+    };
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -150,9 +178,21 @@ function paneNotFound(run: (args: string[]) => string, pane: string, session: st
     run(["--session", session, "pane", "read", pane, "--source", "visible"]);
     return false;
   } catch (err) {
-    return `${(err as any)?.stderr ?? ""}${(err as any)?.stdout ?? ""}${(err as any)?.message ?? ""}`.includes("pane_not_found");
+    return refusedAsPaneNotFound(err);
   }
 }
+
+/** {@link paneNotFound} over a `run` that answers a promise (A11-282). */
+async function paneNotFoundAsync(run: (args: string[]) => Promise<string>, pane: string, session: string): Promise<boolean> {
+  try {
+    await run(["--session", session, "pane", "read", pane, "--source", "visible"]);
+    return false;
+  } catch (err) {
+    return refusedAsPaneNotFound(err);
+  }
+}
+
+const refusedAsPaneNotFound = (err: unknown): boolean => `${(err as any)?.stderr ?? ""}${(err as any)?.stdout ?? ""}${(err as any)?.message ?? ""}`.includes("pane_not_found");
 
 /**
  * Each listed agent's CLAUDE SESSION ID by name (`herdr agent list`: `name`, and `agent_session.value`, which is a new id after a restart), or `null`

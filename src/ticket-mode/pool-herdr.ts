@@ -9,11 +9,11 @@ export type Herdr =(args: string[], timeoutMs?: number) => string;
 
 export const defaultHerdr: Herdr = (args, timeoutMs = 30_000) => herdrRun(args, timeoutMs);
 
-/** herdr for the one slow call, `agent start`, so a start does not stop the board answering. */
+/** herdr without holding the loop: the one slow call, `agent start`, so a start does not stop the board answering, and (A11-282) the listings every pass of the tick makes. */
 export type HerdrAsync = (args: string[], timeoutMs: number) => Promise<string>;
 
 export const defaultHerdrAsync: HerdrAsync = (args, timeoutMs) => new Promise((resolve, reject) => {
-  execFile("herdr", args, { encoding: "utf8", timeout: timeoutMs }, (err, stdout) => (err ? reject(Object.assign(err, { stdout })) : resolve(stdout)));
+  execFile("herdr", args, { encoding: "utf8", timeout: timeoutMs }, (err, stdout, stderr) => (err ? reject(Object.assign(err, { stdout, stderr })) : resolve(stdout)));
 });
 
 export const defaultWait = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));

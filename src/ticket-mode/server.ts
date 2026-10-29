@@ -13,7 +13,7 @@
 import { realpathSync, renameSync, writeFileSync, mkdirSync } from "node:fs";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { constants, homedir } from "node:os";
-import { spawnSync } from "node:child_process";
+import { spawn } from "node:child_process";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { Worker } from "node:worker_threads";
@@ -684,13 +684,23 @@ const STARTUP_PROGRAM = `import(${JSON.stringify(new URL("../plugins/activate-ho
  * it. The check logs a divergence LOUDLY and re-renders the wrapper through the one guarded writer, and a refused re-render is logged and the instance starts anyway.
  * A child that cannot be run at all is logged here, so the instance never runs silent.
  */
-export function checkGhWrapperAtStart({ err = (line: string) => process.stderr.write(line), run = (program: string) => spawnSync(process.execPath,
-  ["--input-type=module", "-e", program], { stdio: ["ignore", "inherit", "inherit"], timeout: 120_000 }) }:
-    { err?: (line: string) => void; run?: (program: string) => { status: number | null; error?: Error } } = {}): void {
-  const child = run(STARTUP_PROGRAM);
+export async function checkGhWrapperAtStart({ err = (line: string) => process.stderr.write(line), run = runStartupProgram }:
+    { err?: (line: string) => void; run?: (program: string) => Promise<{ status: number | null; error?: Error }> | { status: number | null; error?: Error } } = {}): Promise<void> {
+  const child = await run(STARTUP_PROGRAM);
   if (child.error === undefined && child.status === 0) return;
   const why = child.error?.message ?? `the check exited ${child.status}`;
   err(`ERROR gh wrapper: cannot be checked (${why.split("\n")[0]}), so the instance does not know its App identity is in place\n`);
+}
+
+const runStartupProgram = (program: string): Promise<{ status: number | null; error?: Error }> => runNodeProgram(program, 120_000);
+
+/** Runs `program` as a module in a child of this Node, and answers how it ended. Not a synchronous spawn, so the board thread's loop is not held while the child works (A11-282). Never rejects. */
+export function runNodeProgram(program: string, timeoutMs: number): Promise<{ status: number | null; error?: Error }> {
+  return new Promise((done) => {
+    const child = spawn(process.execPath, ["--input-type=module", "-e", program], { stdio: ["ignore", "inherit", "inherit"], timeout: timeoutMs });
+    child.once("error", (error) => done({ status: null, error }));
+    child.once("close", (status) => done({ status }));
+  });
 }
 
 /** The pool's sweeps answer a promise (A11-356: they wait on the code host's reads), and a stand-in that does the work at once answers none: the server waits for whichever it is given. */
@@ -759,7 +769,7 @@ async function serve(): Promise<void> {
   // (`reviewer-port.ts`). A reviewer plugin's own `load()` is asked below, which reads the same gate.
   if (startsReviewers(settings) || settings.reviewerRequired) await loadReviewerGate();
   // A11-84: the routing wrapper is checked, and re-rendered when it has diverged, before the pool is made (see `checkGhWrapperAtStart`).
-  checkGhWrapperAtStart();
+  await checkGhWrapperAtStart();
   // The tracker and the code host are the enabled plugins' (`plugins/linear` and `plugins/github`, unless the host file names others): a plugin the loader refuses refuses the start, by name.
   // The reviewer plugin is given the board's collaborators: its herdr session, the code host it reads every pull request through (activated beside it, so asked when used) and the heads the pool
   // remembers its reviewers by.
