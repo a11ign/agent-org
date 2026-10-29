@@ -4,7 +4,7 @@
 // works after someone deleted the branch. GitHub's compare answers the commits ahead of the base, a page of up to 100 at a time, and the files they change in its first page only, up to 300: a list that reaches the cap is read in part, and says so.
 // Null is "could not ask": a refused `gh`, an answer that does not parse, a pull request that is not closed and a list of commits shorter than the compare's own total are all null, never "it held nothing".
 import type { ClosedCommit, ClosedWork } from "../../src/plugins/contracts/code-host.ts";
-import type { Gh } from "./gh.ts";
+import type { AsyncGh, Gh } from "./gh.ts";
 
 /** The most files GitHub's compare lists. A list this long may be cut short, so it is read in part. */
 export const COMPARE_FILE_CAP = 300;
@@ -41,22 +41,54 @@ const isText = (value: unknown): value is string => typeof value === "string" &&
 const isClosedPull = (pull: Pull, number: string): pull is Pull & Record<"baseRefName" | "headRefName" | "headRefOid", string> =>
   pull.state === "CLOSED" && pull.number === Number(number) && isText(pull.baseRefName) && isText(pull.headRefName) && isText(pull.headRefOid);
 
+/** The pull request's repository and number when `url` is a pull request's address, else null: the read is not asked. */
+const addressOf = (url: string): { repository: string; number: string } | null => {
+  const address = PULL_ADDRESS.exec(url);
+  return address === null ? null : { repository: address[1], number: address[2] };
+};
+
+/** The `gh` arguments that read the pull request at `url`, and the compare of `base` with `head` in `repository`. */
+const pullArgs = (url: string): string[] => ["pr", "view", url, "--json", "number,state,baseRefName,headRefName,headRefOid"];
+const compareArgs = (repository: string, base: string, head: string): string[] => ["api", "--paginate", `repos/${repository}/compare/${encodeURI(base)}...${head}?per_page=100`, "--jq", COMPARE_PAGE];
+
+/** The closed pull request `text` is, with its branch names and head, or null when it is not a closed pull request numbered `number` that names them. */
+function closedPullIn(text: string, number: string): (Pull & Record<"baseRefName" | "headRefName" | "headRefOid", string>) | null {
+  const pull: Pull = JSON.parse(text);
+  return isClosedPull(pull, number) ? pull : null;
+}
+
+/** What the closed pull request held, from the text the compare printed, or null when the list is shorter than the compare's own total: a part is no reading of what the pull request held. */
+function workIn(compare: string, url: string, number: string, pull: { baseRefName: string; headRefName: string; headRefOid: string }): ClosedWork | null {
+  const compared = readCompare(compare);
+  if (!Number.isInteger(compared.total) || compared.commits.length !== compared.total) return null;
+  return { number: Number(number), url, base: pull.baseRefName, branch: pull.headRefName, head: pull.headRefOid, commits: compared.commits, files: compared.files, filesComplete: compared.files.length < COMPARE_FILE_CAP };
+}
+
 /**
  * WHAT THE CLOSED PULL REQUEST AT `url` STILL HELD, or `null` for "could not ask". A pull request that is open or merged is null, since what it holds is not final or is on its base. A pull request whose compare finds no commit ahead of its base is a
  * {@link ClosedWork} with none, which says "nothing is unique", and is never null. PURE over `gh`.
  */
 export function readClosedWork(url: string, gh: Gh): ClosedWork | null {
   try {
-    const address = PULL_ADDRESS.exec(url);
+    const address = addressOf(url);
     if (address === null) return null;
-    const [, repository, number] = address;
-    const pull: Pull = JSON.parse(gh(["pr", "view", url, "--json", "number,state,baseRefName,headRefName,headRefOid"]));
-    if (!isClosedPull(pull, number)) return null;
-    const { baseRefName: base, headRefName: branch, headRefOid: head } = pull;
-    const compared = readCompare(gh(["api", "--paginate", `repos/${repository}/compare/${encodeURI(base)}...${head}?per_page=100`, "--jq", COMPARE_PAGE]));
-    // A page the host did not give leaves fewer commits than it counted: the list is a part, and a part is no reading of what the pull request held.
-    if (!Number.isInteger(compared.total) || compared.commits.length !== compared.total) return null;
-    return { number: Number(number), url, base, branch, head, commits: compared.commits, files: compared.files, filesComplete: compared.files.length < COMPARE_FILE_CAP };
+    const pull = closedPullIn(gh(pullArgs(url)), address.number);
+    if (pull === null) return null;
+    return workIn(gh(compareArgs(address.repository, pull.baseRefName, pull.headRefOid)), url, address.number, pull);
+  } catch (error) {
+    void error; // no read is "cannot say", which the caller asks again on
+    return null;
+  }
+}
+
+/** {@link readClosedWork} without holding the process still (A11-395). */
+export async function readClosedWorkAsync(url: string, gh: AsyncGh): Promise<ClosedWork | null> {
+  try {
+    const address = addressOf(url);
+    if (address === null) return null;
+    const pull = closedPullIn(await gh(pullArgs(url)), address.number);
+    if (pull === null) return null;
+    return workIn(await gh(compareArgs(address.repository, pull.baseRefName, pull.headRefOid)), url, address.number, pull);
   } catch (error) {
     void error; // no read is "cannot say", which the caller asks again on
     return null;

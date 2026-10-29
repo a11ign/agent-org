@@ -18,7 +18,8 @@ if (import.meta.url === pathToFileURL(process.argv[1] ? realpathSync(process.arg
     console.error("usage: node plugins/github/merge-flow-command.ts --owner <organisation>");
     process.exitCode = REFUSED;
   } else {
-    const readings = readingsOf([owner], [], ghRunner({ exec: commandExec }));
+    const gh = ghRunner({ exec: commandExec });
+    const readings = await readingsOf([owner], [], async (args) => gh(args));
     if (readings.repositories.length === 0 && readings.unlisted.length === 0) {
       console.error(`${owner} is not an organisation the account gh acts as here can list, or it has no repository`);
       process.exitCode = REFUSED;

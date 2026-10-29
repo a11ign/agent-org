@@ -4,9 +4,9 @@
 // here whether a pull request is in a stack and what the arm bot left on it, and it asks the arm bot to look at it again, which is a dispatch of the arm bot's own job: that job re-reads the pull request and trusts nothing the dispatch says.
 // Every call goes through the `gh` it is handed, which is the instance's, with the workers' account.
 import type { StackMergeFacts, StackMergeRequest } from "../../src/plugins/contracts/code-host.ts";
-import { GhFailure, type Gh } from "./gh.ts";
+import { GhFailure, type AsyncGh, type Gh } from "./gh.ts";
 import { pullOf } from "./pull-feedback.ts";
-import { armedNodeOf } from "./rows/armed-state.ts";
+import { armedNodeOf, armedQueryArgs, type ArmedNode } from "./rows/armed-state.ts";
 
 /** The API version the `stack` field of a pull request is sent under (GitHub's stacked-pull-request docs). */
 export const STACK_API_VERSION = "2026-03-10";
@@ -30,16 +30,42 @@ export function refusalOf(body: string): { head: string; reason: string } | null
   return { head, reason: reason === "" ? "no reason given" : reason };
 }
 
-/** The newest refusal comment on the pull request, or null when the arm bot left none. THROWS when the comments cannot be read. */
-function newestRefusal(repo: string, number: number, gh: Gh): { head: string; reason: string } | null {
-  const lines = gh(["api", "--paginate", `repos/${repo}/issues/${number}/comments`, "--jq", `.[] | select(.body | startswith(${JSON.stringify(REFUSAL_MARKER)})) | .body | tojson`])
-    .split("\n").filter((line) => line.trim() !== "");
+/** The `gh` arguments that read the arm bot's refusal comments on pull request `number` of `repo`. */
+const refusalsArgs = (repo: string, number: number): string[] =>
+  ["api", "--paginate", `repos/${repo}/issues/${number}/comments`, "--jq", `.[] | select(.body | startswith(${JSON.stringify(REFUSAL_MARKER)})) | .body | tojson`];
+
+/** The newest refusal in the comments `printed` lists, or null when the arm bot left none. */
+function newestRefusalIn(printed: string): { head: string; reason: string } | null {
+  const lines = printed.split("\n").filter((line) => line.trim() !== "");
   // The comments come oldest first, and the arm bot edits its own in place, so the last marker is the one that stands; one that does not parse is no refusal.
   return lines.length === 0 ? null : refusalOf(JSON.parse(lines[lines.length - 1]));
 }
 
+/** The `gh` arguments that read the stack merge's view of pull request `number` of `repo`. */
+const pullArgs = (repo: string, number: number): string[] => ["api", "-H", `X-GitHub-Api-Version: ${STACK_API_VERSION}`, `repos/${repo}/pulls/${number}`];
+
 /** The pull request as GitHub's REST answer gives it, narrowed to what is read here. */
 type PullAnswer = { stack?: { number?: unknown } | null; base?: { ref?: unknown; repo?: { default_branch?: unknown } | null }; head?: { sha?: unknown } };
+
+/** What the pull request's own answer settles: `facts` is the answer when nothing more is asked of it (merged, or not in a stack) and null otherwise; `open` is what a stacked, open pull request leaves to read (its queue seat and comments), and null otherwise. Both are null for an answer that names no base, default branch or head. */
+type Opening = Readonly<{ facts: StackMergeFacts | null; open: Omit<StackMergeFacts, "settled" | "refusal"> | null }>;
+
+/** The pull request's own answer `text`, read as an {@link Opening}. */
+function openingOf(text: string): Opening {
+  const answer: PullAnswer & { merged?: unknown } = JSON.parse(text);
+  const base = answer.base?.ref;
+  const defaultBranch = answer.base?.repo?.default_branch;
+  const head = answer.head?.sha;
+  if (typeof base !== "string" || typeof defaultBranch !== "string" || typeof head !== "string") return { facts: null, open: null };
+  const stacked = answer.stack?.number != null;
+  const facts = { stacked, base, defaultBranch, head };
+  if (answer.merged === true) return { facts: { ...facts, settled: "merged", refusal: null }, open: null };
+  if (!stacked) return { facts: { ...facts, settled: null, refusal: null }, open: null };
+  return { facts: null, open: facts };
+}
+
+/** What the queue's node says of a stacked, open pull request: merged, queued, or neither. */
+const settledBy = (queued: NonNullable<ArmedNode>): StackMergeFacts["settled"] => (queued.merged === true ? "merged" : queued.mergeQueueEntry != null || queued.autoMergeRequest != null ? "queued" : null);
 
 /**
  * What the pull request at `url` is, as the stack merge sees it, or `null` for "could not ask": an address that is not a GitHub pull request, a refused read, and an answer that names no base, default branch or head. Null is never "not in a stack".
@@ -50,20 +76,30 @@ export function stackMergeFactsOf(url: string, gh: Gh): StackMergeFacts | null {
   if (pull === null) return null;
   const repo = `${pull.owner}/${pull.repo}`;
   try {
-    const answer: PullAnswer & { merged?: unknown } = JSON.parse(gh(["api", "-H", `X-GitHub-Api-Version: ${STACK_API_VERSION}`, `repos/${repo}/pulls/${pull.number}`]));
-    const base = answer.base?.ref;
-    const defaultBranch = answer.base?.repo?.default_branch;
-    const head = answer.head?.sha;
-    if (typeof base !== "string" || typeof defaultBranch !== "string" || typeof head !== "string") return null;
-    const stacked = answer.stack?.number != null;
-    const facts = { stacked, base, defaultBranch, head };
-    if (answer.merged === true) return { ...facts, settled: "merged", refusal: null };
-    if (!stacked) return { ...facts, settled: null, refusal: null };
+    const { facts, open } = openingOf(gh(pullArgs(repo, pull.number)));
+    if (open === null) return facts;
     const queued = armedNodeOf({ number: pull.number, repo, run: gh });
     if (queued === null) return null;
-    if (queued.merged === true) return { ...facts, settled: "merged", refusal: null };
-    const settled = queued.mergeQueueEntry != null || queued.autoMergeRequest != null ? "queued" : null;
-    return { ...facts, settled, refusal: newestRefusal(repo, pull.number, gh) };
+    const settled = settledBy(queued);
+    return { ...open, settled, refusal: settled === "merged" ? null : newestRefusalIn(gh(refusalsArgs(repo, pull.number))) };
+  } catch (error) {
+    void error; // an unreadable pull request is "could not ask", and the board asks again on its next sweep
+    return null;
+  }
+}
+
+/** {@link stackMergeFactsOf} without holding the process still (A11-395): the same reads in the same order. */
+export async function stackMergeFactsOfAsync(url: string, gh: AsyncGh): Promise<StackMergeFacts | null> {
+  const pull = pullOf(url);
+  if (pull === null) return null;
+  const repo = `${pull.owner}/${pull.repo}`;
+  try {
+    const { facts, open } = openingOf(await gh(pullArgs(repo, pull.number)));
+    if (open === null) return facts;
+    const queued: ArmedNode = JSON.parse(await gh(armedQueryArgs({ number: pull.number, repo })));
+    if (queued === null) return null;
+    const settled = settledBy(queued);
+    return { ...open, settled, refusal: settled === "merged" ? null : newestRefusalIn(await gh(refusalsArgs(repo, pull.number))) };
   } catch (error) {
     void error; // an unreadable pull request is "could not ask", and the board asks again on its next sweep
     return null;
@@ -76,10 +112,22 @@ function reasonOf(err: unknown): string {
   return printed.split("\n").map((line) => line.trim()).find((line) => line !== "") ?? "GitHub gave no reason";
 }
 
+/** The `gh` arguments that dispatch the arm bot's job for pull request `number` of `repo`. */
+const dispatchArgs = ({ repo, number }: StackMergeRequest): string[] => ["workflow", "run", ARM_WORKFLOW, "--repo", repo, "--ref", ARM_REF, "-f", `pr=${number}`];
+
 /** Asks the arm bot to merge the pull request: a dispatch of `arm-approved`, which merges nothing itself. THROWS, with GitHub's first line, when the dispatch is refused. */
-export function requestStackMerge({ repo, number }: StackMergeRequest, gh: Gh): void {
+export function requestStackMerge(request: StackMergeRequest, gh: Gh): void {
   try {
-    gh(["workflow", "run", ARM_WORKFLOW, "--repo", repo, "--ref", ARM_REF, "-f", `pr=${number}`]);
+    gh(dispatchArgs(request));
+  } catch (err) {
+    throw new Error(reasonOf(err));
+  }
+}
+
+/** {@link requestStackMerge} without holding the process still (A11-395). */
+export async function requestStackMergeAsync(request: StackMergeRequest, gh: AsyncGh): Promise<void> {
+  try {
+    await gh(dispatchArgs(request));
   } catch (err) {
     throw new Error(reasonOf(err));
   }

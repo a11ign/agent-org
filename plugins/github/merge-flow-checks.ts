@@ -6,9 +6,9 @@
 // never listed: only the repositories its clones name are read. A cloned repository the listing does not hold (moved to another owner, or an organisation too large or failing to list) is read by its own name, so it is
 // never dropped. `merge-flow-command.ts` prints the row for one organisation from a checkout.
 import type { PluginCheck, PluginDeps, PluginSettings } from "../../src/plugins/manifest.ts";
-import { githubRepositoriesOf } from "./checks.ts";
-import { ghRunner, type Gh } from "./gh.ts";
-import { ARM_WORKFLOW_PATH, MERGE_BOT_WORKFLOW_PATH, readOrganisationFlows, readRepositoryFlows, type RepositoryFlow } from "./merge-flow.ts";
+import { githubRepositoriesOfAsync } from "./checks.ts";
+import { asyncGhRunner, type AsyncGh } from "./gh.ts";
+import { ARM_WORKFLOW_PATH, MERGE_BOT_WORKFLOW_PATH, readOrganisationFlowsAsync, readRepositoryFlowsAsync, type RepositoryFlow } from "./merge-flow.ts";
 import { workerAccount } from "./stack-extension.ts";
 
 const NAME = "merge flow";
@@ -59,16 +59,16 @@ function lacking(repository: string, flow: RepositoryFlow): string {
  * The repositories of `owners`: every repository of each owner that is an organisation, but the archived ones, and the repositories of `clones` the owner's listing does not hold, read by name. An organisation that
  * could not be listed is named in `unlisted`, and its repositories of `clones` are read by name, so a failed listing never passes the row and never hides what a cloned repository lacks.
  */
-export function readingsOf(owners: readonly string[], clones: readonly string[], run: Gh): Readings {
+export async function readingsOf(owners: readonly string[], clones: readonly string[], run: AsyncGh): Promise<Readings> {
   const repositories: Reading[] = [];
   const unlisted: string[] = [];
   for (const owner of owners) {
-    const listing = readOrganisationFlows(owner, run);
+    const listing = await readOrganisationFlowsAsync(owner, run);
     if (listing === null) unlisted.push(owner);
     const listed = Array.isArray(listing) ? listing : [];
     const held = new Set(listed.map(({ repository }) => repository.toLowerCase()));
     const byName = clones.filter((repository) => repository.toLowerCase().startsWith(`${owner.toLowerCase()}/`) && !held.has(repository.toLowerCase()));
-    const read = byName.length === 0 ? {} : readRepositoryFlows(byName, run);
+    const read = byName.length === 0 ? {} : await readRepositoryFlowsAsync(byName, run);
     repositories.push(...listed.flatMap(({ repository, archived, flow }) => (archived ? [] : [{ repository, flow }])),
       ...byName.flatMap((repository) => (read[repository]?.archived === true ? [] : [{ repository, flow: read[repository]?.flow ?? null }])));
   }
@@ -107,11 +107,11 @@ const ownersOf = (repositories: readonly string[]): string[] => [...new Set(repo
  * The `merge flow` row: it passes when every repository of the organisations that own a clone of this host has a merge flow, and fails naming each repository that does not, and each one it could not read, with what to add.
  * Nothing on a host with no GitHub clone. The account is the workers' (the code host block's `gh.workers`), as the other rows read GitHub.
  */
-export function mergeFlowChecks(settings: PluginSettings, deps: PluginDeps): PluginCheck[] {
-  const clones = githubRepositoriesOf(deps);
+export async function mergeFlowChecks(settings: PluginSettings, deps: PluginDeps): Promise<PluginCheck[]> {
+  const clones = await githubRepositoriesOfAsync(deps);
   if (clones.length === 0) return [];
   const account = workerAccount(settings.gh, deps.env);
-  const run = ghRunner(deps, account.GH_CONFIG_DIR === undefined ? {} : { GH_CONFIG_DIR: account.GH_CONFIG_DIR });
-  return [mergeFlowRow(readingsOf(ownersOf(clones), clones, run))];
+  const run = asyncGhRunner(deps, account.GH_CONFIG_DIR === undefined ? {} : { GH_CONFIG_DIR: account.GH_CONFIG_DIR });
+  return [mergeFlowRow(await readingsOf(ownersOf(clones), clones, run))];
 }
 

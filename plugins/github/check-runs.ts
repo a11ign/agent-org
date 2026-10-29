@@ -3,7 +3,7 @@
 // Moved out of `ticket-port/ci-reads.ts` (`jobOfDetails`, `jobLogOf`; `rerunFailedJobsOf` is copied), asked for by the address a check reports (`FailingCheck.detailsUrl`), so core no longer parses a GitHub
 // Actions address. An address that names no job (a commit status reports none) is one the host cannot read: `readCheckLog` answers null for it, as for a log GitHub refuses, and `rerunFailedChecks`
 // leaves it out. `rerunFailedJobsOf` stays in core's `ticket-port/ci-reads.ts` while wake still calls it (a test holds the two spellings to one); it goes with that caller.
-import type { Gh } from "./gh.ts";
+import type { AsyncGh, Gh } from "./gh.ts";
 
 /** The Actions job a check's details address names: its repository (`owner/name`), workflow run and job. `null` for any other address, a commit status's included. */
 export function jobOfDetails(detailsUrl: string): { repo: string; runId: number; jobId: number } | null {
@@ -14,6 +14,12 @@ export function jobOfDetails(detailsUrl: string): { repo: string; runId: number;
 /** An error's whole message on one line: the command on its first line and GitHub's reason after it. */
 const wholeMessage = (err: unknown): string => String((err as Error)?.message ?? err).split("\n").map((line) => line.trim()).filter((line) => line !== "").join(" ");
 
+/** The `gh` arguments that read the log of `job`. */
+const logArgs = (job: { repo: string; jobId: number }): string[] => ["api", `repos/${job.repo}/actions/jobs/${job.jobId}/logs`, "--allow-escape-sequences"];
+
+/** What is logged of a log that could not be read. */
+const unreadable = (detailsUrl: string, err: unknown): string => `the log of the job at ${detailsUrl} could not be read: ${wholeMessage(err)}`;
+
 /**
  * The log of the job `detailsUrl` names, its colour codes included: `gh api` exits 1 on a terminal escape sequence unless told to allow it (#767), so the caller strips them. Null when the address
  * names no job or the log could not be read, and the reason is logged.
@@ -22,9 +28,21 @@ export function readCheckLog(detailsUrl: string, gh: Gh, log: (line: string) => 
   const job = jobOfDetails(detailsUrl);
   if (job === null) return null;
   try {
-    return gh(["api", `repos/${job.repo}/actions/jobs/${job.jobId}/logs`, "--allow-escape-sequences"]);
+    return gh(logArgs(job));
   } catch (err) {
-    log(`the log of the job at ${detailsUrl} could not be read: ${wholeMessage(err)}`);
+    log(unreadable(detailsUrl, err));
+    return null;
+  }
+}
+
+/** {@link readCheckLog} without holding the process still (A11-395). */
+export async function readCheckLogAsync(detailsUrl: string, gh: AsyncGh, log: (line: string) => void): Promise<string | null> {
+  const job = jobOfDetails(detailsUrl);
+  if (job === null) return null;
+  try {
+    return await gh(logArgs(job));
+  } catch (err) {
+    log(unreadable(detailsUrl, err));
     return null;
   }
 }
@@ -39,12 +57,25 @@ export function runsOf(detailsUrls: readonly string[]): { repo: string; runId: n
   return [...seen.values()];
 }
 
+/** The first line of a refusal: why GitHub would not rerun. */
+export const refusalLine = (err: unknown): string => String((err as Error)?.message ?? err).split("\n")[0];
+
 /** Reruns the failed jobs of the runs `detailsUrls` name. Answers why GitHub refused (the first line it gave), or null once they are rerun. */
 export function rerunFailedChecks(detailsUrls: readonly string[], gh: Gh): string | null {
   try {
     for (const { repo, runId } of runsOf(detailsUrls)) gh(["run", "rerun", String(runId), "--failed", "-R", repo]);
     return null;
   } catch (err) {
-    return String((err as Error)?.message ?? err).split("\n")[0];
+    return refusalLine(err);
+  }
+}
+
+/** {@link rerunFailedChecks} without holding the process still (A11-395): the runs are rerun one at a time, in order, and the first refusal stops the rest. */
+export async function rerunFailedChecksAsync(detailsUrls: readonly string[], gh: AsyncGh): Promise<string | null> {
+  try {
+    for (const { repo, runId } of runsOf(detailsUrls)) await gh(["run", "rerun", String(runId), "--failed", "-R", repo]);
+    return null;
+  } catch (err) {
+    return refusalLine(err);
   }
 }

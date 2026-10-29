@@ -3,7 +3,7 @@
 // Read with `gh run view <id> --repo <repo> --json status,conclusion,url,name,jobs` through the plugin's own `gh`, so this stays the one place a call to GitHub is made on ticket mode's behalf. Null is "could not ask": a refused `gh`, an answer that does not
 // parse and a status this does not know are all null, never "not finished".
 import type { CiRun } from "../../src/plugins/contracts/code-host.ts";
-import type { Gh } from "./gh.ts";
+import type { AsyncGh, Gh } from "./gh.ts";
 
 /** The fields asked of `gh run view`. */
 export const CI_RUN_FIELDS = "status,conclusion,url,name,jobs";
@@ -17,18 +17,36 @@ function jobsOf(jobs: unknown): CiRun["jobs"] {
   return { done: jobs.filter((job) => job?.status === "completed").length, total: jobs.length };
 }
 
+/** The `gh` arguments that read run `runId` of `repository`. */
+const runArgs = (repository: string, runId: number): string[] => ["run", "view", String(runId), "--repo", repository, "--json", CI_RUN_FIELDS];
+
+/** The run in the text `gh` printed, or null for one this cannot judge: a status it does not know, no address or name, and a conclusion that does not agree with the status. */
+function runIn(text: string): CiRun | null {
+  const answer = JSON.parse(text);
+  const { status, conclusion, url, name } = answer;
+  const known = NOT_STARTED.includes(status) ? "queued" : status;
+  if (!["queued", "in_progress", "completed"].includes(known) || typeof url !== "string" || typeof name !== "string") return null;
+  const concluded = typeof conclusion === "string" && conclusion !== "" ? conclusion : null;
+  if ((known === "completed") !== (concluded !== null)) return null;
+  return { status: known, conclusion: concluded, url, name, jobs: jobsOf(answer.jobs) };
+}
+
 /**
  * Run `runId` of `repository` (`owner/name`), or null for "could not ask". GitHub reports an empty `conclusion` for a run that has not finished, which is read as none; a run that has completed with none is not a run this can judge, and is null.
  */
 export function readCiRun(repository: string, runId: number, gh: Gh): CiRun | null {
   try {
-    const answer = JSON.parse(gh(["run", "view", String(runId), "--repo", repository, "--json", CI_RUN_FIELDS]));
-    const { status, conclusion, url, name } = answer;
-    const known = NOT_STARTED.includes(status) ? "queued" : status;
-    if (!["queued", "in_progress", "completed"].includes(known) || typeof url !== "string" || typeof name !== "string") return null;
-    const concluded = typeof conclusion === "string" && conclusion !== "" ? conclusion : null;
-    if ((known === "completed") !== (concluded !== null)) return null;
-    return { status: known, conclusion: concluded, url, name, jobs: jobsOf(answer.jobs) };
+    return runIn(gh(runArgs(repository, runId)));
+  } catch (error) {
+    void error; // a run the host will not say anything of is "could not ask", and the board asks again on its next poll
+    return null;
+  }
+}
+
+/** {@link readCiRun} without holding the process still (A11-395). */
+export async function readCiRunAsync(repository: string, runId: number, gh: AsyncGh): Promise<CiRun | null> {
+  try {
+    return runIn(await gh(runArgs(repository, runId)));
   } catch (error) {
     void error; // a run the host will not say anything of is "could not ask", and the board asks again on its next poll
     return null;
