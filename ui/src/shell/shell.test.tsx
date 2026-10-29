@@ -318,11 +318,11 @@ describe("projects and goals", () => {
 });
 
 describe("the sidebar's order", () => {
-  it("runs the mark, the switcher, the pill, Tickets, Runs, Projects, Goals, then Settings", async () => {
+  it("runs the mark and its bell, the switcher, the pill, Tickets, Runs, Projects, Goals, then Settings", async () => {
     await shellOn("tickets", { fallback: { tickets: [ticket({ key: "A11-1", goals: ["Fleet"] })] } });
-    await waitFor(() => expect(within(sidebar()).queryAllByRole("button").length).toBeGreaterThan(0));
-    const focusable = [...sidebar().querySelectorAll<HTMLElement>("select, a, button")].map((element) => element.tagName === "SELECT" ? "select" : element.textContent);
-    expect(focusable).toEqual(["select", "Tickets1", "Runs", "a11ign1", "All goals1", "Fleet1", "Settings"]);
+    await within(sidebar()).findByRole("button", { name: /Fleet/ });
+    const focusable = [...sidebar().querySelectorAll<HTMLElement>("select, a, button")].map((element) => element.tagName === "SELECT" ? "select" : element.getAttribute("aria-label") ?? element.textContent);
+    expect(focusable).toEqual(["Notifications, 0", "select", "Tickets1", "Runs", "a11ign1", "All goals1", "Fleet1", "Settings"]);
   });
 
   it("is an aside named Atomaut that holds the Main navigation", async () => {

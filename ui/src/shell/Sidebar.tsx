@@ -1,5 +1,6 @@
 import type { ReactNode } from "react";
 import { connectionLabel } from "../../../src/ticket-mode/board-view.ts";
+import { NotificationCentre } from "../notifications/NotificationCentre.tsx";
 import { Mark, RunsIcon, SettingsIcon, TicketsIcon } from "./icons.tsx";
 import { isSettingsPage, runsHref, settingsHref, ticketsHref, type Page } from "./routes.ts";
 import { loopLine } from "./loop-line.ts";
@@ -96,6 +97,8 @@ export function Sidebar({ page, children }: Readonly<{ page: Page; children?: Re
         <div className="brand">
           <Mark />
           <span className="brand-name">Atomaut</span>
+          <div className="sidebar-spacer" />
+          <NotificationCentre />
         </div>
         <InstanceSwitcher />
         <ConnectionPill />

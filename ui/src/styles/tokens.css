@@ -293,6 +293,15 @@
   --hit-target: 44px;
   --tick-box: 18px;
   --opacity-publish-off: 0.55;
+
+  /* The notification centre (A11-383): the bell in the sidebar's head, and the panel that opens under it. */
+  --notifications-width: 420px;
+  --notifications-list-max: 460px;
+  --notifications-empty-measure: 300px;
+  --font-size-badge: 10px;
+  --color-fresh: rgba(91, 99, 217, 0.07);
+  --z-notifications: 30;
+  --line-clamp-request: 2;
 }
 
 /* Keyframes cannot read a custom property for their length of time, so the two animations are named here and timed by the tokens above where they are used. */

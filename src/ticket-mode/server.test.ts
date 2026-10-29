@@ -1038,6 +1038,23 @@ test("the run files its own tickets, so there is no approve or discard route: a 
   await assert.rejects(b.api("POST", "/api/writer/w7/dismiss", {}), /stop the new-ticket request before you dismiss it/, "a run still under way is not dismissed");
 });
 
+test("POST /api/writer/dismiss-finished clears every finished request in one write, answers with the requests left, and leaves one still under way", async () => {
+  const b = writerBoard();
+  await b.api("POST", "/api/writer", { request: "First" });
+  await b.api("POST", "/api/writer", { request: "Second", ...{} });
+  b.store.set({ ...b.store.get(), writers: b.store.get().writers!.map((run, at) => (at === 0 ? { ...run, id: "wdone", phase: "finished" as const, finishedAt: 4, tickets: [] } : run)) });
+  const [status, left] = await b.api("POST", "/api/writer/dismiss-finished", {}) as [number, any];
+  assert.equal(status, 200);
+  assert.equal(left.runs.length, 1, "the answer is the writers view after the clear");
+  assert.deepEqual(b.store.get().writers?.map((run) => run.phase), ["queued"], "the finished one is gone from the persisted queue, the queued one stays");
+  const [, again] = await b.api("POST", "/api/writer/dismiss-finished", {}) as [number, any];
+  await b.api("POST", "/api/writer", { request: "Third" });
+  b.store.set({ ...b.store.get(), writers: b.store.get().writers!.map((run, at) => ({ ...run, id: `wf${at}`, phase: "finished" as const, finishedAt: 5, tickets: [] })) });
+  const [, named] = await b.api("POST", "/api/writer/dismiss-finished", { ids: ["wf0"] }) as [number, any];
+  assert.deepEqual(named.runs.map((run: any) => run.id), ["wf1"], "a body naming ids clears those finished runs only, so one the page was not shown stays");
+  assert.equal(again.runs.length, 1, "clearing with nothing finished is no error and changes nothing");
+});
+
 test("a run's filed tickets show on the run as links, with their key and address, and the page's view holds no draft to review", async () => {
   const b = writerBoard();
   await b.api("POST", "/api/writer", { request: "Show requests" });

@@ -116,8 +116,6 @@ const BOARDS: readonly Board[] = [
   { name: "AtomautNewTicketQueued", file: "queued", writing: { runs: [RUNS.queued] }, drive: stripShows("Queued") },
   { name: "AtomautNewTicketWriting", file: "writing", writing: { runs: [RUNS.writing] }, drive: stripShows("Writing") },
   { name: "AtomautNewTicketWaiting", file: "waiting", writing: { runs: [RUNS.waiting] }, drive: stripShows("Waiting for you") },
-  { name: "AtomautNewTicketDone", file: "done", writing: { runs: [RUNS.done] }, drive: stripShows("Done") },
-  { name: "AtomautNewTicketFailed", file: "failed", writing: { runs: [RUNS.failed] }, drive: stripShows("Failed") },
 ];
 
 /** One board at one screen: driven to its state, measured for horizontal overflow, and written as `new-ticket-<board>-<W>x<H>.png` in this page's captures. */
@@ -140,7 +138,7 @@ async function captured(board: Board, screen: (typeof SCREENS)[number]): Promise
   }
 }
 
-describe("the ten boards fit at 1440px and at 390px", () => {
+describe("the eight boards fit at 1440px and at 390px", () => {
   it.each(BOARDS)("$name", async (board) => {
     for (const screen of SCREENS) await captured(board, screen);
   });

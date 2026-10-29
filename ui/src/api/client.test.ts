@@ -88,12 +88,15 @@ describe("the client's run actions and addressing", () => {
     for (const verb of verbs) await client.runAction("A11-9", verb);
     await client.stopWriterRun("w1");
     await client.dismissWriterRun("w1");
+    await client.dismissFinishedWriterRuns(["w1", "w2"]);
     expect(seen.map(({ url, init }) => `${init.method} ${url}`)).toEqual([
       ...verbs.map((verb) => `POST /c/this%20machine/api/queue/A11-9/${verb}`),
       "POST /c/this%20machine/api/writer/w1/stop",
       "POST /c/this%20machine/api/writer/w1/dismiss",
+      "POST /c/this%20machine/api/writer/dismiss-finished",
     ]);
-    expect(seen.every(({ init }) => init.body === undefined)).toBe(true);
+    expect(seen.slice(0, -1).every(({ init }) => init.body === undefined)).toBe(true);
+    expect(seen.at(-1)?.init.body).toBe(JSON.stringify({ ids: ["w1", "w2"] }));
   });
 
   it("addresses /api/... at the root for a null connection, and /api/connections at the root for any", async () => {

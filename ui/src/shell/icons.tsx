@@ -40,3 +40,12 @@ export function SettingsIcon() {
     </svg>
   );
 }
+
+/** The bell of the notification centre. */
+export function BellIcon() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+      <path d="M4 6.5a4 4 0 0 1 8 0c0 3 1.2 4.2 1.8 4.8H2.2C2.8 10.7 4 9.5 4 6.5zM6.5 13a1.6 1.6 0 0 0 3 0" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}

@@ -75,7 +75,9 @@ describe("Tickets", () => {
     const { page, context } = await open("/tickets", withWriter({ stand: ticketsBoardStand() }));
     await page.getByRole("region", { name: "Backlog" }).waitFor();
     const names = await walked(page, 40);
-    expect(names[0]).toMatch(/^Instance/);
+    // The bell is the sidebar's first control, then the instance switcher.
+    expect(names[0]).toMatch(/^Notifications, 0/);
+    expect(names[1]).toMatch(/^Instance/);
     expect(names).toContain("New ticket");
     await context.close();
   });

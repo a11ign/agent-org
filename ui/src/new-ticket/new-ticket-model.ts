@@ -1,5 +1,4 @@
 // module: the New ticket dialog's rules -- the form it holds, the options its Manual fields offer, the writer pill, and the words of a refusal and of a request's rows. PURE.
-import { PRIORITY_NAMES } from "../../../src/ticket-mode/board-view/view-types-and-filters.ts";
 import { goalNames, projectNames, safeHref, WRITER_PRIORITY_LABEL, writerBody, writerChoiceLabel, type WriterRunView, type WriterTicketView } from "../../../src/ticket-mode/board-view.ts";
 import type { Placement } from "../../../src/ticket-mode/writer-placement.ts";
 import type { ConfigView, TicketView } from "../api/types.ts";
@@ -61,12 +60,6 @@ export function sentenceEnding(sentence: string): string {
 export function headLineOf(run: Pick<WriterRunView, "model" | "effort" | "mode">): string {
   const choice = writerChoiceLabel(run);
   return ["Ticket writer", ...(choice === "" ? [] : [choice]), run.mode === "grill" ? "Grill" : "Quick"].join(" · ");
-}
-
-/** A made ticket's meta on the Done row, "Medium · a11ign": the parts the tracker gave, and nothing for a ticket the board could not read back. */
-export function ticketMetaOf(ticket: Pick<WriterTicketView, "priority" | "project">): string {
-  const priority = ticket.priority === undefined ? null : (PRIORITY_NAMES[ticket.priority] ?? null);
-  return [priority, ticket.project ?? null].filter((part): part is string => part !== null && part !== "").join(" · ");
 }
 
 /** The address of a made ticket in the tracker, or "" when the board has none or it is not an http address. */

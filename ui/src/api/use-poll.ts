@@ -33,6 +33,8 @@ export type PollOptions<T> = Readonly<{
   repeat?: boolean;
   /** The longest wait between reads while they fail, asked each time one is scheduled (see `startPolling`): the shell caps it while the page shows the Updating screen. */
   maxWaitMs?: () => number;
+  /** False for a read not made at all, as for a thing the instance does not have. True by default. */
+  enabled?: boolean;
 }>;
 
 const isEmptyList = (data: unknown): boolean => Array.isArray(data) && data.length === 0;
@@ -88,10 +90,11 @@ function viewAfter<T>(before: PollView<T>, answer: Answer<T>, isEmpty: (data: T)
  * meets waits 2s before the next read. A page that has read nothing yet and finds its SSH connection unreachable shows the proxy's last known data, if it kept any. `current` is for a click on a link built from the data (a run's terminal): the held data while it was read no
  * more than one poll interval ago, else a read made now, resolving to its data, or to null when that read fails.
  */
-export function usePoll<T>(read: PollRead<T>, { connection, isEmpty = isEmptyList, repeat = true, maxWaitMs }: PollOptions<T>): Poll<T> {
+export function usePoll<T>(read: PollRead<T>, { connection, isEmpty = isEmptyList, repeat = true, maxWaitMs, enabled = true }: PollOptions<T>): Poll<T> {
   const connectionKey = keyOf(connection);
   // The kept answer is looked up once per connection and path, not on every render: the queue's is large.
-  const start = useMemo(() => startOf(connection, read.path, isEmpty), [connectionKey, read.path]);
+  // A read that is not made holds no kept answer: there is nothing to refresh it.
+  const start = useMemo(() => startOf(connection, enabled ? read.path : undefined, isEmpty), [connectionKey, read.path, enabled]);
   const [held, setHeld] = useState<Held<T>>(start);
   const poller = useRef<Poller<T> | undefined>(undefined);
   const latest = useRef({ read, isEmpty, connection, held, maxWaitMs, start });
@@ -100,6 +103,7 @@ export function usePoll<T>(read: PollRead<T>, { connection, isEmpty = isEmptyLis
   });
 
   useEffect(() => {
+    if (!enabled) return;
     const running = startPolling<T>({
       read: (signal) => latest.current.read(signal),
       repeat,
@@ -114,8 +118,11 @@ export function usePoll<T>(read: PollRead<T>, { connection, isEmpty = isEmptyLis
       },
     });
     poller.current = running;
-    return () => running.stop();
-  }, [connectionKey, repeat]);
+    return () => {
+      running.stop();
+      poller.current = undefined;
+    };
+  }, [connectionKey, repeat, enabled]);
 
   const shown = held.connectionKey === connectionKey ? held : start;
   const current = async (): Promise<T | null> => {

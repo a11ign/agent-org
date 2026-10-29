@@ -39,7 +39,7 @@ import { amend, childOrder, enqueue, type PlanFirst, type Queue, type RunChoice,
 import { WRITER_REQUEST_CHARS } from "./writer-limits.ts";
 import { type Placement, placementOf } from "./writer-placement.ts";
 import { approve, queuePublish, setMax, pauseQueue, resumeQueue, startAnyway } from "./queue/queue-transitions.ts";
-import { dismissWriter, loadQueue, queueWriter, saveQueue, writerOf } from "./queue.ts";
+import { dismissFinishedWriters, dismissWriter, loadQueue, queueWriter, saveQueue, writerOf } from "./queue.ts";
 import { claimantOf, hostFilePath, plansInBatches, readTicketSettings, type TicketSettings } from "./settings.ts";
 import { EFFORTS, MODELS } from "./settings-read.ts";
 import { type Change, type EditFile, previewEdit, restoreBackup, saveEdit } from "./settings-edit.ts";
@@ -426,6 +426,13 @@ async function writerRoute(board: Board, method: string, path: string, body: Jso
     const effort = saved.writerEffort ?? settings.writer.effort;
     store.set(queueWriter(store.get(), { id: `w${now().toString(36)}`, request: `Grill ${key}`, mode: "grill", placement: "auto", form: {}, model, effort, ticket: key,
       startedFrom: ticket.description }, now()));
+    wake();
+    return [200, writersViewOf(store.get())];
+  }
+  if (method === "POST" && path === "/api/writer/dismiss-finished") {
+    // The notification centre's Clear all: the finished requests the page lists (`ids`; all of them when it names none) go in one write, and a request still under way is left as it is.
+    const ids = Array.isArray(body.ids) && body.ids.every((id) => typeof id === "string") ? body.ids as string[] : undefined;
+    store.set(dismissFinishedWriters(store.get(), ids));
     wake();
     return [200, writersViewOf(store.get())];
   }
