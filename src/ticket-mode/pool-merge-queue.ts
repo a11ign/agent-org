@@ -127,8 +127,13 @@ async function released(ctx: PoolContext, entry: Entry, url: string, record: Que
 /** Whether the code host can ask the arm bot to arm a pull request (`auto-arm.yml`'s `arm-approved`, the dispatch the stack merge uses): the arm bot re-reads the pull request and arms it only when it is approved, open and held by nobody. */
 const canAskArmBot = (ctx: PoolContext): boolean => ctx.codeHost.requestStackMerge !== undefined;
 
-/** Whether the pull request is approved at its head as the host says: the newest verdict on the head approves and GitHub's decision does not ask for another. PURE. */
-const approvedAtHead = ({ approvedAtHead: approved, reviewDecision }: PullFeedback): boolean => approved && (reviewDecision ?? "approved") === "approved";
+/**
+ * Whether the pull request is approved at its head as the host says: the newest verdict on the head approves and GitHub's decision does not ask for another. The verdict is anyone's but the workers' own, the board's reviewer
+ * included (A11-397): `approvedAtHead` leaves the reviewer out, so that its approval is no person's answer to the worker's feedback, and a pull request only the reviewer approved would never be armed again. A newest verdict
+ * that asks for changes refuses it, whoever wrote it, as the card and the wait on a pull request read it. PURE.
+ */
+const approvedAtHead = ({ approvedAtHead: approved, verdictAtHead, reviewDecision }: PullFeedback): boolean =>
+  (approved || verdictAtHead === "approved") && verdictAtHead !== "changes-requested" && (reviewDecision ?? "approved") === "approved";
 
 /** Why the board does not ask the arm bot to arm the pull request again at this record, or null when it may. PURE. */
 function noRearmBecause(ctx: PoolContext, { read }: Pull, record: QueueHead): string | null {

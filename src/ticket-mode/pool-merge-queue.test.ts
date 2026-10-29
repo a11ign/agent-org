@@ -10,6 +10,7 @@ import type { CiRun, PullFeedback, QueueFailure, QueueRemoval } from "../plugins
 import { type Flake, flakesView } from "./flakes.ts";
 import { queueNote } from "./board-view/run-reason.ts";
 import type { QueueHead } from "./board-view/queue-head.ts";
+import { REVIEWER_LOGIN } from "./reviewer-port.ts";
 import { poolFixture } from "./pool-fixture.ts";
 import { registryCause } from "./pool-checks.ts";
 import { answerQueue, HOLD_AFTER, MAX_REARMS } from "./pool-merge-queue.ts";
@@ -260,9 +261,9 @@ const NOW = 1_000_000;
 const PR = { repo: "announcement-emulator", url: URL };
 
 /** A finished run NBF-1 holding pull request 18, over a pool on the fake code host: `ended` is how its run ended, and `over` what the entry also holds. */
-function finishedRun(outcome: Outcome, over: Partial<Entry> = {}, seed: (host: ReturnType<typeof createFakeCodeHost>) => void = () => undefined, { readsRuns = false }: { readsRuns?: boolean } = {}) {
+function finishedRun(outcome: Outcome, over: Partial<Entry> = {}, seed: (host: ReturnType<typeof createFakeCodeHost>) => void = () => undefined, { readsRuns = false, tickets = {} }: { readsRuns?: boolean; tickets?: Record<string, unknown> } = {}) {
   const clock = { at: NOW };
-  const fixture = poolFixture({ keys: ["NBF-1"], tickets: { drafts: false }, now: () => clock.at });
+  const fixture = poolFixture({ keys: ["NBF-1"], tickets: { drafts: false, ...tickets }, now: () => clock.at });
   const host = createFakeCodeHost("worker-bot");
   host.seedPull(REPO, 18, { head: HEAD, feedback: { approvedAtHead: true } });
   host.checksAndClaims.logs.set(MIDDLEWARE, DRIFT);
@@ -711,4 +712,43 @@ test("A11-371: a job address that names no job is not rerun, since the code host
   const { ctx, host } = flaky({ runs: [failure([{ name: "middleware", step: STEP, detailsUrl: RUN_URL }])] });
   const answer = await answerQueue(ctx, entryWith(), [{ url: URL, read: feedback(removedFrom(removal(0))) }]);
   assert.deepEqual([answer.heads[URL]?.step, host.checksAndClaims.reruns], ["round", []]);
+});
+
+test("A11-397: a pull request that only the reviewer approved at its head, removed from the queue for a cause the change did not make, is put back in the queue", async () => {
+  // No `feedback.approvedAtHead` override: the read leaves the reviewer's approval out of `approvedAtHead` (A11-179), and the merge queue still counts it through `verdictAtHead`.
+  const reviewerOnly = (host: ReturnType<typeof createFakeCodeHost>) => {
+    seedQueue([removal(0)])(host);
+    Object.assign(host.pullAt(URL)!, { feedback: {}, reviews: [{ author: REVIEWER_LOGIN, state: "APPROVED", commit: HEAD, at: 1 }] });
+    host.checksAndClaims.logs.set(MIDDLEWARE, ETARGET);
+    host.queues.failures.set(queueFailureKey(URL, GROUPS[0]), lost());
+  };
+  const run = finishedRun(readyPr, {}, reviewerOnly, { tickets: { reviewer: "atomic" } });
+  const read = await run.host.readPullFeedback(URL, "worker-bot", [REVIEWER_LOGIN]);
+  assert.deepEqual([read?.approvedAtHead, read?.verdictAtHead, read?.authors], [false, "approved", []], "the read leaves the reviewer's approval out of approvedAtHead and its reviews out of the feedback, and says its verdict");
+  const log = await watchedWithLog(run);
+  assert.deepEqual(run.host.stackMerges.requests, [ARMED], "the arm bot is asked once");
+  assert.doesNotMatch(log, /it is not approved at this head/);
+  assert.equal(run.entry().queueHeads?.[URL]?.step, "rearmed");
+  assert.equal(run.entry().queueHeads?.[URL]?.rearms, 1);
+  noRound(run);
+});
+
+test("A11-397: a pull request the queue removed is armed again on the reviewer's verdict only while GitHub's decision does not ask for changes", async () => {
+  const read = (over: Partial<PullFeedback>) => feedback(removedFrom(removal(0)), { approvedAtHead: false, verdictAtHead: "approved", reviewDecision: "approved", ...over });
+  const lostRun = { logs: { [MIDDLEWARE]: ETARGET }, runs: [lost()] };
+  const approved = world(lostRun);
+  const answer = await answerQueue(approved.ctx, entryWith(), [{ url: URL, read: read({}) }]);
+  assert.deepEqual([answer.heads[URL]?.step, answer.heads[URL]?.rearms, approved.host.stackMerges.requests], ["rearmed", 1, [ARMED]], "the reviewer's verdict approves it");
+  const changes = world(lostRun);
+  const refused = await answerQueue(changes.ctx, entryWith(), [{ url: URL, read: read({ reviewDecision: "changes-requested" }) }]);
+  assert.deepEqual([refused.heads[URL]?.step, changes.host.stackMerges.requests], ["named", []], "GitHub asks for changes, whatever the verdict says");
+  assert.match(refused.heads[URL]?.note ?? "", /not armed again: it is not approved at this head$/);
+  const none = world(lostRun);
+  assert.deepEqual([(await answerQueue(none.ctx, entryWith(), [{ url: URL, read: read({ verdictAtHead: null }) }])).heads[URL]?.step, none.host.stackMerges.requests], ["named", []], "no verdict at the head, and no approval by anyone else");
+  const older = world(lostRun);
+  const person = await answerQueue(older.ctx, entryWith(), [{ url: URL, read: read({ approvedAtHead: true, verdictAtHead: undefined }) }]);
+  assert.deepEqual([person.heads[URL]?.step, older.host.stackMerges.requests], ["rearmed", [ARMED]], "a host that says no verdict still has a person's approval counted");
+  const vetoed = world(lostRun);
+  const vetoedAnswer = await answerQueue(vetoed.ctx, entryWith(), [{ url: URL, read: read({ approvedAtHead: true, verdictAtHead: "changes-requested" }) }]);
+  assert.deepEqual([vetoedAnswer.heads[URL]?.step, vetoed.host.stackMerges.requests], ["named", []], "a person's approval is not armed over the reviewer's newer request for changes, even when GitHub's decision says nothing");
 });
