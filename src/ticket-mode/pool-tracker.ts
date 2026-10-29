@@ -23,7 +23,7 @@ import { isPullReadyToMerge } from "./board-view/pull-readiness.ts";
 import { handBackNote, isStackMergeNote, stackMergeRequestOf, stackMergeStep } from "./stack-merge.ts";
 import { settledByPulls } from "./board-view/pull-settled.ts";
 import { recordClosedByBoard } from "./queue.ts";
-import type { StackMergeFacts } from "../plugins/contracts/code-host.ts";
+import type { CodeHost, StackMergeFacts } from "../plugins/contracts/code-host.ts";
 import { afterConflictCleared, afterMerge, conflictFeedback, mergedIn, mergeBaseIn, mergeDue, protectStack, readStackBase, releaseStack, remoteHead, stackBaseFile, stackBaseIn, stackRef, type MergeResult } from "./stack-rebase.ts";
 import { worktreePath } from "./worktree.ts";
 import { followTicketTexts, learnFromBlockers } from "./pool-ticket-text.ts";
@@ -284,6 +284,10 @@ export function retargetStacked(ctx: PoolContext): Promise<void> {
 
 const RETARGETING = new WeakMap<object, Promise<void>>();
 
+/** The base notes of a sweep, asked of the code host without holding the board thread's loop when it can answer a promise (contract 2.2, A11-282), else as it always was. */
+const retargetsOf = (codeHost: CodeHost, sweep: Parameters<CodeHost["sweepRetargets"]>[0]): Promise<Record<string, string>> | Record<string, string> =>
+  codeHost.sweepRetargetsAsync === undefined ? codeHost.sweepRetargets(sweep) : codeHost.sweepRetargetsAsync(sweep);
+
 /** {@link retargetStacked}, one pass. */
 async function retargetEach(ctx: PoolContext): Promise<void> {
   const { codeHost, store } = ctx;
@@ -299,7 +303,7 @@ async function retargetEach(ctx: PoolContext): Promise<void> {
     const previous = entry.retargets ?? {};
     // The sweep of the bases keeps the note of a pull request it cannot read, so it is handed only the notes it wrote: one the stack merge or the restack wrote is theirs to keep or clear.
     const baseNotesBefore = Object.fromEntries(Object.entries(previous).filter(([, note]) => !isStackMergeNote(note) && !isRestackNote(note)));
-    const bases = stacked.size === 0 ? {} : codeHost.sweepRetargets({ urls, previous: baseNotesBefore, stacked, defaults, log });
+    const bases = stacked.size === 0 ? {} : await retargetsOf(codeHost, { urls, previous: baseNotesBefore, stacked, defaults, log });
     const facts = new Map<string, StackMergeFacts | null>();
     const restacks = await sweepRestacks(ctx, entry, { urls, bases, facts, told });
     const merges = sweepStackMerges(ctx, entry, urls, { skip: new Set([...Object.keys(bases), ...restacks.moved]), facts });

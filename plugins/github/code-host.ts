@@ -36,7 +36,7 @@ import { pullsNaming } from "./ticket-pulls.ts";
 import { openDependencyPulls } from "./dependency-pulls.ts";
 import { readReviewClaims, writeReviewClaim } from "./review-claims.ts";
 import { requestStackMerge, stackMergeFactsOf } from "./stack-merge.ts";
-import { sweepRetargets } from "./stack-retarget.ts";
+import { sweepRetargets, sweepRetargetsAsync } from "./stack-retarget.ts";
 import { updateBranch } from "./update-branch.ts";
 import { closePull, commentOnPull } from "./close-pull.ts";
 import { armedReasonOf, armMergeOf, type ArmMergeSeams } from "./rows/arming.ts";
@@ -104,6 +104,14 @@ export function createCodeHost(rawDeps: PluginDeps, settle: ArmMergeSeams = {}, 
       for (const repository of repositories) snapshots.invalidate(repository);
     }
   };
+  /** {@link writing} for a write that answers a promise (A11-282). */
+  const writingAsync = async <T>(repositories: readonly string[], write: () => Promise<T>): Promise<T> => {
+    try {
+      return await write();
+    } finally {
+      for (const repository of repositories) snapshots.invalidate(repository);
+    }
+  };
   /** The repositories of the runs the addresses of failing checks name: a rerun changes the checks of the heads it reruns. */
   const rerunRepositories = (detailsUrls: readonly string[]): string[] => runsOf(detailsUrls).map(({ repo }) => repo);
   return {
@@ -125,6 +133,7 @@ export function createCodeHost(rawDeps: PluginDeps, settle: ArmMergeSeams = {}, 
     pullsNaming: (key, repositories) => pullsNaming(key, repositories, gh),
     openDependencyPulls: (repository) => openDependencyPulls(repository, snapshots),
     sweepRetargets: (sweep) => writing(sweep.urls.flatMap(repositoriesOf), () => sweepRetargets({ ...sweep, gh })),
+    sweepRetargetsAsync: (sweep) => writingAsync(sweep.urls.flatMap(repositoriesOf), () => sweepRetargetsAsync(sweep, ghAsync)),
     stackMergeFactsOf: (url) => stackMergeFactsOf(url, gh),
     requestStackMerge: (request) => writing([request.repo], () => requestStackMerge(request, gh)),
     readCiRun: (repository, runId) => readCiRun(repository, runId, gh),
