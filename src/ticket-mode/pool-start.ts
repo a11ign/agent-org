@@ -12,7 +12,7 @@ import { isPlanning, log, messageOf, phaseOf, publishPlace, runChoice, runPlace,
 import { BRIEF_FILE, firstPrompt, OUTCOME_FILE, PLANNING_DENY, STALE_OUTCOME_FILE, STOP_COUNT_FILE, PUBLISH_FILE, PUBLISHED_FILE, reviewPrompt, talkPrompt, workerFlags, WRITER_FILE, writerBriefText, writerPrompt, writerTools } from "./worker-files.ts";
 import { type RunPlace } from "./pool-paths.ts";
 import { agentTarget } from "./pool-resume.ts";
-import { closesSettled, closeWorkspaceLater } from "./pool-close.ts";
+import { closesOut, closesSettled, closeWorkspaceLater } from "./pool-close.ts";
 import { plannedStepsOf } from "./pool-plan-steps.ts";
 import { recordPlannedSteps, type RunWorker } from "./queue/queue-run-detail.ts";
 // eslint-disable-next-line clean-code/no-duplication -- import list: the rule matches statement shape, and imports are not duplicated logic
@@ -132,7 +132,7 @@ async function startOnceShellReady(ctx: PoolContext, args: string[]): Promise<vo
 async function startAgent(ctx: PoolContext, place: RunPlace, env: Record<string, string>, tail: readonly string[], what: string): Promise<{ workspace: string; pane: string }> {
   const { session, startedHere } = ctx;
   // A run queued again at once opens its workspace after the close of the one it replaces, as when that close held the loop (A11-282).
-  await closesSettled(ctx);
+  if (closesOut(ctx)) await closesSettled(ctx);
   const run = readRunner(ctx);
   const opened = await openPaneAsync(run, place.name, env, place.folder, { ...session, tmpBase: ctx.runTmpBase });
   if ("refusal" in opened) throw new Error(opened.refusal);
@@ -483,7 +483,7 @@ export async function fill(ctx: PoolContext): Promise<void> {
   // One turn first: a pass asked for by code that is still running (a watch that queued a round and asked for a tick) decides after that code has finished, as it did when this awaited the reads.
   await Promise.resolve();
   // The workspaces the watch just asked herdr to close are closed first, so the listing below never reads one that is closing as a leftover or an agent that holds a name (A11-282).
-  await closesSettled(ctx);
+  if (closesOut(ctx)) await closesSettled(ctx);
   // A round or a talk session never starts beside an agent that holds its Claude session or its name (A11-154): one that works holds it back, a leftover is closed.
   settleSessions(ctx);
   // A batch is planned together only while this machine's planner plans batches: otherwise each of its tickets is planned alone.

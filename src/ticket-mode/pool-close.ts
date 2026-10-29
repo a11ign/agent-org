@@ -23,6 +23,9 @@ export function closeWorkspaceLater(ctx: PoolContext, workspace: string): void {
   void close.finally(() => ctx.workspaceCloses.delete(close));
 }
 
+/** Whether a close is out. A caller that waits only when one is adds no turn to a pass when none is, so a pass that nothing waits on ends when it did. */
+export const closesOut = (ctx: PoolContext): boolean => ctx.workspaceCloses.size > 0;
+
 /** Resolves once every close that was out when it was called has ended. */
 export const closesSettled = async (ctx: PoolContext): Promise<void> => {
   await Promise.all([...ctx.workspaceCloses]);
