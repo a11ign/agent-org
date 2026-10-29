@@ -75,6 +75,9 @@ function world({ queue = nextStepQueue(), pull = { conflicting: true }, listable
   const sweep = async () => {
     await pool.watchFeedback();
     await pool.keptWatchDone();
+    // The sweep wakes a pass (`tick`), which lists herdr without holding the loop (A11-282) and so ends a few turns after the sweep: it is waited for, or its writes land between two reads of the store.
+    await pool.startReadsSettled();
+    await new Promise((resolve) => setTimeout(resolve, 20));
   };
   const entry = (): Entry => find(fixture.store.get(), KEY)!;
   const events = () => logOf(fixture.store.get(), KEY).filter((event) => event.kind === "base-merge").map((event) => (event.kind === "base-merge" ? event.step : ""));

@@ -10,6 +10,7 @@
 // ROW MODE'S GITHUB OPERATIONS are an optional `rows` group of this contract, not a second plugin (`docs/adr/0002-row-mode-github-is-an-optional-part-of-the-code-host-contract.md`); the group is declared in `code-host-rows.ts`.
 //
 // 3.0 (A11-379): `readReviewClaims` and `writeReviewClaim` ANSWER A PROMISE, where they answered the value, which is a MAJOR change: the reviewer's start made both as a synchronous `gh` on the board's thread, and held the loop for each. A promise resolves to what the call answered before (`{ unreadable }` and a refusal text included, never a rejection for a call GitHub refused), and a host runs both without holding the process still. A plugin of major 2 is refused (`READ_MAJORS`), since its claim calls answer the value.
+// 2.2 (A11-282): `repositories.readRepositoriesAsync` and `sweepRetargetsAsync`, both OPTIONAL: the organisation's repositories, and the sweep of the stacked pull requests' bases, answering a promise, which the board's clone sweep and its restack sweep read, so a `gh` of a second no longer holds the board thread. A host without it is read through `readRepositories`, as before; a minor only adds.
 // 2.1 (A11-365): `readCallCounts`, OPTIONAL: how many calls the host has made to the place pull requests live (`GithubCallCounts`: in total, in the last minute, by kind, how many a conditional read answered as unchanged, and the current and last sweep), which `/api/health` serves so a day's rate can be read from the board; and `refreshPull`, OPTIONAL: drop what the host holds of the repository of a pull request, so the next read of it is a fresh one. A host may read a repository's pull requests ONCE per sweep and share the reading (the GitHub plugin does), so a read is as old as the sweep; a caller that records what it read to compare it later (the head and the description a stand-off round is given) refreshes first. A plugin of 2.0 is read as one that counts none and holds nothing back, and `/api/health` then says no counts.
 // 2.0 (A11-356): `readOwnLogin`, `readPullFeedback`, `readReviewState`, `readReplies`, `readPullState`, `openPullUrlsOf`, `readBranchCi`, `openDependencyPulls` and `readMergedFindings` ANSWER A PROMISE, where they answered the value, which is a MAJOR change: the board's loop made them on every sweep, and a synchronous `gh` held it for a second each (755 holds in 10 minutes). A promise resolves to what the read answered before, `null` for "could not ask" included, and REJECTS where the read threw (`readReviewState` where the reviewer's gate does not load). A host reads them without holding the process still, and reads the open pull requests of a repository once for every pull request and every caller of it. A plugin of major 1 is refused (`READ_MAJORS`), since its reads answer the value.
 // 1.28 (A11-342): `PullFeedback.blocked` and `PullFeedback.cancelledRequired`, both OPTIONAL: whether the host says the pull request is BLOCKED from merging (GitHub's `mergeStateStatus: BLOCKED`), and the cancelled runs of its required checks on the head when every non-green run of a required check there is a cancelled one; and `rerunRuns`, OPTIONAL: rerun whole runs, which is how the board answers an approved, armed pull request that sits BLOCKED behind a cancelled duplicate run of its required check (a concurrency group cancelled one of two runs of one head, and the cancelled `gate` blocks the merge though the other run's `gate` is green). A plugin of 1.27 is read as one that says none of the three, and the board then reruns nothing.
@@ -336,6 +337,11 @@ export interface CodeHostRepositories {
   readOwners(): readonly RepositoryOwner[] | null;
   /** The owner's repositories the account can reach, archived ones left out, by name. Null: could not ask, or a list cut off at its limit. */
   readRepositories(owner: RepositoryOwner): readonly HostRepository[] | null;
+  /**
+   * {@link CodeHostRepositories.readRepositories} answering a promise (contract 2.2), OPTIONAL: the board's clone sweep lists the organisation's repositories with it, so the board thread's loop is not held for the second `gh repo list` takes. A host without it is
+   * read through the synchronous one.
+   */
+  readRepositoriesAsync?(owner: RepositoryOwner): Promise<readonly HostRepository[] | null>;
   /** The repository a git remote URL names on this host, or null for another host's URL. Pure: it reads nothing. */
   repositoryOfRemote(url: string): HostRepository | null;
   /** The command {@link CodeHostRepositories.cloneRepository} runs, as a person would type it, for onboard to show before it runs. */
@@ -448,6 +454,11 @@ export interface CodeHost extends CodeHostPort {
    * base whose branch is gone is said. A pull request that cannot be read keeps the note it had, and its head is never touched.
    */
   sweepRetargets(sweep: RetargetRequest): Record<string, string>;
+  /**
+   * {@link CodeHost.sweepRetargets} answering a promise (contract 2.2), OPTIONAL: the board's sweep of the stacked pull requests asks it, so its `gh` reads, up to five for each pull request, hold nothing. The same notes, the same retargets, in the same order. A host
+   * without it is read through the synchronous one.
+   */
+  sweepRetargetsAsync?(sweep: RetargetRequest): Promise<Record<string, string>>;
   /**
    * What the merged pull request at `url` found (contract 1.4), or null for "could not ask": a pull request that has not merged is null too, since its findings are not final. Null is never "it
    * found nothing". A host without it passes no findings on.

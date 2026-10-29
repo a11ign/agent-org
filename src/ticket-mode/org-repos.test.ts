@@ -6,7 +6,7 @@ import { chmodSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync,
 import { dirname, join } from "node:path";
 import { tmpDir } from "../lib/tmp-fixture.ts";
 import { createFakeCodeHost } from "../plugins/fakes/code-host.ts";
-import { addCloneToHostFile, cloneKeyOf, cloneRoot, ensureCloned, namedIn, ownersOf, readOrganisation, unclonedOf } from "./org-repos.ts";
+import { addCloneToHostFile, cloneKeyOf, cloneRoot, ensureCloned, namedIn, ownersOf, readOrganisation, readOrganisationAsync, unclonedOf } from "./org-repos.ts";
 import type { Git } from "./worktree.ts";
 
 /** A checkout of `fullName` at `path`: a folder whose `.git/config` names its origin, which is all the board reads of a clone. */
@@ -38,6 +38,20 @@ test("the organisation is the owner of the clones' origins, listed live: every r
   const read = readOrganisation(clones, host);
   assert.ok("repositories" in read);
   assert.deepEqual(read.repositories.map(({ fullName }) => fullName), ["acme/web", "acme/tools", "acme/corpus", "acme/.github"]);
+});
+
+test("A11-282: the organisation is listed through the code host's asynchronous read when it has one, and through the synchronous one when it has not", async () => {
+  const { clones, host } = machine();
+  const asked: string[] = [];
+  const asynchronous = { ...host, repositories: { ...host.repositories!, readRepositories: () => { asked.push("sync"); return null; },
+    readRepositoriesAsync: (owner: { login: string }) => { asked.push(`async ${owner.login}`); return Promise.resolve(host.repositories!.readRepositories({ login: owner.login, kind: "organisation" })); } } };
+  const read = await readOrganisationAsync(clones, asynchronous);
+  assert.deepEqual(asked, ["async acme"], "the synchronous read, which holds the process still, is not asked");
+  assert.deepEqual(read, readOrganisation(clones, host), "and the answer is the one the synchronous read gives");
+  assert.deepEqual(await readOrganisationAsync(clones, host), readOrganisation(clones, host), "a code host with no asynchronous read is read synchronously");
+  assert.match(((await readOrganisationAsync({ lone: join(machine().root, "nowhere") }, host)) as { unreadable: string }).unreadable, /no clone names the organisation/);
+  const failing = { ...host, repositories: { ...host.repositories!, readRepositoriesAsync: () => Promise.resolve(null) } };
+  assert.match(((await readOrganisationAsync(clones, failing)) as { unreadable: string }).unreadable, /repositories of acme could not be listed/);
 });
 
 test("a repository is cloned when no key names it and no clone's origin is it: a clone held under another key counts", () => {

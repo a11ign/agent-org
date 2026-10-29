@@ -13,7 +13,7 @@ import { dismiss as dismissRun, remove as removeQueued, retry as retryQueued } f
 import { retryRefusal } from "./queue/queue-retry-refusal.ts";
 import { refusal } from "./local-http.ts";
 import { logEvent } from "./queue/run-log.ts";
-import { checkGhWrapperAtStart, createBoard, dependencyUpdatesOf, FEEDBACK_MS, holdsKey, idleBlockersOf, REVIEW_START_MS, startFeedbackSweeps, type BoardDeps } from "./server.ts";
+import { checkGhWrapperAtStart, createBoard, runNodeProgram, dependencyUpdatesOf, FEEDBACK_MS, holdsKey, idleBlockersOf, REVIEW_START_MS, startFeedbackSweeps, type BoardDeps } from "./server.ts";
 import type { Outcome } from "./queue/queue-entries-and-outcomes.ts";
 import { DEPENDENCY_PULL_AUTHOR } from "../plugins/contracts/code-host.ts";
 import type { Ticket, TicketSource } from "./source.ts";
@@ -831,25 +831,43 @@ test("the instance answers no tailnet Host: it is reached on its loopback alone"
 // A11-84: THE INSTANCE CHECKS THE ROUTING WRAPPER AT START-UP IN A CHILD PROCESS, LOUDLY, AND STARTS ANYWAY. The child runs the host module's check, which these
 // tests stub: what the check finds and re-renders is the host module's, tested in `packaging/gh-wrapper-guard.test.ts`.
 
-test("A11-84: the start-up runs the host module's check in a child process, and a clean run says nothing", () => {
+test("A11-84: the start-up runs the host module's check in a child process, and a clean run says nothing", async () => {
   const said: string[] = [];
   const asked: string[] = [];
-  checkGhWrapperAtStart({ err: (line) => said.push(line), run: (program) => { asked.push(program); return { status: 0 }; } });
+  await checkGhWrapperAtStart({ err: (line) => said.push(line), run: (program) => { asked.push(program); return { status: 0 }; } });
   assert.equal(asked.length, 1);
   assert.match(asked[0], /host-units\/gh-wrapper-and-notes\.ts".*\.then\(\(host\) => host\.startupGhWrapper\(\)\)/s, "the child loads the host module and runs its check");
   assert.equal(said.join(""), "", "the child logs its own findings, so a clean start adds nothing");
 });
 
-test("A11-84: a child that exits non-zero is an ERROR line, and the instance is not stopped: the check returns", () => {
+test("A11-84: a child that exits non-zero is an ERROR line, and the instance is not stopped: the check returns", async () => {
   const said: string[] = [];
-  assert.doesNotThrow(() => checkGhWrapperAtStart({ err: (line) => said.push(line), run: () => ({ status: 1 }) }));
+  await assert.doesNotReject(checkGhWrapperAtStart({ err: (line) => said.push(line), run: () => ({ status: 1 }) }));
   assert.equal(said.join(""), "ERROR gh wrapper: cannot be checked (the check exited 1), so the instance does not know its App identity is in place\n");
 });
 
-test("A11-84: a child that cannot be started is an ERROR line, first line only, and the instance still starts", () => {
+test("A11-84: a child that cannot be started is an ERROR line, first line only, and the instance still starts", async () => {
   const said: string[] = [];
-  assert.doesNotThrow(() => checkGhWrapperAtStart({ err: (line) => said.push(line), run: () => ({ status: null, error: new Error("spawn node ENOENT\nmore") }) }));
+  await assert.doesNotReject(checkGhWrapperAtStart({ err: (line) => said.push(line), run: () => Promise.resolve({ status: null, error: new Error("spawn node ENOENT\nmore") }) }));
   assert.equal(said.join(""), "ERROR gh wrapper: cannot be checked (spawn node ENOENT), so the instance does not know its App identity is in place\n");
+});
+
+test("A11-282: the start-up child runs without holding this thread's loop, and its exit status is the check's", async () => {
+  let turns = 0;
+  const timer = setInterval(() => { turns += 1; }, 20);
+  try {
+    const ended = await runNodeProgram("setTimeout(() => process.exit(3), 600)", 30_000);
+    assert.equal(ended.status, 3);
+    assert.ok(turns >= 10, `the loop turned ${turns} times while the child ran: a synchronous spawn would have turned it none`);
+  } finally {
+    clearInterval(timer);
+  }
+});
+
+test("A11-282: a start-up child ended by a signal is a failed check that says so, and a program that cannot be run is an answer and not a throw", async () => {
+  const cut = await runNodeProgram("setTimeout(() => {}, 60_000)", 300);
+  assert.equal(cut.status, null);
+  assert.match(cut.error?.message ?? "", /ended by SIGTERM/);
 });
 
 test("the instance mints a worker terminal's code for its key only, and says why there is none when the terminal is not set", async () => {

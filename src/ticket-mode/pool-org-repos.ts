@@ -14,7 +14,7 @@ import { repoOf } from "./board-view/pull-status-and-notes.ts";
 import { type PoolContext } from "./pool-context.ts";
 import { hostFilePath } from "./settings.ts";
 import { isPlanning, log, messageOf } from "./pool-state.ts";
-import { cloneKeyOf, ensureCloned, namedIn, readOrganisation, unclonedOf, type OrgReading } from "./org-repos.ts";
+import { cloneKeyOf, ensureCloned, namedIn, readOrganisation, readOrganisationAsync, unclonedOf, type OrgReading } from "./org-repos.ts";
 
 /** How much of a worker's `where` the log quotes. */
 const LOGGED_WHERE_CHARS = 80;
@@ -26,6 +26,15 @@ export const REROUTE_LIMIT = 2;
 export function organisationOf(ctx: PoolContext): OrgReading {
   try {
     return readOrganisation(ctx.settings.clones, ctx.codeHost);
+  } catch (err) {
+    return { unreadable: messageOf(err).split("\n")[0] };
+  }
+}
+
+/** {@link organisationOf} without holding the board thread's loop while the code host lists (A11-282): the clone sweep's. Never rejects. */
+async function organisationOfAsync(ctx: PoolContext): Promise<OrgReading> {
+  try {
+    return await readOrganisationAsync(ctx.settings.clones, ctx.codeHost);
   } catch (err) {
     return { unreadable: messageOf(err).split("\n")[0] };
   }
@@ -100,18 +109,18 @@ export async function cloneOrNull(ctx: PoolContext, repository: HostRepository):
 }
 
 /**
- * How long the clone sweep believes the organisation's list (A11-377). Listing it is a `gh repo list` for each owner, synchronous as the code host's reads are, and the sweep runs every few minutes, so each sweep held the
- * board's loop for a second or more. A repository made since is cloned within this long; a plan or a worker that names one reads the list fresh.
+ * How long the clone sweep believes the organisation's list (A11-377). Listing it is a `gh repo list` for each owner, synchronous as the code host's reads were, and the sweep runs every few minutes, so each sweep held the
+ * board's loop for a second or more (A11-282 made the listing asynchronous too, so a list read now holds nothing). A repository made since is cloned within this long; a plan or a worker that names one reads the list fresh.
  */
 export const ORGANISATION_SWEEP_MS = 15 * 60_000;
 
 const swept = new WeakMap<PoolContext, Readonly<{ at: number; repositories: readonly HostRepository[] }>>();
 
 /** The organisation's list for the clone sweep: the one read within {@link ORGANISATION_SWEEP_MS}, else read now. A list that could not be read is not kept, so the next sweep asks again. */
-function sweptOrganisation(ctx: PoolContext): OrgReading {
+async function sweptOrganisation(ctx: PoolContext): Promise<OrgReading> {
   const held = swept.get(ctx);
   if (held !== undefined && ctx.now() - held.at < ORGANISATION_SWEEP_MS) return { repositories: held.repositories };
-  const read = organisationOf(ctx);
+  const read = await organisationOfAsync(ctx);
   if ("repositories" in read) swept.set(ctx, { at: ctx.now(), repositories: read.repositories });
   return read;
 }
@@ -121,7 +130,7 @@ export async function cloneMissing(ctx: PoolContext): Promise<number> {
   if (ctx.cloneSweep.busy) return 0;
   ctx.cloneSweep.busy = true;
   try {
-    const organisation = sweptOrganisation(ctx);
+    const organisation = await sweptOrganisation(ctx);
     if ("unreadable" in organisation) {
       log(`the organisation's repositories were not cloned: ${organisation.unreadable}`);
       return 0;

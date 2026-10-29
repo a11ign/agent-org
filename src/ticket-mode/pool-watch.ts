@@ -1,7 +1,7 @@
 // @ts-check
 // module: watching the runs -- each run's status from herdr, what its outcome settles, and the tick that drives a pass
 
-import { readAgents } from "../herdr-agents.ts";
+import { readAgentsAsync } from "../herdr-agents.ts";
 import { herdrRefusal } from "./pool-herdr.ts";
 import { log, messageOf, missedAgain, publishPlace, runMembers, runPlace, sameRun, update, updateEach, writerPlace } from "./pool-state.ts";
 import { close, end, headCommitsOf, pullFilesOf, pullHeadsOf, recordWrittenStep, settle } from "./pool-settle.ts";
@@ -92,10 +92,10 @@ const BACKGROUND_GONE_PROMPT = "your background work is gone; check it and carry
  * Claude session ids by workspace id. Keyed by WORKSPACE, not by agent name as `readAgentSessions` is: herdr names an agent only when its
  * `agent start` completes, and a start that a dialog held up past its wait never does (measured 2026-10-13, `name: null` on a running worker).
  */
-function readSessionIds(ctx: PoolContext): Map<string, string> {
-  const { herdr, settings } = ctx;
+async function readSessionIds(ctx: PoolContext): Promise<Map<string, string>> {
+  const { settings } = ctx;
   try {
-    const agents = JSON.parse(herdr(["--session", settings.herdrSession, "agent", "list"]))?.result?.agents;
+    const agents = JSON.parse(await listingRun(ctx)(["--session", settings.herdrSession, "agent", "list"]))?.result?.agents;
     if (!Array.isArray(agents)) return new Map();
     return new Map(agents.filter((a) => a?.workspace_id && a?.agent_session?.value).map((a) => [String(a.workspace_id), String(a.agent_session.value)]));
   } catch {
@@ -103,13 +103,30 @@ function readSessionIds(ctx: PoolContext): Map<string, string> {
   }
 }
 
+/** How long a pass waits for one of herdr's listings, in ms: the cut a synchronous `herdr` call has always had. The wait holds no loop (A11-282). */
+const HERDR_READ_MS = 30_000;
+
+/** What herdr answers for a seat or pane that has ended, which every caller reads as gone and which the journal does not need on every pass. */
+const GONE_ANSWERS = ["agent_not_found", "pane_not_found"];
+
+/**
+ * A call to herdr that holds no loop (A11-282), saying herdr's own refusal on stderr when it fails, as the synchronous `herdrRun` did: a herdr that is down left its error in the journal on every pass, and the watch that
+ * stops on it must not do so in silence. The refusal is still thrown, for the caller that reads it.
+ */
+const listingRun = (ctx: PoolContext) => (args: string[]): Promise<string> => ctx.herdrAsync(args, HERDR_READ_MS).catch((err: unknown) => {
+  const said = String((err as Error)?.message ?? err).split("\n").slice(1).join(" ").trim() || String((err as Error)?.message ?? err).split("\n")[0];
+  if (!GONE_ANSWERS.some((answer) => said.includes(answer))) process.stderr.write(`${said}\n`);
+  throw err;
+});
+
 /** Read each live and parked run's status once: record any live run that has ended, and resume any parked one a person has answered. */
-function watch(ctx: PoolContext): void {
-  const { claudeSessions, herdr, session } = ctx;
-  const agents = readAgents((args) => herdr(args), session);
+async function watch(ctx: PoolContext): Promise<void> {
+  const { claudeSessions, session } = ctx;
+  // The two listings are asked of herdr without holding the loop (A11-282): a synchronous call held every write and every card for as long as herdr took, on every pass.
+  const agents = await readAgentsAsync(listingRun(ctx), session);
   if (agents === null) return;
   const status = new Map(agents.map((agent) => [agent.label, agent.status]));
-  for (const [workspace, id] of readSessionIds(ctx)) claudeSessions.set(workspace, id);
+  for (const [workspace, id] of await readSessionIds(ctx)) claudeSessions.set(workspace, id);
   readoptCrashed(ctx, agents);
   // A run whose workspace a restart brought back under a new id is reached there; then a run left at a prompt is resumed in this pass, before the watch below could end it for having no outcome (A11-279).
   reseatMoved(ctx, agents);
@@ -499,7 +516,7 @@ export async function tick(ctx: PoolContext): Promise<void> {
   try {
     do {
       pass.again = false;
-      watch(ctx);
+      await watch(ctx);
       // A run whose restored pane lost its environment is started again with it, before it is resumed (A11-279).
       const reseating = reseatRuns(ctx);
       if (reseating !== null) await reseating;
