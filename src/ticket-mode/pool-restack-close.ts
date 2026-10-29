@@ -3,6 +3,7 @@
 //
 // IT RUNS FROM `restackMember` (`pool-tracker.ts`), on a sweep after the one that restacked the member, so the read of its files is never the one made in the same pass as the merge. `retargetStacked` stays the one writer of a finished run's per-URL
 // notes: this returns the note and the caller records it. The close is the code host's optional `closePull` (contract 1.23), as the workers' account; a host without it gets a note that says the member is to be closed.
+import { stackBlockersOf } from "./board-view/waits-on.ts";
 import type { StackMergeFacts } from "../plugins/contracts/code-host.ts";
 import type { PoolContext } from "./pool-context.ts";
 import { settledByPulls } from "./board-view/pull-settled.ts";
@@ -72,7 +73,7 @@ export function followHead(ctx: PoolContext, key: string, url: string, from: str
 
 /** Whether another run that is not settled is stacked on this run's branch: closing its pull request would strand that run on a base that never merges. */
 const hasMembersAbove = (ctx: PoolContext, entry: Entry): boolean =>
-  ctx.store.get().entries.some((other) => other.ticket.key !== entry.ticket.key && (other.blockers ?? []).some((blocker) => blocker.key === entry.ticket.key && blocker.branch) && settledByPulls(other) === null);
+  ctx.store.get().entries.some((other) => other.ticket.key !== entry.ticket.key && stackBlockersOf(other).some((blocker) => blocker.key === entry.ticket.key && blocker.branch) && settledByPulls(other) === null);
 
 /** Whether the member is neither queued to merge nor merged, and is based on the default branch, which is where a restacked member is. */
 const isOpenOnDefaultBranch = ({ settled, base, defaultBranch }: Pick<StackMergeFacts, "base" | "defaultBranch" | "settled">): boolean => settled === null && base === defaultBranch;

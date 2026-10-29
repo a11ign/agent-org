@@ -1,6 +1,7 @@
 import type { FedTrouble, Wait, Woke } from "../wait-on/wait-types.ts";
 import type { QueueHead } from "../board-view/queue-head.ts";
 import { openPulls, type AfterMergeLine, type CheckHead, type PullHead, type StackBaseRecord } from "../board-view/view-types-and-filters.ts";
+import type { OverlapStackRecord } from "../board-view/overlap-stack.ts";
 import { isBeingPublished, isParked } from "../board-view/pull-status-and-notes.ts";
 import type { MergedStep } from "../board-view/plan-steps.ts";
 import type { PlannedStep } from "../plan-step-sections.ts";
@@ -290,6 +291,19 @@ export type Entry = Readonly<{
    * ({@link overlapWait}).
    */
   paths?: readonly string[];
+  /** The paths its ticket's Region names (`region-claims.ts`), as last read while it is queued or live; see `ViewEntry`. A queued run with no plan paths and no pull request claims them. */
+  regionPaths?: readonly string[];
+  /** The run this one was started stacked on because their files overlap (A11-374); see `OverlapStackRecord`. */
+  overlapStack?: OverlapStackRecord;
+  /** The commit this run's own branch is at on the remote of its repository, once the board read it pushed (A11-374); see `ViewEntry`. */
+  pushed?: Readonly<{ repo: string; head: string }>;
+  /**
+   * The conflict rounds the board started on each pull request, by URL (A11-374). A conflict round answers no review, so it is not one of the board's own rounds (`rounds`) and the cap does not count it; this count is what the 4th
+   * and later round of a pull request names the pull requests it keeps colliding with. Carried to the next round.
+   */
+  conflictRounds?: Readonly<Record<string, number>>;
+  /** The commit each pull request's base was at when its last conflict round was started, by URL (A11-374): a conflict at the same base is the worker's own failure to resolve it, and counts toward the cap. Carried to the next round. */
+  conflictBase?: Readonly<Record<string, string>>;
   /**
    * The paths each step section of its plan lists, by step number (A11-175), read with {@link paths} and only when a section lists any. A run on step N holds step N's, not the whole plan's
    * (`footprintOf`); a step whose section lists none is not in it. Carried to the run queued for the next step.
@@ -744,12 +758,12 @@ export function dismiss(queue: Queue, key: string, now?: number): Queue {
 export function retry(queue: Queue, key: string, now: number, why: RequeueWhy = "retry"): Queue {
   const entry = find(queue, key);
   if (entry === undefined || retryRefusal(entry) !== null) return queue;
-  const { ticket, repos, model, effort, plan, planned, session, review, published, feedback, asked, decisions, conflict, rounds, movedFrom, paths, stepPaths, plannedRepo, projectRepo, pullFiles, partial, declared, partialOverruled, steps, planSteps, afterMerge, afterMergePosted, stackBase, overlapOverride, checkHeads, queueHeads, briefedAgainst, plannedWith, afterRound, standoff, capPlans, freeRounds, opened } = entry;
+  const { ticket, repos, model, effort, plan, planned, session, review, published, feedback, asked, decisions, conflict, rounds, movedFrom, paths, stepPaths, plannedRepo, projectRepo, pullFiles, partial, declared, partialOverruled, steps, planSteps, afterMerge, afterMergePosted, stackBase, overlapOverride, checkHeads, queueHeads, briefedAgainst, plannedWith, afterRound, standoff, capPlans, freeRounds, opened, regionPaths, overlapStack, pushed, conflictRounds, conflictBase } = entry;
   // A review run that failed is retried as the same review round, resuming the same worker, so it does not start the ticket over, and a round
   // the board started still counts towards its cap. Any other run starts a fresh worker, whose session replaces this one. A ticket of a batch
   // is planned again on its own.
   const round = { ...(session ? { session } : {}), ...(published ? { published } : {}), ...(feedback !== undefined ? { feedback } : {}), ...(asked ? { asked } : {}), ...(decisions ? { decisions } : {}),
-    ...(conflict !== undefined ? { conflict } : {}), ...(overlapOverride ? { overlapOverride } : {}), ...(rounds !== undefined ? { rounds } : {}), ...carriedFields({ paths, stepPaths, plannedRepo, projectRepo, pullFiles, partial, declared, partialOverruled, steps, planSteps, afterMerge, afterMergePosted, stackBase, checkHeads, queueHeads, briefedAgainst, afterRound, standoff, capPlans, freeRounds, opened }) };
+    ...(conflict !== undefined ? { conflict } : {}), ...(overlapOverride ? { overlapOverride } : {}), ...(rounds !== undefined ? { rounds } : {}), ...carriedFields({ paths, stepPaths, plannedRepo, projectRepo, pullFiles, partial, declared, partialOverruled, steps, planSteps, afterMerge, afterMergePosted, stackBase, checkHeads, queueHeads, briefedAgainst, afterRound, standoff, capPlans, freeRounds, opened, regionPaths, overlapStack, pushed, conflictRounds, conflictBase }) };
   // The record of the board's move is carried over too: a retried run finds its ticket already started, and would move nothing to record again. So are the plan
   // steps already merged: a fresh worker for a step that crashed is still on that step (A11-168).
   const retried: Entry = { ticket, repos, model, effort, ...(plan ? { plan } : {}), ...(plannedWith ? { plannedWith } : {}), ...(planned ? { planned } : {}), ...(movedFrom ? { movedFrom } : {}), ...(steps ? { steps } : {}),
@@ -790,11 +804,12 @@ export function talkRound(entry: Entry, now: number): Entry {
 /**
  * The fields a review round carries from the run it continues, the ticket text it was briefed with, its paths, pull request files, partial declaration and what its pull requests declared, merged plan steps, the plan's step count, the After-merge lines listed and posted, the heads its red checks and the merge queue's removals were answered at, when its CI count began and what its next round is told of the ticket's CI spend (A11-261), and the next step a conflict round holds back (A11-286): only those the run has set. PURE.
  */
-const carriedFields = ({ blockAsked, opened, paths, stepPaths, plannedRepo, projectRepo, pullFiles, partial, declared, partialOverruled, steps, planSteps, afterMerge, afterMergePosted, stackBase, checkHeads, queueHeads, briefedAgainst, ciSince, ciTold, afterRound, standoff, plannedWith, capPlans, freeRounds }: Pick<Entry, "blockAsked" | "opened" | "capPlans" | "freeRounds" | "standoff" | "plannedWith" | "paths" | "stepPaths" | "plannedRepo" | "projectRepo" | "pullFiles" | "partial" | "declared" | "partialOverruled" | "steps" | "planSteps" | "afterMerge" | "afterMergePosted" | "stackBase" | "checkHeads" | "queueHeads" | "briefedAgainst" | "ciSince" | "ciTold" | "afterRound">) => ({
+const carriedFields = ({ blockAsked, opened, paths, stepPaths, plannedRepo, projectRepo, pullFiles, partial, declared, partialOverruled, steps, planSteps, afterMerge, afterMergePosted, stackBase, checkHeads, queueHeads, briefedAgainst, ciSince, ciTold, afterRound, standoff, plannedWith, capPlans, freeRounds, regionPaths, overlapStack, pushed, conflictRounds, conflictBase }: Pick<Entry, "regionPaths" | "overlapStack" | "pushed" | "conflictRounds" | "conflictBase" | "blockAsked" | "opened" | "capPlans" | "freeRounds" | "standoff" | "plannedWith" | "paths" | "stepPaths" | "plannedRepo" | "projectRepo" | "pullFiles" | "partial" | "declared" | "partialOverruled" | "steps" | "planSteps" | "afterMerge" | "afterMergePosted" | "stackBase" | "checkHeads" | "queueHeads" | "briefedAgainst" | "ciSince" | "ciTold" | "afterRound">) => ({
   ...(briefedAgainst ? { briefedAgainst } : {}), ...(paths ? { paths } : {}), ...(stepPaths ? { stepPaths } : {}), ...(plannedRepo !== undefined ? { plannedRepo } : {}), ...(projectRepo !== undefined ? { projectRepo } : {}), ...(pullFiles ? { pullFiles } : {}),
   ...(partial !== undefined ? { partial } : {}), ...(declared ? { declared } : {}), ...(partialOverruled ? { partialOverruled } : {}), ...(steps ? { steps } : {}), ...(planSteps !== undefined ? { planSteps } : {}), ...(afterMerge ? { afterMerge } : {}), ...(afterMergePosted ? { afterMergePosted } : {}), ...(stackBase ? { stackBase } : {}), ...(checkHeads ? { checkHeads } : {}), ...(queueHeads ? { queueHeads } : {}),
   ...(ciSince !== undefined ? { ciSince } : {}), ...(ciTold ? { ciTold } : {}), ...(afterRound ? { afterRound } : {}), ...(standoff ? { standoff } : {}), ...(plannedWith ? { plannedWith } : {}),
   ...(capPlans !== undefined ? { capPlans } : {}), ...(freeRounds !== undefined ? { freeRounds } : {}), ...(blockAsked ? { blockAsked } : {}), ...(opened ? { opened } : {}),
+  ...(regionPaths ? { regionPaths } : {}), ...(overlapStack ? { overlapStack } : {}), ...(pushed ? { pushed } : {}), ...(conflictRounds ? { conflictRounds } : {}), ...(conflictBase ? { conflictBase } : {}),
 });
 
 /** The tracker states a finished run can end in, after which its ticket is not read again. */

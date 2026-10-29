@@ -1,7 +1,7 @@
 // no-token: gh -- the queue and the board's words, in memory; nothing is read or spawned
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { heldClaims, overlapHolders, overlapWait } from "./board-view/overlap-hold.ts";
+import { claimOf, heldClaims, holderClaimOf, overlapHolders, overlapWait } from "./board-view/overlap-hold.ts";
 import { runStatus, waitNote } from "./board-view/pull-status-and-notes.ts";
 import type { ViewEntry } from "./board-view/view-types-and-filters.ts";
 import { enqueue } from "./queue/queue-entries-and-outcomes.ts";
@@ -184,3 +184,33 @@ test("A11-272: a run that holds none of a queued run's files, is its own ticket,
   assert.deepEqual(overlapHolders(waiting, [elsewhere, blocker, waiting]), [], "A11-100 is a blocker, sequenced on purpose");
   assert.deepEqual(overlapHolders({ ...waiting, paths: [] }, [parked("A11-231", [])]), [], "a run with no paths contests none");
 });
+
+// A11-374: what a queued run claims is its plan's paths, else its open pull requests' files, else its ticket's Region, else its whole repository; a run at work with no files known holds its whole repository.
+{
+  const REPO = "agent-org";
+  const PULL = "https://github.com/a11ign/agent-org/pull/30";
+  const queuedRun = (key: string, over: Record<string, unknown> = {}) => ({ ticket: { key }, phase: "queued", projectRepo: REPO, ...over }) as unknown as ViewEntry;
+  const working = (key: string, over: Record<string, unknown> = {}) => ({ ticket: { key }, phase: "running", projectRepo: REPO, ...over }) as unknown as ViewEntry;
+  const withPull = { opened: [{ repo: REPO, url: PULL }], pullStates: { [PULL]: "open" }, pullFiles: { [PULL]: ["src/pull.ts"] } };
+
+  test("A11-374: a queued run claims its plan's paths first, then its open pull requests' files, then its Region, then its repository", () => {
+    assert.deepEqual(claimOf(queuedRun("A", { paths: [`${REPO}:src/plan.ts`], ...withPull, regionPaths: [":src/region.ts"] })), { paths: [`${REPO}:src/plan.ts`], repoWide: null });
+    assert.deepEqual(claimOf(queuedRun("A", { paths: [], ...withPull, regionPaths: [":src/region.ts"] })), { paths: [`${REPO}:src/pull.ts`], repoWide: null }, "a plan that names no path gives way to the pull request");
+    assert.deepEqual(claimOf(queuedRun("A", { paths: [], regionPaths: [":src/region.ts", "lab:docs/x.md"] })), { paths: [`${REPO}:src/region.ts`, "lab:docs/x.md"], repoWide: null }, "then the Region, with the run's repository for a bare path");
+    assert.deepEqual(claimOf(queuedRun("A", { paths: [] })), { paths: [], repoWide: REPO }, "and, with none of these, the whole repository");
+    assert.deepEqual(claimOf(queuedRun("A", { projectRepo: undefined })), { paths: [], repoWide: null }, "a run with no repository known claims nothing");
+    assert.deepEqual(claimOf(queuedRun("A", { overlapOverride: { holder: "B", pull: null, path: null, at: 1 } })), { paths: [], repoWide: null }, "nor does one started anyway");
+    assert.deepEqual(claimOf(queuedRun("A", { review: [{ url: PULL }] })), { paths: [], repoWide: null }, "nor does a review round");
+  });
+
+  test("A11-374: a run at work with no files known holds its whole repository, and two such runs overlap; a run that names files overlaps it, and one in another repository does not", () => {
+    assert.deepEqual(holderClaimOf(working("B")), { paths: [], repoWide: REPO });
+    assert.deepEqual(holderClaimOf(working("B", { regionPaths: [":src/b.ts"] })), { paths: [`${REPO}:src/b.ts`], repoWide: null }, "its Region, when it has one");
+    assert.deepEqual(holderClaimOf(working("B", { plan: { model: "opus", effort: "high" } })), { paths: [], repoWide: null }, "a planning run changes no file");
+    assert.equal(overlapWait(queuedRun("A"), [working("B")])?.repoWide, REPO, "two runs that name no file");
+    assert.equal(overlapWait(queuedRun("A", { paths: [`${REPO}:src/a.ts`] }), [working("B")])?.repoWide, REPO, "a run that names files meets the run that names none");
+    assert.equal(overlapWait(queuedRun("A", { paths: [`${REPO}:src/a.ts`] }), [working("B", { paths: [`${REPO}:src/b.ts`] })]), null, "but not a run that names others");
+    assert.equal(overlapWait(queuedRun("A"), [working("B", { projectRepo: "lab" })]), null, "and not a run in another repository");
+    assert.equal(overlapHolders(queuedRun("A"), [working("B")]).join(), "B", "the wait cycles see the same overlap");
+  });
+}

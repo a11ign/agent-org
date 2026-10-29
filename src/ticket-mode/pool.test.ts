@@ -2166,8 +2166,8 @@ test("A11-150: a stacked run whose blocker's moved branch conflicts with it is h
     "still at the commit it was branched from, conflicted against the new head");
   assert.equal(gitIn(worktree, ["rev-parse", "HEAD"]), before, "the merge is aborted, and the run's branch is as it was");
   assert.equal(gitIn(worktree, ["status", "--porcelain"]), "", "no merge is left in progress");
-  assert.deepEqual([entry("NBF-2").phase, entry("NBF-2").rounds], ["queued", 1], "the conflict round is queued for the run's own worker");
-  assert.equal(entry("NBF-2").feedback, `${PULL.url} conflicts with its base branch nbf-1-fit.\nMerging NBF-1's branch \`nbf-1-fit\` conflicted in ticket.txt.`);
+  assert.deepEqual([entry("NBF-2").phase, entry("NBF-2").rounds], ["queued", 0], "the conflict round is queued for the run's own worker, and is no round of the board's own (A11-374)");
+  assert.equal(entry("NBF-2").feedback, `Conflict 1 on #2:\n${PULL.url} conflicts with its base branch nbf-1-fit.\nMerging NBF-1's branch \`nbf-1-fit\` conflicted in ticket.txt.`);
   assert.equal(rebaseNote(entry("NBF-2")), "Resolving a conflict with NBF-1 in ticket.txt", "the board names the conflict, not a person");
 });
 
@@ -2182,10 +2182,10 @@ test("A11-150: a parked run's workspace is open, so the sweep merges nothing int
   assert.equal(closes(h, "w1"), 0, "the parked workspace is not closed by the sweep");
 });
 
-test("A11-150: a conflicting merge at the board's round cap starts no round, and the note names the cap, not the conflict", async () => {
+test("A11-150: a conflicting merge at the board's round cap, at the head the last conflict round was started against, starts no round, and the note names the cap, not the conflict", async () => {
   const { pool, entry, setRun, moveBlocker } = stackedRun("ticket-pool-stack-capped-");
-  setRun({ ...FINISHED_WATCHED, rounds: 3 });
   const moved = moveBlocker("ticket.txt", "theirs\n");
+  setRun({ ...FINISHED_WATCHED, rounds: 3, conflictBase: { [PULL.url]: `NBF-1 ${moved}` } });
   await pool.rebaseStacked();
   assert.equal(entry("NBF-2").phase, "finished", "no round is queued");
   assert.match(entry("NBF-2").handedBack ?? "", /^The pull requests keep getting feedback: the board answered 3 rounds/);
@@ -2643,8 +2643,8 @@ test("A11-82: a pull request that conflicts with its base resumes its worker onc
   await pool.watchFeedback();
   await pool.watchFeedback();
   await roundStarted();
-  assert.deepEqual([entry("NBF-1").phase, entry("NBF-1").rounds, entry("NBF-1").review], ["running", 1, [approvedPr]]);
-  assert.equal(entry("NBF-1").feedback, `${approvedPr.url} conflicts with its base branch main.`);
+  assert.deepEqual([entry("NBF-1").phase, entry("NBF-1").rounds, entry("NBF-1").review], ["running", 1, [approvedPr]], "no clone is read here, so the base is not known and the round counts as every conflict round did");
+  assert.equal(entry("NBF-1").feedback, `Conflict 1 on #1:\n${approvedPr.url} conflicts with its base branch main.`);
   const starts = h.calls.filter((args) => args.includes("start"));
   assert.equal(starts.length, 1, "the same worker is started once, not once per watch");
   assert.deepEqual(starts[0].slice(starts[0].indexOf("--resume"), starts[0].indexOf("--resume") + 2), ["--resume", "session-t-nbf-1"]);
@@ -2709,7 +2709,7 @@ test("A11-89: a parked run whose pull request conflicts is resumed: its workspac
   await pool.watchFeedback();
   await watchRound(pool);
   assert.deepEqual([entry("NBF-1").phase, entry("NBF-1").rounds, entry("NBF-1").review], ["running", 1, [approvedPr]]);
-  assert.equal(entry("NBF-1").feedback, `${approvedPr.url} conflicts with its base branch main.`);
+  assert.equal(entry("NBF-1").feedback, `Conflict 1 on #1:\n${approvedPr.url} conflicts with its base branch main.`);
   const starts = h.calls.filter((args) => args.includes("start"));
   assert.equal(closes(h, "w2"), 1, "the parked workspace is closed once, before the round starts");
   const brief = readFileSync(join(dir, "brief.md"), "utf8");
@@ -2864,7 +2864,7 @@ test("A11-82: a paused queue reads no plan, and reads each one once it is unpaus
   assert.equal(entry("NBF-1").phase, "running");
 });
 
-test("A11-82: tickets queued and planned together whose plans share a path, with no order between them, are worked one after the other", async () => {
+test("A11-82: tickets queued and planned together whose plans share a path, with no order between them, are worked one after the other: the second waits for the first to push a branch to stack on (A11-374)", async () => {
   const tracker = batchTracker(planFiles({ "NBF-1": ["nbl-ui-netbox:src/a.ts"], "NBF-2": ["nbl-ui-netbox:src/a.ts"] })).tracker;
   let ran: ReturnType<typeof setup> | undefined;
   await captureStderr(async () => {
@@ -2882,7 +2882,7 @@ test("A11-82: tickets queued and planned together whose plans share a path, with
   const { entry, store } = ran!;
   assert.deepEqual([entry("NBF-1").phase, entry("NBF-2").phase], ["running", "queued"], "two slots free, one shared file: the second waits");
   assert.equal(runStatus(entry("NBF-2"), store.get().entries), "blocked");
-  assert.equal(waitNote(entry("NBF-2"), store.get().entries), "Waits on NBF-1: both touch src/a.ts");
+  assert.equal(waitNote(entry("NBF-2"), store.get().entries), "Waits for NBF-1 to push its branch: both touch src/a.ts");
 });
 
 test("A11-117: a pull request whose file list was cut short holds only the files listed, so a run whose own paths are not among them starts beside it", async () => {
@@ -5780,7 +5780,7 @@ test("A11-154: a conflict and a rerun in one watch queue the conflict round and 
   const ci = withCi(ghFor(pulls), { 11: RUNNER_LOST });
   const ctx = await needsHumanRun(ci);
   await watchRound(ctx.pool);
-  assert.deepEqual([ctx.entry("NBF-1").phase, ctx.entry("NBF-1").feedback, ci.reruns.length], ["running", `${approvedPr.url} conflicts with its base branch main.`, 1]);
+  assert.deepEqual([ctx.entry("NBF-1").phase, ctx.entry("NBF-1").feedback, ci.reruns.length], ["running", `Conflict 1 on #1:\n${approvedPr.url} conflicts with its base branch main.`, 1]);
   assert.equal(ctx.entry("NBF-1").checkHeads?.[approvedPr.url]?.step, "rerun");
 });
 

@@ -83,9 +83,9 @@ export function publishResult(outcomeText: string, dir: string): Readonly<{ link
 /**
  * What the board did about a pull request that conflicts with its base or is behind it, at one head (A11-286), as the pool keeps it in memory by the pull request's address: `head` is the commit it was done at, and `step` is
  * what was done ({@link BaseMergeStep}), or `listing` while the files of a real conflict are being read, or `refused` when the host would not update the branch (`reason`, GitHub's first line), which is asked again on the next sweep.
- * `files` are the files a real conflict touches: null when they could not be listed, absent before they were. `at` is when the step was recorded (the pool's clock), which tells a merge the host accepted that never moved the head.
+ * `files` are the files a real conflict touches: null when they could not be listed, absent before they were. `baseSha` is the commit the base was at when they were listed, null when it could not be read (A11-374). `at` is when the step was recorded (the pool's clock), which tells a merge the host accepted that never moved the head.
  */
-export type BaseMerge = Readonly<{ head: string; step: BaseMergeStep | "listing" | "refused"; files?: readonly string[] | null; reason?: string; at?: number }>;
+export type BaseMerge = Readonly<{ head: string; step: BaseMergeStep | "listing" | "refused"; files?: readonly string[] | null; baseSha?: string | null; reason?: string; at?: number }>;
 
 /** What the board has done about each pull request's base, by the pull request's address. */
 export type BaseMerges = ReadonlyMap<string, BaseMerge>;

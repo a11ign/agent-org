@@ -7,6 +7,7 @@ import { log, messageOf, missedAgain, publishPlace, runMembers, runPlace, sameRu
 import { close, end, headCommitsOf, pullFilesOf, pullHeadsOf, recordWrittenStep, settle } from "./pool-settle.ts";
 import { type RunPlace, worktreesIn } from "./pool-paths.ts";
 import { checkRound, conflictRound, feedbackRound, markResumed, observe, observePublish, recordCheckHeads, recordPullFiles, recordRepos, recordStackBase, roundsLeft, unpark, watchWorking } from "./queue/queue-transitions.ts";
+import { conflictRoundLeft, type ConflictOn } from "./queue/queue-conflict-rounds.ts";
 import { answerStartDialog, fill } from "./pool-start.ts";
 import { refreshStartReads } from "./pool-start-reads.ts";
 import { declineSafetyPrompt, readPrompt, retellDeclined, untoldDecline } from "./pool-decline.ts";
@@ -664,7 +665,7 @@ async function watchEach(ctx: PoolContext): Promise<void> {
         recordQueueAnswer(ctx, entry, removals.heads);
         if (blocks.length > 0) update(ctx, (queue) => recordBlockAsked(queue, entry.ticket.key, Object.fromEntries(blocks.map(({ url, head }) => [url, head]))));
         // A round that answers only checks which count toward no cap (A11-343) is not one of the board's own rounds, and a run that has used them goes to the planner and not to a person.
-        update(ctx, (queue) => feedbackRound(queue, entry.ticket.key, lines.join("\n"), now(), checks.heads, checksRoundOptions(ctx, checks, lines)));
+        update(ctx, (queue) => feedbackRound(queue, entry.ticket.key, lines.join("\n"), now(), checks.heads, conflictAware(ctx, checksRoundOptions(ctx, checks, lines), { readable, lines })));
         queued = true;
       }
       continue;
@@ -699,6 +700,23 @@ const roundOptions = (ctx: PoolContext): RoundOptions => ({ planner: ctx.setting
 
 /** The same, for a pass whose only feedback is `checks`' red checks that count toward no cap (A11-343): the round is the worker's and counts toward nothing. */
 const checksRoundOptions = (ctx: PoolContext, checks: CheckAnswer, lines: readonly string[]): RoundOptions => ({ ...roundOptions(ctx), uncounted: answersOnlyUncounted(checks, lines) });
+
+/** `options` with the conflicts the round answers when they are all it answers, so it is not one of the board's own rounds (A11-374): the run has one line of feedback, the conflict lines of its pull requests. PURE apart from the read of the base merges. */
+function conflictAware(ctx: PoolContext, options: RoundOptions, { readable, lines }: { readable: readonly { url: string; read: PullFeedback }[]; lines: readonly string[] }): RoundOptions {
+  const conflictOnly = lines.length === 1 ? conflictOnlyOf(ctx, readable, lines[0]) : undefined;
+  return conflictOnly === undefined ? options : { ...options, conflictOnly };
+}
+
+/**
+ * The conflicts a round answers when they are all it answers (A11-374), by pull request, with the commit each one's base was at when the board listed its files: `feedback` is the run's whole feedback in one line, and it names conflicts alone when it
+ * is the conflict lines of `readable` and no review feedback beside them. Undefined when it is anything else, or no pull request conflicts. PURE apart from the read of the base merges.
+ */
+function conflictOnlyOf(ctx: PoolContext, readable: readonly { url: string; read: PullFeedback }[], feedback: string): ConflictOn | undefined {
+  if (feedback !== conflictLines(readable, ctx.baseMerges)) return undefined;
+  const conflicting = readable.filter(({ read }) => read.state === "open" && read.conflicting);
+  if (conflicting.length === 0) return undefined;
+  return Object.fromEntries(conflicting.map(({ url }) => [url, { base: ctx.baseMerges.get(url)?.baseSha ?? null, files: ctx.baseMerges.get(url)?.files }]));
+}
 
 /** Route the stand-off the run holds now (A11-290), read afresh: the reviewer lines above may have just recorded it. Returns whether a round was queued. */
 function routeStandoff(ctx: PoolContext, key: string): boolean {
@@ -899,7 +917,9 @@ function resumeUnwatched(ctx: PoolContext, entry: Entry, readable: readonly { ur
     recordWithoutRound(ctx, entry, checks, removals);
     return false;
   }
-  if (!roundsLeft(entry)) {
+  // A round that answers only a conflict answers no review, so it is not one of the board's own rounds (A11-374).
+  const conflictOnly = red.length === 0 && removals.conflict === null ? conflictOnlyOf(ctx, readable, feedback) : undefined;
+  if (!(conflictOnly === undefined ? roundsLeft(entry) : conflictRoundLeft(entry, conflictOnly))) {
     if (red.length > 0) {
       recordQueueAnswer(ctx, entry, removals.heads);
       update(ctx, (queue) => checkRound(queue, key, feedback, now(), checks.heads, roundOptions(ctx)));
@@ -914,18 +934,18 @@ function resumeUnwatched(ctx: PoolContext, entry: Entry, readable: readonly { ur
     return false;
   }
   recordQueueAnswer(ctx, entry, removals.heads);
-  update(ctx, (queue) => checkRound(queue, key, feedback, now(), checks.heads, checksRoundOptions(ctx, checks, lines)));
+  update(ctx, (queue) => checkRound(queue, key, feedback, now(), checks.heads, { ...checksRoundOptions(ctx, checks, lines), ...(conflictOnly === undefined ? {} : { conflictOnly }) }));
   return true;
 }
 
 /**
  * Start the round that merges a stacked branch's conflicting base in, for a finished run the sweep found conflicting with its blocker's moved branch (A11-150).
- * A run the board watches takes it as {@link feedbackRound} does, so at the round cap the run is handed back with the conflict named. Any other run the board
- * resumes on a conflict takes it as {@link conflictRound} does, which queues nothing at the cap.
+ * A run the board watches takes it as {@link feedbackRound} does, so at the round cap (reached only by a conflict at a base that did not move, A11-374) the run is handed back with the conflict named. Any other run the board
+ * resumes on a conflict takes it as {@link conflictRound} does, which queues nothing at the cap. `on` is what each pull request conflicts with.
  */
-export function startStackConflictRound(ctx: PoolContext, key: string, feedback: string): void {
+export function startStackConflictRound(ctx: PoolContext, key: string, feedback: string, on: ConflictOn): void {
   const { now } = ctx;
   const entry = ctx.store.get().entries.find((e) => e.ticket.key === key);
   if (entry === undefined) return;
-  update(ctx, (queue) => (isWatched(entry) ? feedbackRound(queue, key, feedback, now(), undefined, roundOptions(ctx)) : conflictRound(queue, key, feedback, now())));
+  update(ctx, (queue) => (isWatched(entry) ? feedbackRound(queue, key, feedback, now(), undefined, { ...roundOptions(ctx), conflictOnly: on }) : conflictRound(queue, key, feedback, now(), on)));
 }

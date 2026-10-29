@@ -5,7 +5,8 @@ import { isNotMerging, isReadyToMerge, waitsOnlyOnReview } from "./pull-readines
 import { overlapWait, type OverlapWait } from "./overlap-hold.ts";
 import { currentStepOf, currentStepPaths, stepNamed } from "./plan-steps.ts";
 import { parsePull } from "./pull-url.ts";
-import { isStoppedFor, sequencedBlockers, ticketWaitEnded } from "./waits-on.ts";
+import { isStoppedFor, repoOf, sequencedBlockers, stackBlockersOf, ticketWaitEnded } from "./waits-on.ts";
+import type { OverlapStackRecord } from "./overlap-stack.ts";
 import { clockOf } from "./update-banner.ts";
 import { deadlineOf } from "./wait-deadline.ts";
 import { DEFAULT_PUBLISH_WHEN, type PublishWhen } from "./publish-when.ts";
@@ -122,14 +123,11 @@ function isDoneFor(entry: ViewEntry, blocker: ViewBlocker, entries: readonly Vie
   return holdReason(entry, blocker, entries) === null && (isDone(blocker, entries) || pullsMerged(blocker));
 }
 
+/** The repository a run is planned for (`repoOf` in `view-types-and-filters.ts`, which the overlap hold reads too). */
+export { repoOf };
+
 /** The repository a GitHub pull request is in, or null for a URL that is not one. */
 export const repoOfPull = (url: string): string | null => parsePull(url)?.repo ?? null;
-
-/**
- * The repository a run is planned for: the planner's, when its batch named one, else its project's (`project-repo.ts`). A planner's `null` falls back
- * to the project's, so a planner that names none does not suppress the default. PURE.
- */
-export const repoOf = (entry: Pick<ViewEntry, "plannedRepo" | "projectRepo">): string | null => entry.plannedRepo ?? entry.projectRepo ?? null;
 
 /** A blocker a run starts on top of: its key, the open pull request it stacks on in the run's repository (none when it has none there), that repository, its branch, and the commit the branch is at there (`head`, read by the pool; null when unknown). */
 export type StackBase = Readonly<{ key: string; url: string | null; repo: string; branch: string; head: string | null }>;
@@ -156,7 +154,7 @@ export function stackBaseOf(entry: ViewEntry, blocker: ViewBlocker): StackBase |
  */
 export function stackedOn(entry: ViewEntry, entries: readonly ViewEntry[]): StackBase[] {
   if (entry.phase === "finished") return [];
-  return (entry.blockers ?? []).flatMap((blocker) => {
+  return stackBlockersOf(entry, entries).flatMap((blocker) => {
     const base = isDoneFor(entry, blocker, entries) ? null : stackBaseOf(entry, blocker);
     return base === null ? [] : [base];
   });
@@ -166,7 +164,14 @@ export function stackedOn(entry: ViewEntry, entries: readonly ViewEntry[]): Stac
  * What the board says about a run stacked on its blockers: each with its open pull request, such as "Stacked on NBF-1 #12", and each without one, which
  * is stacked on its branch alone, such as "Stacked on NBF-1 (branch `x`, no pull request yet)".
  */
-export const stackNote = (bases: readonly StackBase[]): string => `Stacked on ${bases.map(({ key, url, branch }) => (url === null ? `${key} (branch \`${branch}\`, no pull request yet)` : `${key} #${parsePull(url)?.number ?? url}`)).join(", ")}`;
+export const stackNote = (bases: readonly StackBase[], overlap?: OverlapStackRecord): string =>
+  `Stacked on ${bases.map((base) => `${stackedOnWords(base)}${overlap?.key === base.key ? ` ${overlapWhy(overlap)}` : ""}`).join(", ")}`;
+
+/** One base as the note names it: with its open pull request, or, without one, its branch alone. PURE. */
+const stackedOnWords = ({ key, url, branch }: StackBase): string => (url === null ? `${key} (branch \`${branch}\`, no pull request yet)` : `${key} #${parsePull(url)?.number ?? url}`);
+
+/** Why a run overlaps the run it is stacked on, as the card says it (A11-374): the first file they share, else that it claimed its whole repository. PURE. */
+const overlapWhy = ({ shared }: OverlapStackRecord): string => (shared === null ? "(same repository, files not known)" : `(overlaps \`${shared}\`)`);
 
 /**
  * Why a run waits for one blocker it cannot stack on, as {@link waitNote} says it: a canceled blocker is a person's decision, and a blocker that holds for its live run, its partial merge or an unread body says which,
@@ -205,13 +210,16 @@ export function waitNote(entry: ViewEntry, entries: readonly ViewEntry[]): strin
 }
 
 /**
- * Why a queued run waits for an overlap: the run, its pull request's number when it has one, and every path both touch, such as "Waits on NBF-1 #12: both touch pool.ts, server.ts"; or while the run's files are not read
- * yet. When every overlap is a directory claim and no file is shared, it adds whose directory to narrow, such as "a folder claim, not a shared file: narrow NBF-1's `src/` in its plan" (A11-212). PURE.
+ * Why a queued run waits for an overlap: the run, its pull request's number when it has one, and every path both touch, such as "Waits for NBF-1 to push its branch: both touch pool.ts, server.ts" (an overlap is stacked on once the other run has a branch,
+ * A11-374); or while the run's files are not read yet, or because one of the two claims its whole repository. When every overlap is a directory claim and no file is shared, it adds whose directory to narrow, such as "a folder claim, not a shared file: narrow NBF-1's `src/` in its plan" (A11-212). PURE.
  */
 function overlapNote(overlap: OverlapWait): string {
   const pull = overlap.pull === null ? "" : ` #${overlap.pull}`;
-  if (overlap.path === null) return `Waits on ${overlap.key}${pull}: its changed files are not read yet`;
-  const both = `Waits on ${overlap.key}${pull}: both touch ${named(overlap.overlaps.map(({ path }) => path))}`;
+  // A run waits on an overlap only while there is no branch to stack on (A11-374): the run it overlaps has pushed none, and has no pull request.
+  const lead = overlap.unpushed === true ? `Waits for ${overlap.key}${pull} to push its branch` : `Waits on ${overlap.key}${pull}`;
+  if (overlap.repoWide !== undefined) return `${lead}: same repository, files not known`;
+  if (overlap.path === null) return `${lead}: its changed files are not read yet`;
+  const both = `${lead}: both touch ${named(overlap.overlaps.map(({ path }) => path))}`;
   const narrow = foldersToNarrow(overlap.overlaps);
   return narrow === null ? both : `${both}; a folder claim, not a shared file: narrow ${narrow.join(" and ")} in ${narrow.length === 1 ? "its plan" : "their plans"}`;
 }

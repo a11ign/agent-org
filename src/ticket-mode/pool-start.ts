@@ -30,6 +30,7 @@ import { isParked, repoOf, waitNote } from "./board-view/pull-status-and-notes.t
 import { withinTime } from "../install/time-limit.ts";
 import { worktreePath } from "./worktree.ts";
 import { claimantOf, type TicketSettings } from "./settings.ts";
+import { followOverlaps, recordStacks } from "./pool-overlap.ts";
 import { basename, join } from "node:path";
 import { ticketDir } from "./ticket-paths.ts";
 import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
@@ -486,6 +487,8 @@ export async function fill(ctx: PoolContext): Promise<void> {
   if (closesOut(ctx)) await closesSettled(ctx);
   // A round or a talk session never starts beside an agent that holds its Claude session or its name (A11-154): one that works holds it back, a leftover is closed.
   settleSessions(ctx);
+  // What the overlap hold decides on is brought up to date from the queue alone, and a stack whose base is done is cleared (A11-374).
+  followOverlaps(ctx);
   // A batch is planned together only while this machine's planner plans batches: otherwise each of its tickets is planned alone.
   if (!batches) updateEach(ctx, store.get().entries.filter((e) => e.phase === "queued" && e.batch !== undefined && !e.talk), leaveBatch);
   const { load, cores } = (deps.load ?? (() => ({ load: loadavg()[0], cores: availableParallelism() })))();
@@ -507,6 +510,7 @@ export async function fill(ctx: PoolContext): Promise<void> {
   const held = starts.length === 0 || ctx.settings.preflight.length === 0 ? null : await preflightHold(ctx);
   if (held !== null) noteFillHolding(ctx, PREFLIGHT_FAILING);
   saidWhyIdle(ctx, starts.length === 0 ? whyNothingStarts(store.get(), load, cores, at) : held === null ? null : `${held}, so no ticket run starts`);
+  if (held === null) recordStacks(ctx, starts);
   for (const entry of held === null ? starts : []) {
     // A talk session resumes a finished run's own session where it ran: no brief is written, and no plan or worktree is touched. A batch's tickets share that session: one pane (A11-171).
     if (entry.talk) {

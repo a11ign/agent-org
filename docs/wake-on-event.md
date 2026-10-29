@@ -49,7 +49,7 @@ A **wait cycle** is two or more tickets that each wait on another: through a blo
 
 On every tick, before slots are filled, `releaseTicketWaits` finds the cycles and lets go, at once, each run in one whose idle worker declared a ticket wait on another ticket of the cycle: a ticket on the board in the same cycle is not done, so the wait's first reading is not needed. What it cannot release is named and left as it is: a cycle of blockers alone, a pull request wait, a batch's shared run. Then `pool-wait-cycles.ts` tells the chairman's session, once: one tracker comment on the cycle's smallest key saying what the board did, or that a person must remove one blocker relation, and a log line. It is posted once the board has done what it can (a workspace herdr will not close is told after it closes), and recorded in `tickets/wait-cycles.json` in the state folder only after the tracker took it, so a refused comment is tried again. A cycle the board no longer finds is removed from the record, so one that forms again is told again.
 
-The cards name the cycle: a ticket in one reads `in a wait cycle: A11-229 → A11-231 → A11-229`, and the Runs page shows one banner for each cycle, which goes when the cycle does. A queued ticket held by an overlap reads `Waits on A11-231 #12: both touch ...`, naming the holder.
+The cards name the cycle: a ticket in one reads `in a wait cycle: A11-229 → A11-231 → A11-229`, and the Runs page shows one banner for each cycle, which goes when the cycle does. A queued ticket held by an overlap with a run that has pushed no branch yet reads `Waits for A11-231 to push its branch: both touch ...`, naming the holder; one that can stack on the run it overlaps starts at once instead (A11-374).
 
 ## What each state reads like
 

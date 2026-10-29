@@ -105,8 +105,9 @@ test("A11-248: a conflict starts the run's conflict round, whose feedback names 
   await sweep();
   assert.deepEqual(host.branchUpdates.asked.length, 1);
   assert.equal(run().phase, "queued", "the run left finished for a round");
-  assert.equal(run().rounds, 1);
+  assert.equal(run().rounds, 0, "a conflict round is no round of the board's own (A11-374)");
   assert.equal(run().feedback, [
+    "Conflict 1 on #2:",
     `${NEXT} conflicts with its base branch main.`,
     `A11-2 is stacked on A11-1; its pull request #1 (${BOTTOM}) merged into \`main\`, and merging \`main\` into ${NEXT} conflicted.`,
   ].join("\n"));
@@ -114,8 +115,8 @@ test("A11-248: a conflict starts the run's conflict round, whose feedback names 
   assert.equal(queue().entries.filter((e) => e.ticket.key === "A11-2").length, 1);
 });
 
-test("A11-248: a conflict at the round cap starts no round, and the note says Respond to review starts another", async () => {
-  const { host, sweep, run } = world({ next: { rounds: 3 } });
+test("A11-248: a conflict at the round cap, against the merged member the last conflict round was started against, starts no round, and the note says Respond to review starts another", async () => {
+  const { host, sweep, run } = world({ next: { rounds: 3, conflictBase: { [NEXT]: `merged ${BOTTOM}` } } });
   conflicting(host, NEXT);
   await sweep();
   assert.equal(run().phase, "finished");
@@ -125,7 +126,7 @@ test("A11-248: a conflict at the round cap starts no round, and the note says Re
 });
 
 test("A11-248: a conflict note is dropped once a round has moved the head", async () => {
-  const { host, sweep, run } = world({ next: { rounds: 3 } });
+  const { host, sweep, run } = world({ next: { rounds: 3, conflictBase: { [NEXT]: `merged ${BOTTOM}` } } });
   conflicting(host, NEXT);
   await sweep();
   host.pullAt(NEXT)!.head = MOVED_HEAD;
@@ -147,13 +148,14 @@ test("A11-248: two conflicting members of one run share one round that names bot
   conflicting(host, NEXT, second);
   await sweep();
   assert.equal(host.branchUpdates.asked.length, 2);
-  assert.equal(run().rounds, 1, "one round, not one for each");
+  assert.equal(run().conflictRounds?.[NEXT], 1, "one round, not one for each");
+  assert.equal(run().rounds ?? 0, 0, "and it is no round of the board's own");
   assert.match(run().feedback!, new RegExp(`${NEXT} conflicts with its base branch main[\\s\\S]*${second} conflicts with its base branch main`));
 });
 
 test("A11-248: after a restart a conflict note does not stand in for the restack: the branch is updated again, and a conflict a person resolved reads as restacked", async () => {
   const note = "#2 conflicts with main after #1 merged, and the conflict rounds are used up: Respond to review starts another";
-  const { host, sweep, run } = world({ next: { rounds: 3, retargets: { [NEXT]: note } } });
+  const { host, sweep, run } = world({ next: { rounds: 3, conflictBase: { [NEXT]: `merged ${BOTTOM}` }, retargets: { [NEXT]: note } } });
   host.branchUpdates.answers.set(NEXT, { kind: "up-to-date" });
   await sweep();
   assert.equal(host.branchUpdates.asked.length, 1);

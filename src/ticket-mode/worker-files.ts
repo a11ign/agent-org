@@ -10,6 +10,7 @@
 // test and typecheck it, which is where any engineer looks, so nothing about a repository is declared here or in the host file.
 import { join } from "node:path";
 import type { StackBase } from "./board-view/pull-status-and-notes.ts";
+import type { OverlapStackRecord } from "./board-view/overlap-stack.ts";
 import type { MergedStep } from "./board-view/plan-steps.ts";
 import type { DenyRule } from "./settings.ts";
 import type { PullRequest, WriterForm, WriterMode } from "./queue/queue-entries-and-outcomes.ts";
@@ -291,14 +292,14 @@ const STACK_OPENED_READY = "`gh pr create --base <branch>`, ready";
  * plan puts its work (A11-116), and an open pull request there when it has one: the worker branches from the branch, and bases its own pull request on it,
  * with or without that one. The branch is the tracker's, which a person may not have used, so the worker checks it.
  */
-function stackText(bases: readonly StackBase[], worktreeCommand: string, opening: string): string {
+function stackText(bases: readonly StackBase[], worktreeCommand: string, opening: string, overlap?: OverlapStackRecord): string {
   const [first] = bases;
   if (first === undefined) return "";
   const { repo } = first;
   return `
 ## Stack on the work you wait for
 
-These tickets block this one and are not merged yet. Each has its branch pushed to \`${repo}\`, where your plan puts this ticket's work:
+These tickets${overlap === undefined ? " block this one and" : ""} are not merged yet. Each has its branch pushed to \`${repo}\`, where your plan puts this ticket's work:
 
 ${bases.map(stackLine).join("\n")}
 
@@ -309,7 +310,18 @@ ${bases.map(stackLine).join("\n")}
 5. The branch you build on may move while you work. Never rebase it, merge it in, or force-push while you work: agent-org merges that branch into yours for you after you stop. If that merge conflicts, a round after that starts with the conflict, and that round merges the branch in by hand. If \`git fetch\` shows that branch rewritten, that is expected: finish your work.
 6. Once the pull request yours is stacked on has merged, agent-org retargets yours to the default branch itself. It then merges the default branch into yours. If that conflicts, you get a conflict round that names the pull request that merged: merge the default branch in, keep both changes, re-run the checks and push. Until it retargets, or when that pull request's branch was merged without being deleted, your pull request's base can be a stale branch. That is expected, not a failure: do not retarget, rebase, push or merge to fix it.
 7. A stacked step needs no person to merge: once your pull request is approved, its required checks are green and the ones below it have merged, the arm bot merges it with GitHub's stack merge, up to yours and no further, and the board hands it back to the arm bot when needed. Never unstack a stack, since another ticket builds on it: \`gh stack unstack\` is the person's, and the hook refuses it.
-`;
+${overlapText(overlap)}`;
+}
+
+/**
+ * What the brief says when the run is stacked on a run whose files overlap its own and not on a blocker (A11-374): that run does not block this ticket, the board stacked this one on it so the two do not conflict when they merge, and the other runs it overlaps
+ * that it could have stacked on instead, with their branches, which the worker brings in only if its work needs them. PURE.
+ */
+function overlapText(overlap: OverlapStackRecord | undefined): string {
+  if (overlap === undefined) return "";
+  const files = overlap.shared === null ? "files in the same repository, not known yet" : `\`${overlap.shared}\`, which this ticket changes too`;
+  const others = overlap.others.map(({ key, branch }) => `\n${key} also touches files you will change, on branch \`${branch}\`. Merge it into your branch only if your work needs it; otherwise leave it, and the board restacks you as the stack below merges.`).join("");
+  return `\n${overlap.key} does not block this ticket. It changes ${files}, so the board stacked this one on it: the two merge in order, and each conflict is resolved once.${others}\n`;
 }
 
 /** One stacked base as the brief lists it: its pull request when it has one, or its pushed branch when it has none yet (A11-116). PURE. */
@@ -647,10 +659,10 @@ function openPullRequestStep(opening: string, ticket: Ticket, prReview: string |
  * `keywords` are the two words the tracker reads a pull request's body by (`source.ts`), which the brief names; a source without its own gets the defaults.
  * `numberedSteps` is true when the run's plan numbers its steps, which has the worker write the step it is on in its outcome file (A11-219).
  */
-export function briefText({ ticket, folder, ticketDir, attachments, parent = null, blockers = [], stackedOn = [], steps = [], clones, worktreeCommand, prOpenCommand, notes,
+export function briefText({ ticket, folder, ticketDir, attachments, parent = null, blockers = [], stackedOn = [], overlapStack, steps = [], clones, worktreeCommand, prOpenCommand, notes,
   connectors = [], planned = false, drafts = true, designTools = false, capture = false, prReview = null, keywords = DEFAULT_KEYWORDS, repo = null, read, comments, findings = [], closed = [], numberedSteps = false, opened = [], held, lost }: {
   ticket: Ticket; folder: string; ticketDir: string; attachments: readonly string[]; parent?: ParentTicket | null; blockers?: readonly Blocker[];
-  stackedOn?: readonly StackBase[]; steps?: readonly MergedStep[]; clones: Readonly<Record<string, string>>; worktreeCommand: string; prOpenCommand: string; notes?: string;
+  stackedOn?: readonly StackBase[]; overlapStack?: OverlapStackRecord; steps?: readonly MergedStep[]; clones: Readonly<Record<string, string>>; worktreeCommand: string; prOpenCommand: string; notes?: string;
   connectors?: readonly string[]; planned?: boolean; drafts?: boolean; designTools?: boolean; capture?: boolean; prReview?: string | null; keywords?: Keywords; repo?: string | null;
   read?: TicketRead; comments?: CommentsRead; findings?: readonly Finding[]; closed?: readonly KeptClosedWork[]; numberedSteps?: boolean; opened?: readonly OpenedPull[]; held?: string;
   /** When the board found the run lost in a restart and queued it again (A11-279), for the section that says its worktree holds the earlier run's work. */
@@ -681,7 +693,7 @@ ${ticketCommentsText(comments, ticket, "pull request")}
 ## Files from the ticket
 
 ${filesText(attachments)}
-${parentText(parent)}${blockersText(blockers.filter(({ key }) => !stacked.has(key)), findings)}${stackText(stackedOn, worktreeCommand, drafts ? STACK_OPENED_AS_DRAFT : STACK_OPENED_READY)}${stepsText(steps)}${openedText(opened)}${closedWorkText(closed, "pull request")}
+${parentText(parent)}${blockersText(blockers.filter(({ key }) => !stacked.has(key)), findings)}${stackText(stackedOn, worktreeCommand, drafts ? STACK_OPENED_AS_DRAFT : STACK_OPENED_READY, overlapStack)}${stepsText(steps)}${openedText(opened)}${closedWorkText(closed, "pull request")}
 ## Where the work lands: you decide
 
 You are in this ticket's own folder, \`${folder}\`. These are the repositories on this machine, checked out by the person you work for. Read them, but never commit or change branches in them:

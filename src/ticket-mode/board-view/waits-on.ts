@@ -4,7 +4,13 @@
 // One set of edge rules, shared by the overlap hold (a run never holds its files against a ticket it waits on, `overlap-hold.ts`) and the queue's hold of a stopped run (`waitsOn`). A fleet job and a CI run belong to
 // no ticket on the board, so they add no edge. PURE. Like the rest of `board-view/`, it is sent to the browser as one script with its relative imports dropped.
 import { isRoundOnOpenPull } from "./round-pulls.ts";
-import { openPulls, type ViewBlocker, type ViewEntry } from "./view-types-and-filters.ts";
+import { openPulls, pullsOf, type ViewBlocker, type ViewEntry } from "./view-types-and-filters.ts";
+
+/**
+ * The repository a run is planned for: the planner's, when its batch named one, else its project's (`project-repo.ts`). A planner's `null` falls back
+ * to the project's, so a planner that names none does not suppress the default. PURE.
+ */
+export const repoOf = (entry: Pick<ViewEntry, "plannedRepo" | "projectRepo">): string | null => entry.plannedRepo ?? entry.projectRepo ?? null;
 
 /**
  * A run's blockers: those the tracker last listed, then each ticket its stopped run is queued behind (`stoppedForBlocker`) that the list does not name yet, with the tracker's state last read of it ("unknown" before
@@ -12,7 +18,21 @@ import { openPulls, type ViewBlocker, type ViewEntry } from "./view-types-and-fi
  */
 export function blockersOf(entry: ViewEntry): readonly ViewBlocker[] {
   const states = entry.stoppedForBlocker?.states;
-  return [...(entry.blockers ?? []), ...unlistedStops(entry).map((key) => ({ key, state: states?.[key] ?? "unknown", status: "" }))];
+  return [...stackBlockersOf(entry), ...unlistedStops(entry).map((key) => ({ key, state: states?.[key] ?? "unknown", status: "" }))];
+}
+
+/**
+ * The blockers a run may be stacked on (A11-374): those the tracker last listed, and the run it was started stacked on because their files overlap (`overlapStack`), as a blocker that carries its branch, head and pull requests (read from `entries` where the run is on the queue), so that it passes
+ * `stackBaseOf` and is never waited for. The tracker's own entry for it wins, when the tracker lists it. A run the board recorded no overlap stack for has its listed blockers alone. PURE.
+ */
+export function stackBlockersOf(entry: ViewEntry, entries: readonly ViewEntry[] = []): readonly ViewBlocker[] {
+  const listed = entry.blockers ?? [];
+  const stack = entry.overlapStack;
+  if (stack === undefined || listed.some(({ key }) => key === stack.key)) return listed;
+  const below = entries.find((other) => other.ticket.key === stack.key);
+  // The state of its pull requests is the run's own where the run is on the queue: a base that has merged is done, as a listed blocker whose pull requests merged is. Otherwise it is the one recorded as the stack was made.
+  const pulls = below !== undefined && pullsOf(below).length > 0 ? Object.fromEntries(pullsOf(below).map(({ url }) => [url, below.pullStates?.[url] ?? "open"])) : stack.url === null ? {} : { [stack.url]: "open" };
+  return [...listed, { key: stack.key, state: "started", status: "", branch: stack.branch, ...(stack.head === null ? {} : { head: stack.head }), pulls }];
 }
 
 /**

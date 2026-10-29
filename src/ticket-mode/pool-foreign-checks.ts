@@ -4,6 +4,7 @@
 // A RED CHECK THE RUN CANNOT MEND GETS NO FIX ROUND. A check that is red on the head of the repository's default branch, or on another open pull request of the repository whose files touch none of this run's plan
 // paths, is red for a reason no diff of the run's changes (A11-127's `refusalOwners`, an old-org check outside A11-177's region, was handed to its worker round after round). "Fails identically" is read as the
 // same check name failing: it is decided again on every watch, from fresh reads, so a check main has since fixed goes back to the run, or, when main reports it passing, its pull request is brought up to date with main (A11-215).
+import { stackBlockersOf } from "./board-view/waits-on.ts";
 import { pathsOverlap } from "./board-view/overlap-hold.ts";
 import { openPulls } from "./board-view/view-types-and-filters.ts";
 import { type Entry } from "./queue/queue-entries-and-outcomes.ts";
@@ -71,7 +72,7 @@ const touchesNone = (read: PullFeedback, repo: string, paths: readonly string[])
  * of the first (`exempt` in `pull-status-and-notes.ts` keeps them from holding each other for the same reason). PURE.
  */
 const isSequenced = (entry: Entry, other: Entry): boolean =>
-  (entry.blockers ?? []).some(({ key }) => key === other.ticket.key) || (other.blockers ?? []).some(({ key }) => key === entry.ticket.key);
+  stackBlockersOf(entry).some(({ key }) => key === other.ticket.key) || stackBlockersOf(other).some(({ key }) => key === entry.ticket.key);
 
 /**
  * The checks failing on the other open pull requests of `url`'s repository that the pass read, belonging to other runs on the board that are not its blocker or its dependent and changing none of the run's plan paths. A run whose plan declares no

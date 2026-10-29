@@ -9,6 +9,7 @@
 import { dueBlockerKeys, duePaths, recordBlockersFailure } from "./queue/queue-start-reads.ts";
 import { READ_RETRY_MS, retryTime } from "./queue/start-reads.ts";
 import { headsToRead, readBlockers, readHeads, readPaths } from "./pool-start.ts";
+import { readPushedHeads, takeBranchesToRead } from "./pool-overlap.ts";
 import { log, messageOf, update } from "./pool-state.ts";
 import type { PoolContext } from "./pool-context.ts";
 
@@ -99,7 +100,13 @@ export function refreshStartReads(ctx: PoolContext, wake: () => Promise<void>): 
   if (plans.length > 0 && settings.plan === null) void readPaths(ctx, plans).catch((err) => log(`the plans of the queued runs could not be recorded: ${whyOf(err)}`));
   if (keys.length > 0 && remote) readBeside(ctx, keys.map(blockersReading), () => readBlockersAndHeads(ctx, keys), wake);
   if (plans.length > 0 && settings.plan !== null) readBeside(ctx, plans.map(({ ticket }) => planReading(ticket.key)), () => readPaths(ctx, plans), wake);
+  // The branches a queued run could stack on while their runs have no pull request (A11-374): read beside the pass, and never waited for.
+  const branches = reading.has(BRANCHES_READING) ? [] : takeBranchesToRead(ctx);
+  if (branches.length > 0) readBeside(ctx, [BRANCHES_READING], () => readPushedHeads(ctx, branches), wake);
 }
+
+/** What `reading` holds while the branches of the runs at work are being read (A11-374): one read at a time. */
+const BRANCHES_READING = "branches";
 
 /** Settles once every read {@link refreshStartReads} started has ended and the pass it woke has run (at once when none is out). Never rejects. */
 export async function startReadsSettled(ctx: PoolContext): Promise<void> {

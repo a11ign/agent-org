@@ -10,6 +10,7 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { overlapWait } from "./board-view/overlap-hold.ts";
+import { overlapRecordOf, overlapStackOf } from "./board-view/overlap-stack.ts";
 import { waitsOn } from "./board-view/pull-status-and-notes.ts";
 import { keysWithStackAbove } from "./board-view/stack-wait.ts";
 import { MAX_WRITER_RUNS, replace, type Entry, type Queue, type WriterPhase, type WriterRun, type WriterTicket } from "./queue/queue-entries-and-outcomes.ts";
@@ -28,7 +29,8 @@ export const recordClosedByBoard = (queue: Queue, key: string): Queue => replace
  * exactly equal does not refuse), and otherwise as many as the free slots allow. An entry still waiting on a blocker, or on a path another run holds
  * ({@link overlapWait}), is passed over, and holds no slot. So is one whose plan could not be downloaded (`pathsFailure`): it takes no slot another
  * run could use (A11-125). And so is a review round or talk session that a working agent's session holds back (`sessionWait`, A11-154). A batch is one run, so its tickets take one slot between them, live or starting.
- * An entry this call starts holds its paths against the entries after it, as a live run would, so overlapping runs never start in the same pass.
+ * An entry this call starts holds its paths against the entries after it, as a live run would, so overlapping runs never start in the same pass: the later one waits for the first to push a branch, and is stacked on it in a later pass.
+ * OVERLAP MEANS STACK, NOT WAIT (A11-374): a queued run that overlaps a run it can stack on is not passed over. It is returned with the run it stacks on as its `overlapStack`, and starts on that run's branch.
  * A run whose blockers or plan paths are not known holds back like the rest, and takes no slot (A11-364): `startReadHold` says which (never read; or read longer ago than `BLOCKERS_MAX_AGE_MS` before `now`), so a run left unread never
  * takes a slot from one that can start. The pool gives `now`; without it nothing about what was read is judged, and a run is held back for the other reasons alone.
  * A STACK IS A PRIORITY (A11-370): a queued run whose pull request has another stacked on it ({@link keysWithStackAbove}) starts before the other queued runs of its model, since that run is waiting for it. The queue order holds among the runs that are equal in this.
@@ -38,15 +40,19 @@ export function nextStarts(queue: Queue, load: number, cores: number, now?: numb
   const free = queue.max - slotsHeld(queue);
   const runs = new Set<string>();
   const started: Entry[] = [];
+  const stacks = new Map<string, Entry["overlapStack"]>();
   for (const entry of stackedFirst(queue.entries)) {
     if (entry.phase !== "queued" || isHeldBack(entry, queue.entries, now)) continue;
     if (!runs.has(runOf(entry)) && runs.size >= free) continue;
-    if (overlapWait(entry, [...queue.entries, ...started.map(asStarting)]) !== null) continue;
+    const holders = [...queue.entries, ...started.map(asStarting)];
+    if (overlapWait(entry, holders) !== null) continue;
+    const stack = overlapStackOf(entry, holders);
+    if (stack !== null) stacks.set(entry.ticket.key, overlapRecordOf(stack));
     runs.add(runOf(entry));
     started.push(entry);
   }
   // Chosen in the stack's order, returned in queue order: the caller starts a batch under its first member, and that is the queue's, not the stack's.
-  return queue.entries.filter((entry) => started.includes(entry));
+  return queue.entries.filter((entry) => started.includes(entry)).map((entry) => (stacks.has(entry.ticket.key) ? { ...entry, overlapStack: stacks.get(entry.ticket.key) } : entry));
 }
 
 /**

@@ -152,7 +152,7 @@ export async function prepare(ctx: PoolContext, entry: Entry): Promise<{ folder:
     const worktreeCommand = `${hook.node} ${hook.bin} ticket:worktree`;
     const prOpenCommand = `${hook.node} ${hook.bin} pr:open`;
     writeFileSync(join(dir, BRIEF_FILE), briefText({ ticket, folder, ticketDir: dir, attachments, parent, blockers: entry.blockers,
-      stackedOn: stackedOn(entry, store.get().entries), steps: entry.steps, clones: settings.clones, worktreeCommand, prOpenCommand, repo: repoOf(entry),
+      stackedOn: stackedOn(entry, store.get().entries), ...(entry.overlapStack === undefined ? {} : { overlapStack: entry.overlapStack }), steps: entry.steps, clones: settings.clones, worktreeCommand, prOpenCommand, repo: repoOf(entry),
       notes, connectors, planned: entry.planned === true, drafts: settings.drafts, designTools: settings.designTools, capture: settings.capture, prReview: settings.prReview, keywords: source.keywords ?? DEFAULT_KEYWORDS,
       read, comments: await readTicketComments(source, ticket.key), findings, closed, numberedSteps: startedSteps(store.get().entries, entry), opened: await openedPullsOf(ctx, entry), held: entry.ciHold?.reason ?? entry.ciTold, lost: lostBeforeThisStart(entry) }));
   }

@@ -110,7 +110,8 @@ test("A11-77: a batch's planned ticket keeps the blockers its planner said to wa
   queue = recordBlockerDeclared(queue, "B", pull, { kind: "none" });
   assert.deepEqual(nextStarts(queue, 0, 14).map((e) => e.ticket.key), ["A", "C"], "A is still queued, so its merged pull request does not let B go (A11-206)");
   queue = finish(queue, "A", { kind: "ready-pr", prs: [] }, 2);
-  assert.deepEqual(nextStarts(queue, 0, 14).map((e) => e.ticket.key), ["B", "C"], "once A's run has ended, its pull request has merged and been read, B starts");
+  // B and C name one repository and no file (A11-374): each claims all of it, so C waits for B to push a branch it can stack on, in a pass of its own.
+  assert.deepEqual(nextStarts(queue, 0, 14).map((e) => e.ticket.key), ["B"], "once A's run has ended, its pull request has merged and been read, B starts, and C waits to stack on it");
   const retried = retry(finish(queue, "B", { kind: "crashed", reason: "gone" }, 3), "B", 4);
   assert.deepEqual([at(retried, "B").plannedRepo, at(retried, "B").waitMerged], [undefined, undefined], "a retried run has no planned repository, so it has no mark either");
 });
@@ -432,6 +433,9 @@ test("after three rounds of its own, the next feedback hands the run to a person
     "Respond to review starts the count again");
 });
 
+/** A conflict on the pull request `pr` at a base that is new to the run (A11-374). */
+const ON_PR = { [pr.url]: { base: "base-1" } };
+
 /** A run, A, parked on `outcome` with its workspace open, after a review round that resumed session `s1` and holds the pull request `pr`. */
 function parkedOn(outcome: Parameters<typeof park>[2], fields: Record<string, unknown> = {}): Queue {
   const queue = markRunning(markStarting(enqueue(emptyQueue(3), [ticket("A"), ticket("B")], choice, 1), "A", 2), "A", "w1", "w1:p1");
@@ -440,20 +444,21 @@ function parkedOn(outcome: Parameters<typeof park>[2], fields: Record<string, un
 }
 
 test("A11-89: a parked run whose pull request conflicts is queued as a review round that resumes its worker, keeps its session, and holds no workspace", () => {
-  const queue = conflictRound(parkedOn({ kind: "needs-human", reason: "which colour?" }), "A", "a conflict line", 9);
+  const queue = conflictRound(parkedOn({ kind: "needs-human", reason: "which colour?" }), "A", "a conflict line", 9, ON_PR);
   assert.deepEqual(keys(queue), ["B", "A"]);
+  // A conflict round answers no review (A11-374): it is no round of the board's own, and the run is told how often this pull request conflicted.
   assert.deepEqual(a(queue), { ticket: ticket("A"), repos: [], model: "opus", effort: "high", session: "s1", review: [pr], phase: "queued", queuedAt: 9,
-    feedback: "a conflict line", rounds: 1, ciSince: 2 });
+    feedback: `Conflict 1 on #${pr.url.split("/").pop()}:\na conflict line`, rounds: 0, conflictRounds: { [pr.url]: 1 }, conflictBase: { [pr.url]: "base-1" }, ciSince: 2 });
 });
 
-test("A11-89: a parked run that has used its rounds is left parked, with no handedBack, and a run the board watches or does not resume is left as it is", () => {
-  const capped = parkedOn({ kind: "needs-human", reason: "x" }, { rounds: 3 });
-  assert.deepEqual(conflictRound(capped, "A", "a conflict line", 9), capped, "nothing queued at the cap");
-  assert.equal(a(conflictRound(capped, "A", "a conflict line", 9)).handedBack, undefined, "no handedBack: a parked run reads Needs you already");
+test("A11-89: a parked run whose conflict is at the base it was last asked to resolve, with its rounds used, is left parked with no handedBack, and a run the board watches or does not resume is left as it is", () => {
+  const capped = parkedOn({ kind: "needs-human", reason: "x" }, { rounds: 3, conflictBase: { [pr.url]: "base-1" } });
+  assert.deepEqual(conflictRound(capped, "A", "a conflict line", 9, ON_PR), capped, "nothing queued at the cap");
+  assert.equal(a(conflictRound(capped, "A", "a conflict line", 9, ON_PR)).handedBack, undefined, "no handedBack: a parked run reads Needs you already");
   for (const [why, queue] of [
     ["stopped", parkedOn({ kind: "stopped" })], ["checked", parkedOn({ kind: "checked", reason: "nothing to do" })], ["a draft", parkedOn({ kind: "draft-pr", prs: [pr] })],
     ["watched", readyToMerge()], ["tracker completed", parkedOn({ kind: "needs-human", reason: "x" }, { trackerState: "completed" })],
-  ] as const) assert.deepEqual(conflictRound(queue, "A", "a conflict line", 9), queue, why);
+  ] as const) assert.deepEqual(conflictRound(queue, "A", "a conflict line", 9, ON_PR), queue, why);
 });
 
 test("Publish queues one run for the ticked runs Ready to merge with their open pull requests, refusing any other run and a second publish", () => {
@@ -1158,7 +1163,7 @@ test("A11-154: at the cap on the board's own rounds, red checks hand a run of an
     const asked = a(respond(handed, "A", 10));
     assert.deepEqual([asked.phase, asked.rounds, asked.handedBack, asked.asked], ["queued", undefined, undefined, true], `${outcome.kind}: Respond starts the count again`);
   }
-  assert.equal(a(conflictRound(endedWith({ kind: "needs-human", reason: "x" }, open), "A", "a conflict line", 9)).handedBack, undefined, "a conflict alone still hands nothing back");
+  assert.equal(a(conflictRound(endedWith({ kind: "needs-human", reason: "x" }, open), "A", "a conflict line", 9, ON_PR)).handedBack, undefined, "a conflict alone still hands nothing back");
 });
 
 test("A11-154: what a rerun or a name for a person records is kept for the finished run only", () => {
