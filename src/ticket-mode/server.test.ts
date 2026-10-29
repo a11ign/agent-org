@@ -1053,6 +1053,11 @@ test("POST /api/writer/dismiss-finished clears every finished request in one wri
   const [, named] = await b.api("POST", "/api/writer/dismiss-finished", { ids: ["wf0"] }) as [number, any];
   assert.deepEqual(named.runs.map((run: any) => run.id), ["wf1"], "a body naming ids clears those finished runs only, so one the page was not shown stays");
   assert.equal(again.runs.length, 1, "clearing with nothing finished is no error and changes nothing");
+  const before = b.store.get().writers?.length;
+  for (const ids of [7, "wf1", { 0: "wf1" }, [1], ["wf1", 2], null]) {
+    await assert.rejects(b.api("POST", "/api/writer/dismiss-finished", { ids }), /ids must be a list of new-ticket request ids/, `ids ${JSON.stringify(ids)} is refused, not read as none named`);
+  }
+  assert.equal(b.store.get().writers?.length, before, "a refused body clears nothing");
 });
 
 test("a run's filed tickets show on the run as links, with their key and address, and the page's view holds no draft to review", async () => {

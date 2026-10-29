@@ -431,8 +431,9 @@ async function writerRoute(board: Board, method: string, path: string, body: Jso
   }
   if (method === "POST" && path === "/api/writer/dismiss-finished") {
     // The notification centre's Clear all: the finished requests the page lists (`ids`; all of them when it names none) go in one write, and a request still under way is left as it is.
-    const ids = Array.isArray(body.ids) && body.ids.every((id) => typeof id === "string") ? body.ids as string[] : undefined;
-    store.set(dismissFinishedWriters(store.get(), ids));
+    // Ids that are present but not a list of strings are refused, never read as "none named", which would clear work the caller did not name.
+    if (body.ids !== undefined && !(Array.isArray(body.ids) && body.ids.every((id) => typeof id === "string"))) throw new Error("ids must be a list of new-ticket request ids");
+    store.set(dismissFinishedWriters(store.get(), body.ids as string[] | undefined));
     wake();
     return [200, writersViewOf(store.get())];
   }
