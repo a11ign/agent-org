@@ -8,6 +8,7 @@ import { join } from "node:path";
 import { createFakeCodeHost } from "../../plugins/fakes/code-host.ts";
 import { branchCiKey } from "../../plugins/fakes/code-host-ci.ts";
 import type { BranchCiRun, CodeHost } from "../../plugins/contracts/code-host.ts";
+import type { PoolDeps } from "../pool-context.ts";
 import { poolFixture } from "../pool-fixture.ts";
 import { herdrName } from "../pool.ts";
 import { ticketDir } from "../ticket-paths.ts";
@@ -35,7 +36,7 @@ const run = (id: number, jobs: BranchCiRun["jobs"], over: Partial<BranchCiRun> =
  * NBF-1 started and running in `w1` over a fake code host that holds `runs` for its branch, with `budget` weighted minutes. `sweep` is one `watchFeedback` and what it started; `tick` is one pass of the board.
  * The code host may be given without `readBranchCi` (`readsBranches: false`), as a plugin of contract 1.21 is.
  */
-async function board({ budget = 10, runs = [] as BranchCiRun[], readsBranches = true, finished = false, others = 0 } = {}) {
+async function board({ budget = 10, runs = [] as BranchCiRun[], readsBranches = true, finished = false, others = 0, promptAsync = undefined as ((args: string[]) => Promise<string>) | undefined } = {}) {
   let clock = T0 + MINUTE;
   const made = poolFixture({ keys: [KEY, ...Array.from({ length: others }, (_, n) => `NBF-${n + 2}`)], now: () => clock, tickets: { ciBudgetMinutes: budget }, max: 10 });
   const fake = createFakeCodeHost();
@@ -48,7 +49,9 @@ async function board({ budget = 10, runs = [] as BranchCiRun[], readsBranches = 
     if (prompting.refusal !== null && args.includes("agent") && args.includes("prompt")) throw Object.assign(new Error("herdr exited 1"), { stdout: JSON.stringify({ error: { message: prompting.refusal } }) });
     return made.herdr.run(args);
   };
-  const pool = made.restart({ codeHost, herdr, git: async () => `https://github.com/${REPOSITORY}.git\n` });
+  /** With `promptAsync`, a prompt goes to it through the async seam; everything else herdr is asked is the fixture's. */
+  const herdrAsync: PoolDeps["herdrAsync"] = async (args) => (promptAsync !== undefined && args.includes("prompt") ? promptAsync(args) : made.herdr.run(args));
+  const pool = made.restart({ codeHost, herdr, ...(promptAsync === undefined ? {} : { herdrAsync }), git: async () => `https://github.com/${REPOSITORY}.git\n` });
   await pool.tick();
   made.status.set(herdrName(KEY), "working");
   await pool.tick();
@@ -110,6 +113,15 @@ test("A11-261: past the budget the live worker is told in its pane, once, and th
   await b.sweep();
   await b.sweep();
   assert.equal(b.prompts().length, 1, "never again for this ticket");
+});
+
+test("A11-282: the warning is asked of herdr through herdrAsync, so the sweep holds no loop for it, and the worker is told once as before", async () => {
+  const asked: string[][] = [];
+  const b = await board({ budget: 10, runs: [run(1, [job(["macos-14"], 1), job(["ubuntu-latest"], 3)])], promptAsync: async (args) => { asked.push(args); return "{}"; } });
+  await b.sweep();
+  assert.deepEqual(asked.map((args) => [args.at(-3), args.at(-1)]), [["prompt", warnPrompt(13, 10)]], "the warning goes to the run's pane through the async seam");
+  assert.equal(b.prompts().length, 0, "and not through the synchronous call that holds the board thread");
+  assert.equal(b.record()?.warned, 13, "taken, so recorded");
 });
 
 test("A11-261: a worker whose pane refuses the warning is told again by the next sweep, and the warning is recorded only once it was taken", async () => {

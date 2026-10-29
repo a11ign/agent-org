@@ -15,7 +15,7 @@ import { isPlanning, runPlace } from "./pool-state.ts";
 import { isCapPlanner } from "./queue/queue-cap.ts";
 import { isParked } from "./board-view/pull-status-and-notes.ts";
 import { worktreesIn } from "./pool-paths.ts";
-import { sendToAgent } from "./pool-resume.ts";
+import { sendToAgentAsync } from "./pool-resume.ts";
 import { markOutcomeStale } from "./pool-outcome.ts";
 import { OUTCOME_FILE } from "./worker-files.ts";
 import { MS_PER_SECOND } from "./attach-retry.ts";
@@ -127,10 +127,12 @@ export const accessIsFinePrompt = (repos: readonly string[]): string =>
 /**
  * Tell the run's worker access is fine, and mark the outcome it wrote stale so its next one is read, as a send-back does. False, with the run left as it is, when herdr would not take the message: the card then stands.
  */
-export function wakeWorker(ctx: PoolContext, entry: Entry, repos: readonly string[]): boolean {
+export async function wakeWorker(ctx: PoolContext, entry: Entry, repos: readonly string[]): Promise<boolean> {
   const place = runPlace(ctx, entry);
-  if (sendToAgent(ctx, place, accessIsFinePrompt(repos)) !== null) return false;
+  // The outcome the worker wrote is read before the prompt goes, so one it writes in answer is never taken for the stale one.
   const written = join(place.dir, OUTCOME_FILE);
-  markOutcomeStale(place.dir, existsSync(written) ? statSync(written).mtimeMs : ctx.now());
+  const stale = existsSync(written) ? statSync(written).mtimeMs : ctx.now();
+  if (await sendToAgentAsync(ctx, place, accessIsFinePrompt(repos)) !== null) return false;
+  markOutcomeStale(place.dir, stale);
   return true;
 }

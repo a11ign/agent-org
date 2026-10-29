@@ -8,8 +8,8 @@
 //      or a conflict is told to the worker at once with one prompt, for each head, and not at its `until`. A changes-requested review that stands for an hour with the worker idle ends the run `needs-human`, naming why, so it reads Needs you.
 import { readOpenedRecord } from "./opened-record.ts";
 import { type PoolContext } from "./pool-context.ts";
-import { log, messageOf, runMembers, runPlace, updateEach } from "./pool-state.ts";
-import { sendToAgent, utcClock } from "./pool-resume.ts";
+import { log, messageOf, runMembers, runPlace, sameRun, updateEach } from "./pool-state.ts";
+import { sendToAgentAsync, utcClock } from "./pool-resume.ts";
 import { end } from "./pool-settle.ts";
 import { escalationReason } from "./escalation.ts";
 import { pullLabel } from "./board-view/pull-label.ts";
@@ -101,11 +101,11 @@ function standingBlock({ found }: Troubles, fed: Readonly<Record<string, FedTrou
 }
 
 /** Tell the worker, with one prompt, of the pull requests in `fresh`, and say so in the log. Returns herdr's refusal, or null when it took the prompt or there was nothing to tell. */
-function tellWorker(ctx: PoolContext, entry: Entry, fresh: readonly (readonly [string, PullTrouble])[]): string | null {
+async function tellWorker(ctx: PoolContext, entry: Entry, fresh: readonly (readonly [string, PullTrouble])[]): Promise<string | null> {
   if (fresh.length === 0) return null;
   const who = entry.batch ?? entry.ticket.key;
   const named = fresh.map(([url]) => pullLabel(url)).join(", ");
-  const refusal = sendToAgent(ctx, runPlace(ctx, entry), troublePrompt(fresh.map(([, trouble]) => trouble.line)));
+  const refusal = await sendToAgentAsync(ctx, runPlace(ctx, entry), troublePrompt(fresh.map(([, trouble]) => trouble.line)));
   log(refusal === null ? `${who} was told of ${named}` : `${who} could not be told of ${named}: ${refusal}`);
   return refusal;
 }
@@ -144,9 +144,11 @@ async function readAndTell(ctx: PoolContext, started: Entry): Promise<void> {
   if (entry === undefined || entry.working === undefined || entry.phase !== "running") return;
   const before = entry.working?.fed ?? {};
   const fresh = [...troubles.found].filter(([url, trouble]) => !wasTold(before[url], trouble));
-  const refusal = tellWorker(ctx, entry, fresh);
+  const refusal = await tellWorker(ctx, entry, fresh);
   const fed = fedAfter(troubles, before, now(), { told: fresh.length > 0 && refusal === null, refusal });
   if (JSON.stringify(fed) !== JSON.stringify(before)) updateEach(ctx, runMembers(ctx, entry), (queue, key) => recordFed(queue, key, fed));
   const block = standingBlock(troubles, fed, now());
-  if (block !== null) end(ctx, ctx.store.get().entries.find((each) => each.ticket.key === entry.ticket.key) ?? entry, { kind: "needs-human", reason: escalationReason(undefined, block) });
+  // The prompt was asked of herdr without holding the loop, so the run may have been stopped, ended or started again while it answered: only the run that was read is ended, and only while it is running.
+  const current = ctx.store.get().entries.find((each) => each.ticket.key === entry.ticket.key);
+  if (block !== null && current !== undefined && sameRun(ctx, entry)) end(ctx, current, { kind: "needs-human", reason: escalationReason(undefined, block) });
 }

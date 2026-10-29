@@ -14,6 +14,7 @@ import { ticketDir, ticketFolder } from "./ticket-paths.ts";
 import { briefText } from "./worker-files.ts";
 import type { Outcome } from "./queue/queue-entries-and-outcomes.ts";
 import type { Git } from "./worktree.ts";
+import type { PoolDeps } from "./pool-context.ts";
 
 const KEY = "NBF-1";
 const REPO = "nbl-ui-netbox";
@@ -43,10 +44,12 @@ function pushingGit(push: (n: number) => string | undefined = () => undefined) {
 }
 
 /** NBF-1's run with a checkout of `REPO`, whose worker ends `needs-human` on `outcome`, over a git that pushes as `push` says. */
-async function handedBack(push?: (n: number) => string | undefined, outcome: Record<string, unknown> = CLAIM, { checkout = true, branch, broken }: { checkout?: boolean; branch?: string; broken?: string } = {}) {
+async function handedBack(push?: (n: number) => string | undefined, outcome: Record<string, unknown> = CLAIM, { checkout = true, branch, broken, promptAsync }: { checkout?: boolean; branch?: string; broken?: string; promptAsync?: (args: string[]) => Promise<string> } = {}) {
   const made = poolFixture({ keys: [KEY], max: 1 });
   const fake = pushingGit(push);
-  const pool = made.restart({ git: fake.git });
+  /** With `promptAsync`, a prompt goes to it through the async seam; everything else herdr is asked is the fixture's. */
+  const herdrAsync: PoolDeps["herdrAsync"] = async (args) => (promptAsync !== undefined && args.includes("prompt") ? promptAsync(args) : made.herdr.run(args));
+  const pool = made.restart({ git: fake.git, ...(promptAsync === undefined ? {} : { herdrAsync }) });
   fake.head.branch = branch ?? made.entry(KEY).ticket.branch;
   fake.head.broken = broken;
   await pool.tick();
@@ -79,6 +82,22 @@ test("a hand-back on lost push access whose push the board makes work raises no 
   const told = run.prompts();
   assert.equal(told.length, 1, "the worker is woken once");
   assert.match(told[0].at(-1) ?? "", /access is fine, carry on/);
+});
+
+test("A11-282: the worker is woken with 'access is fine' through herdrAsync, so the check holds no loop for the prompt, and the card is still not raised", async () => {
+  const asked: string[][] = [];
+  const run = await handedBack(undefined, CLAIM, { promptAsync: async (args) => { asked.push(args); return "{}"; } });
+  assert.equal(asked.length, 1, "the worker is woken once, through the async seam");
+  assert.match(asked[0].at(-1) ?? "", /access is fine, carry on/);
+  assert.equal(run.prompts().length, 0, "and not through the synchronous call that holds the board thread");
+  assert.deepEqual([run.entry(KEY).phase, run.entry(KEY).outcome], ["running", undefined], "no card is raised");
+  assert.deepEqual(run.log().filter((event) => event.kind === "push-check").map((event) => event.kind === "push-check" ? event.step : null), ["passed"]);
+});
+
+test("A11-282: a worker herdr will not wake through the async seam keeps the card, as the synchronous refusal did", async () => {
+  const run = await handedBack(undefined, CLAIM, { promptAsync: async () => { throw Object.assign(new Error("herdr exited 1"), { stderr: "the pane is busy\n" }); } });
+  assert.deepEqual([run.entry(KEY).phase, run.entry(KEY).outcome?.kind], ["finished", "needs-human"]);
+  assert.deepEqual(run.log().filter((event) => event.kind === "push-check").map((event) => event.kind === "push-check" ? event.step : null), ["failed"]);
 });
 
 test("a hand-back whose first push is refused and whose retry works is also a pass: the pair is tried twice", async () => {
