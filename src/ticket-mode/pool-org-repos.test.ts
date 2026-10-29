@@ -327,3 +327,14 @@ test("the clone sweep lists the organisation once in ORGANISATION_SWEEP_MS, not 
   await cloneMissing(ctx);
   assert.equal(listed(), 2, "and the list is read again once it is that old");
 });
+
+test("A11-282: the clone sweep lists the organisation through the code host's asynchronous read, so a `gh repo list` holds the board thread's loop for none of its time", async () => {
+  const m = machine();
+  const listing = m.codeHost.repositories!;
+  const asked: string[] = [];
+  const codeHost = { ...m.codeHost, repositories: { ...listing, readRepositories: () => { throw new Error("the synchronous read holds the process still"); },
+    readRepositoriesAsync: async (owner: { login: string }) => { asked.push(owner.login); return listing.readRepositories({ login: owner.login, kind: "organisation" }); } } };
+  const ctx = { settings: { clones: m.clones }, codeHost, git: m.git, hostFile: m.hostFile, now: () => START, cloning: new Map(), cloneSweep: { busy: false } } as unknown as PoolContext;
+  assert.equal(await cloneMissing(ctx), 2, "corpus and .github are cloned from the list the asynchronous read gave");
+  assert.deepEqual(asked, ["acme"]);
+});

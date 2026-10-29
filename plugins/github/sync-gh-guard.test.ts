@@ -35,7 +35,7 @@ const STILL_SYNCHRONOUS: Readonly<Record<string, string>> = {
   readMergeFlow: "read once for a repository in ten minutes (`mergeFlowOf`)",
   readClosedWork: "read once for a pull request that was closed",
   pullsNaming: "read once when a run's brief is written",
-  sweepRetargets: "read for the finished runs stacked on a blocker's branch",
+  sweepRetargets: "read for the finished runs stacked on a blocker's branch, by a core older than contract 2.2 and by the live-check command; the instance's sweep asks `sweepRetargetsAsync`",
   stackMergeFactsOf: "read for the approved and green pull requests of a stack",
   requestStackMerge: "a write: the arm bot's dispatch for one pull request",
   readCiRun: "read for a run a wait or an After-merge check names",
@@ -62,6 +62,7 @@ const ASYNCHRONOUS_READS: Readonly<Record<string, (host: ReturnType<typeof creat
   readBranchCi: (host) => host.readBranchCi!("owner/repo", "main", new Set()),
   openDependencyPulls: (host) => host.openDependencyPulls!("owner/repo"),
   readMergedFindings: (host) => host.readMergedFindings!(PULL),
+  sweepRetargetsAsync: (host) => host.sweepRetargetsAsync!({ urls: [PULL], previous: {}, stacked: new Set(["feature/base"]), defaults: new Map(), log: () => undefined }),
 };
 
 function typescriptFilesUnder(directory: string): string[] {

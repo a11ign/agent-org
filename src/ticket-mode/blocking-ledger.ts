@@ -20,7 +20,7 @@ const CHECKOUT = join(dirname(HERE), "..", "..");
 /** A call that holds the loop this long, in ms, is logged as it returns. */
 export const SLOW_MS = 250;
 /** The modules that only pass a spawn on: a frame in one of them is not the call site. Paths from the checkout's root. */
-const SEAMS: readonly string[] = ["src/plugins/real-seams.ts", "plugins/github/gh.ts", "plugins/github/call-counter.ts"];
+const SEAMS: readonly string[] = ["src/plugins/real-seams.ts", "plugins/github/gh.ts", "plugins/github/call-counter.ts", "src/herdr-agents.ts", "src/ticket-mode/pool-herdr.ts"];
 const SYNC_SPAWNS = ["spawnSync", "execFileSync", "execSync"] as const;
 type SyncSpawn = (typeof SYNC_SPAWNS)[number];
 

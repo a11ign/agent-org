@@ -13,3 +13,15 @@ The instance ran its HTTP server and its background work (the tick, the tracker 
 - A write still waits while the board thread is blocked.
 - `GET /api/session-asks` is answered by the board thread, so it waits too: it marks the checks it lists as sent, and the After-merge checks file has one writer. A session reads it, never a board page.
 - A module the request thread imports must not spawn synchronously: `request-thread-guard.test.ts` holds that, with its exceptions listed.
+- The board thread's own holds are counted, and `/api/health` names the call sites that cause them (`blocking`, with the herdr and GitHub seams skipped so the site is the code that asked). They are what a write, and `GET /api/session-asks`, wait behind, and what the board's reliability figure "synchronous holds an hour" counts (A11-282, reopened 2026-10-28 at 26 an hour against a threshold of 10).
+
+## Taking the board thread's own calls off its loop
+
+The request thread made reads independent of the board thread; it did not make the board thread's calls cheap. After it merged the board thread still held its loop for every synchronous `gh`, `git` and `herdr` call its tick and sweeps made, which delayed writes and `GET /api/session-asks`, and counted as holds. The calls are being made asynchronous one family at a time, each as an OPTIONAL asynchronous twin in the contract (a minor bump, code host 2.2, so an older plugin still works and is read through its synchronous operation), asked first by the pool:
+
+- the start-up check of the `gh` wrapper (a child process of this Node, not a synchronous one);
+- the tick's two herdr listings (`workspace list`, `agent list`): `readAgentsAsync` over `herdrAsync`;
+- the clone sweep's listing of the organisation: `repositories.readRepositoriesAsync`;
+- the sweep of the stacked pull requests' bases: `sweepRetargetsAsync`.
+
+What still holds the board thread, by the live ledger of 2026-10-28 (calls of 250 ms or more): the reviewer's start (its checkout with `git` and `pnpm`, its token mint, its claim on the head with `gh`, its `herdr` workspace), the stack merge's reads, the merge flow's reads and the check-run reads. The reviewer's start is the largest family and is A11-379's: its first step (the asynchronous forms of the steps that spawn a program) has merged, and its second wires the reviewer port to them. The rest is listed in the pull request that made this change, with the ledger's times, for whoever takes the next family.

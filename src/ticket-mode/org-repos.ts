@@ -8,10 +8,11 @@
 // THE CLONE IS THE SAME AS THE EXISTING ONES: the repository's https address as `origin`, with the credentials the host's git already uses for the workers (the credential helper of its global git config, which `host:check`
 // holds in place), cloned beside the existing clones and added to the host file's `clones` under the repository's name. A name the host file already holds is never touched.
 //
-// THE READS ARE SYNCHRONOUS, AS THE CODE HOST'S ARE; ONLY THE CLONE IS NOT, so the board keeps answering while a large repository comes down.
+// THE READS ARE SYNCHRONOUS, AS THE CODE HOST'S ARE, EXCEPT THE CLONE SWEEP'S (A11-282): the sweep lists the organisation with `readOrganisationAsync`, which asks the code host's `readRepositoriesAsync` where it has one, so the listing does not
+// hold the board thread. The clone is not synchronous either, so the board keeps answering while a large repository comes down.
 import { existsSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
-import type { CodeHost, HostRepository } from "../plugins/contracts/code-host.ts";
+import type { CodeHost, CodeHostRepositories, HostRepository } from "../plugins/contracts/code-host.ts";
 import { spliceJson } from "./json-edit.ts";
 import type { Git } from "./worktree.ts";
 
@@ -52,19 +53,44 @@ export function ownersOf(clones: Clones, codeHost: CodeHost): readonly string[] 
   return once.length > 1 && several.length > 0 ? several : once;
 }
 
+/** What listing the organisation starts from: the code host's `repositories` group and the owners of the machine's clones, or why neither can be had. */
+function listingOf(clones: Clones, codeHost: CodeHost): Readonly<{ listing: CodeHostRepositories; owners: readonly string[] }> | Readonly<{ unreadable: string }> {
+  const listing = codeHost.repositories;
+  if (listing === undefined) return { unreadable: "the code host lists no repositories" };
+  const owners = ownersOf(clones, codeHost);
+  if (owners.length === 0) return { unreadable: "no clone names the organisation: none has an origin the code host knows" };
+  return { listing, owners };
+}
+
+/** The organisation from its owners' lists, `null` where a list could not be read: unreadable naming the first such owner. */
+function organisationFrom(owners: readonly string[], lists: readonly (readonly HostRepository[] | null)[]): OrgReading {
+  const failed = owners.find((_owner, at) => lists[at] === null);
+  return failed !== undefined ? { unreadable: `the repositories of ${failed} could not be listed` } : { repositories: lists.flatMap((list) => list ?? []) };
+}
+
 /**
  * Every live repository of the organisations the machine's clones belong to. Unreadable, with the reason, when the code host lists none, there is no clone to name an organisation, or a list could not be read: a
  * caller never takes that for "the organisation has no more repositories".
  */
 export function readOrganisation(clones: Clones, codeHost: CodeHost): OrgReading {
-  const listing = codeHost.repositories;
-  if (listing === undefined) return { unreadable: "the code host lists no repositories" };
-  const owners = ownersOf(clones, codeHost);
-  if (owners.length === 0) return { unreadable: "no clone names the organisation: none has an origin the code host knows" };
-  const lists = owners.map((login) => listing.readRepositories({ login, kind: "organisation" }));
-  const failed = owners.find((_owner, at) => lists[at] === null);
-  if (failed !== undefined) return { unreadable: `the repositories of ${failed} could not be listed` };
-  return { repositories: lists.flatMap((list) => list ?? []) };
+  const found = listingOf(clones, codeHost);
+  if ("unreadable" in found) return found;
+  return organisationFrom(found.owners, found.owners.map((login) => found.listing.readRepositories({ login, kind: "organisation" })));
+}
+
+/**
+ * {@link readOrganisation} without holding the process still (A11-282): the owners' lists are asked together through the code host's `readRepositoriesAsync`, and through its synchronous `readRepositories` for a host that has none (contract
+ * before 2.2). The answer is the same.
+ */
+export async function readOrganisationAsync(clones: Clones, codeHost: CodeHost): Promise<OrgReading> {
+  const found = listingOf(clones, codeHost);
+  if ("unreadable" in found) return found;
+  const { listing, owners } = found;
+  const lists = await Promise.all(owners.map((login) => {
+    const owner = { login, kind: "organisation" } as const;
+    return listing.readRepositoriesAsync === undefined ? listing.readRepositories(owner) : listing.readRepositoriesAsync(owner);
+  }));
+  return organisationFrom(owners, lists);
 }
 
 /**

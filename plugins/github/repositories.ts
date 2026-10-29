@@ -4,7 +4,7 @@
 // organisations. Every read goes through the plugin's one runner (`gh.ts`), so this file spawns nothing. A read answers `null` for "could not ask", never for "there is none".
 import type { CodeHostRepositories, HostRepository, RepositoryOwner } from "../../src/plugins/contracts/code-host.ts";
 import type { PluginDeps } from "../../src/plugins/manifest.ts";
-import { GhFailure, ghRunner, type Gh } from "./gh.ts";
+import { asyncGhRunner, GhFailure, ghRunner, type AsyncGh, type Gh } from "./gh.ts";
 import { readOwnLogin } from "./pull-feedback.ts";
 import { repoCloneArgs } from "./repo-args.ts";
 
@@ -48,15 +48,33 @@ export function readOwners(gh: Gh): readonly RepositoryOwner[] | null {
   }
 }
 
+/** The arguments that list the owner's repositories. With no owner, `gh repo list` lists the signed-in account's own repositories, private ones included. */
+const listArgs = (owner: RepositoryOwner): string[] =>
+  ["repo", "list", ...(owner.kind === "account" ? [] : [owner.login]), "--no-archived", "--limit", String(REPOSITORY_LIST_LIMIT), "--json", "name,nameWithOwner"];
+
+/** The repositories `gh repo list` printed, by name; null when it answers another shape or is cut off at its limit. */
+function repositoriesOf(printed: string): readonly HostRepository[] | null {
+  const listed: unknown = JSON.parse(printed);
+  if (!Array.isArray(listed) || listed.length >= REPOSITORY_LIST_LIMIT) return null;
+  const repositories = listed.map((entry: { name?: unknown; nameWithOwner?: unknown }): HostRepository | null =>
+    (typeof entry?.name === "string" && typeof entry.nameWithOwner === "string" ? { name: entry.name, fullName: entry.nameWithOwner } : null));
+  return repositories.includes(null) ? null : (repositories as HostRepository[]).sort((a, b) => a.name.localeCompare(b.name) || a.fullName.localeCompare(b.fullName));
+}
+
 /** The owner's repositories, archived ones left out, by name; null when the call fails, answers another shape, or is cut off at its limit. */
 export function readRepositories(owner: RepositoryOwner, gh: Gh): readonly HostRepository[] | null {
   try {
-    // With no owner, `gh repo list` lists the signed-in account's own repositories, private ones included.
-    const listed: unknown = JSON.parse(gh(["repo", "list", ...(owner.kind === "account" ? [] : [owner.login]), "--no-archived", "--limit", String(REPOSITORY_LIST_LIMIT), "--json", "name,nameWithOwner"]));
-    if (!Array.isArray(listed) || listed.length >= REPOSITORY_LIST_LIMIT) return null;
-    const repositories = listed.map((entry: { name?: unknown; nameWithOwner?: unknown }): HostRepository | null =>
-      (typeof entry?.name === "string" && typeof entry.nameWithOwner === "string" ? { name: entry.name, fullName: entry.nameWithOwner } : null));
-    return repositories.includes(null) ? null : (repositories as HostRepository[]).sort((a, b) => a.name.localeCompare(b.name) || a.fullName.localeCompare(b.fullName));
+    return repositoriesOf(gh(listArgs(owner)));
+  } catch (error) {
+    void error; // "could not ask"
+    return null;
+  }
+}
+
+/** {@link readRepositories} without holding the process still (A11-282): the board's clone sweep lists the organisation on its own thread, where a synchronous `gh` of a second held every write. */
+export async function readRepositoriesAsync(owner: RepositoryOwner, gh: AsyncGh): Promise<readonly HostRepository[] | null> {
+  try {
+    return repositoriesOf(await gh(listArgs(owner)));
   } catch (error) {
     void error; // "could not ask"
     return null;
@@ -75,12 +93,16 @@ function cloneAs(gh: Gh, fullName: string, path: string): string | null {
 }
 
 /** The `repositories` group of the GitHub code host (contract 1.14). */
-export function createRepositories(deps: Pick<PluginDeps, "exec">): CodeHostRepositories {
+export function createRepositories(deps: Pick<PluginDeps, "exec"> & Partial<Pick<PluginDeps, "execAsync">>): CodeHostRepositories {
   const gh = ghRunner(deps);
+  // A caller that gives no asynchronous exec (a CLI command's) gets no asynchronous read, and its caller reads through the synchronous one.
+  const { execAsync } = deps;
+  const asking = execAsync === undefined ? undefined : asyncGhRunner({ execAsync });
   const cloning = ghRunner(deps, {}, { timeoutMs: CLONE_TIMEOUT_MS });
   return {
     readOwners: () => readOwners(gh),
     readRepositories: (owner) => readRepositories(owner, gh),
+    ...(asking === undefined ? {} : { readRepositoriesAsync: (owner: RepositoryOwner) => readRepositoriesAsync(owner, asking) }),
     repositoryOfRemote,
     cloneCommand,
     cloneRepository: (fullName, path) => cloneAs(cloning, fullName, path),

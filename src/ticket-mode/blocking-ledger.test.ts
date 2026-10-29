@@ -90,6 +90,16 @@ test("the call site is the first frame outside Node, the ledger and the seams th
   assert.equal(callSiteOf(stackOf("spawnSync (node:child_process:870:11)"), CHECKOUT, LEDGER), "unknown");
 });
 
+test("herdr's own runners are seams too, so a herdr call is the code that asked for it and not herdr-agents.ts (A11-282)", () => {
+  const stack = stackOf(
+    "execFileSync (node:child_process:870:11)",
+    `herdrRun (${CHECKOUT}/src/herdr-agents.ts:46:12)`,
+    `defaultHerdr (${CHECKOUT}/src/ticket-mode/pool-herdr.ts:10:62)`,
+    `readSessionIds (${CHECKOUT}/src/ticket-mode/pool-watch.ts:98:30)`,
+  );
+  assert.equal(callSiteOf(stack, CHECKOUT, LEDGER), "src/ticket-mode/pool-watch.ts:98");
+});
+
 test("the program is the file's own name, a command line's first word, and node for this Node", () => {
   assert.equal(programOf("spawnSync", "/home/me/.local/bin/gh"), "gh");
   assert.equal(programOf("execFileSync", "git"), "git");

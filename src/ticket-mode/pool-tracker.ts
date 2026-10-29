@@ -23,7 +23,7 @@ import { isPullReadyToMerge } from "./board-view/pull-readiness.ts";
 import { handBackNote, isStackMergeNote, stackMergeRequestOf, stackMergeStep } from "./stack-merge.ts";
 import { settledByPulls } from "./board-view/pull-settled.ts";
 import { recordClosedByBoard } from "./queue.ts";
-import type { StackMergeFacts } from "../plugins/contracts/code-host.ts";
+import type { CodeHost, StackMergeFacts } from "../plugins/contracts/code-host.ts";
 import { afterConflictCleared, afterMerge, conflictFeedback, mergedIn, mergeBaseIn, mergeDue, protectStack, readStackBase, releaseStack, remoteHead, stackBaseFile, stackBaseIn, stackRef, type MergeResult } from "./stack-rebase.ts";
 import { worktreePath } from "./worktree.ts";
 import { followTicketTexts, learnFromBlockers } from "./pool-ticket-text.ts";
@@ -284,12 +284,17 @@ export function retargetStacked(ctx: PoolContext): Promise<void> {
 
 const RETARGETING = new WeakMap<object, Promise<void>>();
 
+/** The base notes of a sweep, asked of the code host without holding the board thread's loop when it can answer a promise (contract 2.2, A11-282), else as it always was. */
+const retargetsOf = (codeHost: CodeHost, sweep: Parameters<CodeHost["sweepRetargets"]>[0]): Promise<Record<string, string>> | Record<string, string> =>
+  codeHost.sweepRetargetsAsync === undefined ? codeHost.sweepRetargets(sweep) : codeHost.sweepRetargetsAsync(sweep);
+
 /** {@link retargetStacked}, one pass. */
 async function retargetEach(ctx: PoolContext): Promise<void> {
   const { codeHost, store } = ctx;
   const defaults = new Map<string, string>();
   const told = { unsupported: false };
-  for (const entry of store.get().entries) {
+  for (const listed of store.get().entries) {
+    let entry = listed;
     // Only a finished run is asked: the board shows its note on a finished run alone, and a run that is not finished is not written to here. Only a run
     // stacked on a blocker's branch has a base the board moves; any other pull request's base is the worker's own, and is left as it is.
     if (entry.phase !== "finished") continue;
@@ -299,7 +304,10 @@ async function retargetEach(ctx: PoolContext): Promise<void> {
     const previous = entry.retargets ?? {};
     // The sweep of the bases keeps the note of a pull request it cannot read, so it is handed only the notes it wrote: one the stack merge or the restack wrote is theirs to keep or clear.
     const baseNotesBefore = Object.fromEntries(Object.entries(previous).filter(([, note]) => !isStackMergeNote(note) && !isRestackNote(note)));
-    const bases = stacked.size === 0 ? {} : codeHost.sweepRetargets({ urls, previous: baseNotesBefore, stacked, defaults, log });
+    const bases = stacked.size === 0 ? {} : await retargetsOf(codeHost, { urls, previous: baseNotesBefore, stacked, defaults, log });
+    // The sweep waited on GitHub without holding the loop (A11-282), and a person's Respond, Retry or Remove may have landed meanwhile: what follows is decided on the run as it is now, and not on a run that is no longer finished.
+    entry = store.get().entries.find((each) => each.ticket.key === listed.ticket.key) ?? listed;
+    if (entry.phase !== "finished") continue;
     const facts = new Map<string, StackMergeFacts | null>();
     const restacks = await sweepRestacks(ctx, entry, { urls, bases, facts, told });
     const merges = sweepStackMerges(ctx, entry, urls, { skip: new Set([...Object.keys(bases), ...restacks.moved]), facts });

@@ -1,7 +1,7 @@
 // no-token: none -- `gh` is a fake that answers from a table of pull requests, branches and default branches: no network, and no pull request is touched
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { baseKindOf, sweepRetargets, type Gh } from "./stack-retarget.ts";
+import { baseKindOf, branchDecides, sweepRetargets, sweepRetargetsAsync, type Gh } from "./stack-retarget.ts";
 
 const STACKED = "https://github.com/a11ign/agent-org/pull/1749";
 const OTHER = "https://github.com/a11ign/agent-org/pull/1750";
@@ -167,4 +167,39 @@ test("A11-149: two instances sweep one stacked pull request, and one edit moves 
   assert.deepEqual([first.notes, second.notes], [{}, {}], "neither says anything: the first retargeted it and the second found it done");
   assert.deepEqual(fake.calls.filter((args) => args[1] === "edit"), [["pr", "edit", STACKED, "--base", "main"]], "exactly one edit reaches GitHub");
   assert.equal(fake.pulls[STACKED].base, "main", "the base is the default branch after both sweeps");
+});
+
+// A11-282: THE SWEEP IS THE SAME WHETHER ITS `gh` HOLDS THE PROCESS OR NOT. The instance's loop runs it through an asynchronous `gh`; these hold the two to one answer.
+const WORLDS: Record<string, World> = {
+  "a merged base is moved": { base: "nbf-1-fit", heads: { "nbf-1-fit": ["MERGED"] }, branches: ["nbf-1-fit"] },
+  "a deleted base with nothing merged is a note": { base: "nbf-1-fit", heads: { "nbf-1-fit": ["CLOSED"] } },
+  "a base an open pull request builds on is left": { base: "nbf-1-fit", heads: { "nbf-1-fit": ["OPEN", "MERGED"] }, branches: ["nbf-1-fit"] },
+  "a long-lived branch is left": { base: "release/2", heads: {}, branches: ["release/2"] },
+  "a refused edit is a note": { base: "nbf-1-fit", heads: { "nbf-1-fit": ["MERGED"] }, branches: ["nbf-1-fit"], editRefused: "gh: Resource not accessible by integration (HTTP 403)" },
+  "an unreadable pull request keeps its note": { base: "nbf-1-fit", heads: { "nbf-1-fit": ["MERGED"] }, branches: ["nbf-1-fit"], unreadable: [STACKED] },
+};
+
+for (const [name, world] of Object.entries(WORLDS)) {
+  test(`A11-282: the asynchronous sweep asks what the synchronous one asks and answers what it answers: ${name}`, async () => {
+    const previous = { [STACKED]: "Needs retarget: earlier" };
+    const synchronous = fakeGh(world);
+    const expected = sweep([STACKED, OTHER], synchronous.gh, previous);
+    const asynchronous = fakeGh(world);
+    const said: string[] = [];
+    const notes = await sweepRetargetsAsync({ urls: [STACKED, OTHER], previous, stacked: STACKED_ON, defaults: new Map(), log: (line) => said.push(line) },
+      (args) => new Promise((done, fail) => setImmediate(() => { try { done(asynchronous.gh(args)); } catch (err) { fail(err); } })));
+    assert.deepEqual(notes, expected.notes);
+    assert.deepEqual(said, expected.said);
+    assert.deepEqual(asynchronous.calls, synchronous.calls, "the same calls in the same order");
+  });
+}
+
+test("A11-282: the branch is looked for exactly when the kind of the base depends on it", () => {
+  for (const base of ["main", "nbf-1-fit"]) {
+    for (const heads of [[], ["OPEN"], ["MERGED"], ["CLOSED"], ["OPEN", "MERGED"]]) {
+      let looked = false;
+      baseKindOf({ base, defaultBranch: "main", heads, branchExists: () => { looked = true; return true; } });
+      assert.equal(branchDecides({ base, defaultBranch: "main", heads }), looked, `${base} ${heads.join("+")}`);
+    }
+  }
 });

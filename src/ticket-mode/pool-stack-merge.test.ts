@@ -170,6 +170,34 @@ test("A11-238: a note about a pull request's base stands, and its stack merge wa
   assert.ok(!host.calls.includes(`stackMergeFactsOf ${BOTTOM}`), "its stack is not even read");
 });
 
+test("A11-282: the sweep of the bases asks the code host's asynchronous sweep when it has one, and never the synchronous one, which holds the board thread's loop", async () => {
+  const note = `Needs retarget: ${BOTTOM} still targets nbf-1-fit, whose branch is gone: retarget it by hand`;
+  const asked: string[] = [];
+  const { sweep, entry } = world({
+    run: (urls) => finishedRun(urls, { [BOTTOM]: ready(BOTTOM_HEAD), [ABOVE]: ready(ABOVE_HEAD) }, { blockers: [{ key: "NBF-0", state: "started", status: "In Review", branch: "nbf-1-fit", pulls: {} }] }),
+    codeHost: (fake) => ({ ...fake, sweepRetargets: () => { throw new Error("the synchronous sweep holds the process still"); },
+      sweepRetargetsAsync: async ({ urls }) => { asked.push(...urls); return { [BOTTOM]: note }; } }),
+  });
+  await sweep();
+  assert.deepEqual(asked, [BOTTOM, ABOVE], "the asynchronous sweep was asked for the run's open pull requests");
+  assert.deepEqual(entry().retargets, { [BOTTOM]: note }, "and its note is the card's, as the synchronous sweep's is");
+});
+
+test("A11-282: a run a person queued again while the sweep waited on GitHub is left alone: nothing is handed to the arm bot and no note is written over it", async () => {
+  const note = `Needs retarget: ${BOTTOM} still targets nbf-1-fit, whose branch is gone: retarget it by hand`;
+  const { host, sweep, entry, ctx } = world({
+    run: (urls) => finishedRun(urls, { [BOTTOM]: ready(BOTTOM_HEAD), [ABOVE]: ready(ABOVE_HEAD) }, { blockers: [{ key: "NBF-0", state: "started", status: "In Review", branch: "nbf-1-fit", pulls: {} }] }),
+    codeHost: (fake) => ({ ...fake, sweepRetargetsAsync: async () => {
+      // Retry landed while GitHub was being asked: the run is queued again.
+      (ctx.store.set as (queue: Queue) => void)({ entries: [{ ...entry(), phase: "queued" }] } as unknown as Queue);
+      return { [ABOVE]: note };
+    } }),
+  });
+  await sweep();
+  assert.deepEqual(requested(host), [], "the run is no longer finished, so its pull requests are not handed to the arm bot");
+  assert.equal(entry().retargets, undefined, "and the note the sweep found is not written over the queued run");
+});
+
 test("A11-238: a base the sweep retargeted this pass does not leave the pull request out of the stack merge", async () => {
   const { host, sweep, entry } = world({
     run: (urls) => finishedRun(urls, { [BOTTOM]: ready(BOTTOM_HEAD), [ABOVE]: ready(ABOVE_HEAD) }, { blockers: [{ key: "NBF-0", state: "started", status: "In Review", branch: "nbf-1-fit", pulls: {} }] }),

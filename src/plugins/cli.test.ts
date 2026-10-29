@@ -80,9 +80,9 @@ test("`plugin list` shows each concern in order with the plugin enabled for it, 
   assert.match(out, /^ {2}slack +enabled +contract 1\.1 +plugins\/slack$/m, "the publisher is a bundled package since A11-161");
   assert.match(out, /^ {2}atomic +available +contract 1\.11 +plugins\/atomic-reviewer$/m, "and so is the reviewer, whose folder is not its name");
   assert.match(out, /^ {2}fake-tracker +available +contract 1\.9 +fake/m);
-  assert.match(out, /^ {2}fake-codeHost +available +contract 2\.1 +fake/m);
+  assert.match(out, /^ {2}fake-codeHost +available +contract 2\.2 +fake/m);
   assert.match(out, /^ {2}linear +enabled +contract 1\.9 +plugins\/linear$/m);
-  assert.match(out, /^ {2}github +enabled +contract 2\.1 +plugins\/github$/m, "the code host is the bundled github, enabled by the default");
+  assert.match(out, /^ {2}github +enabled +contract 2\.2 +plugins\/github$/m, "the code host is the bundled github, enabled by the default");
   assert.match(out, /^ {2}local +available +contract 1\.1 +plugins\/local$/m, "local is a bundled plugin since A11-162");
   assert.match(out, /^ {2}tailscale +enabled +contract 1\.2 +plugins\/tailscale$/m);
   assert.match(out, /^ {2}telegram +available +contract 1\.1 +plugins\/telegram$/m, "and so is telegram, which no project here enables");

@@ -3,6 +3,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import type { ExecResult } from "../../src/plugins/manifest.ts";
 import { CLONE_TIMEOUT_MS, REPOSITORY_LIST_LIMIT, cloneCommand, createRepositories, repositoryOfRemote } from "./repositories.ts";
+import { fakePluginDeps } from "../../src/plugins/fakes/deps.ts";
 
 type Call = { file: string; args: readonly string[]; options: unknown };
 const ok = (stdout: string): ExecResult => ({ status: 0, stdout, stderr: "" });
@@ -96,4 +97,28 @@ test("a failed clone answers the first line gh printed, and a gh that cannot sta
   assert.equal(createRepositories({ exec: absent.exec }).cloneRepository("a11ign/lab", "/work/lab"), "spawnSync gh ENOENT");
   const silent = recording(() => ({ status: 1, stdout: "", stderr: "" }));
   assert.match(createRepositories({ exec: silent.exec }).cloneRepository("a11ign/lab", "/work/lab") ?? "", /Command failed: gh repo clone a11ign\/lab \/work\/lab/);
+});
+
+test("A11-282: the organisation's repositories are listed through execAsync as readRepositories lists them, and never through exec, which holds the process still", async () => {
+  const synchronous: string[] = [];
+  const asynchronous: string[] = [];
+  const deps = fakePluginDeps({
+    exec: (_file, args) => { synchronous.push(args.join(" ")); return GITHUB(args); },
+    execAsync: (_file, args) => { asynchronous.push(args.join(" ")); return Promise.resolve(GITHUB(args)); },
+  });
+  const repositories = createRepositories(deps);
+  const owner = { login: "acme", kind: "organisation" } as const;
+  const listed = await repositories.readRepositoriesAsync?.(owner);
+  assert.deepEqual(listed, [{ name: "alpha", fullName: "acme/alpha" }, { name: "zed", fullName: "acme/zed" }]);
+  assert.deepEqual(listed, repositories.readRepositories(owner), "the same list the synchronous read gives");
+  assert.deepEqual(asynchronous, [`repo list acme --no-archived --limit ${REPOSITORY_LIST_LIMIT} --json name,nameWithOwner`]);
+  assert.deepEqual(synchronous, [`repo list acme --no-archived --limit ${REPOSITORY_LIST_LIMIT} --json name,nameWithOwner`], "only the synchronous read above ran through exec");
+});
+
+test("A11-282: an asynchronous list is null for a failing call, an answer of another shape and a list at its limit, as the synchronous one is", async () => {
+  const owner = { login: "acme", kind: "organisation" } as const;
+  const listing = (answer: ExecResult) => createRepositories(fakePluginDeps({ execAsync: () => Promise.resolve(answer) })).readRepositoriesAsync!(owner);
+  assert.equal(await listing({ status: 1, stdout: "", stderr: "gh: not logged in" }), null);
+  assert.equal(await listing(ok('{"not":"a list"}')), null);
+  assert.equal(await listing(ok(JSON.stringify(Array.from({ length: REPOSITORY_LIST_LIMIT }, (_, at) => ({ name: `r${at}`, nameWithOwner: `acme/r${at}` }))))), null);
 });
