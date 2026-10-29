@@ -1,5 +1,0 @@
----
-"agent-org": patch
----
-
-Ticket mode finishes the conflict round and the overlap wait A11-82 left open (A11-125). A run the board handed back at its round cap for a conflict now gets a Respond to review round that merges its base in first, as a feedback round does, and never rebases or force-pushes. A plan's `## Paths` section is the one list of paths: the overlap wait reads it, and `pr:open` checks a pull request against it as its Region, with a plan written before the section still read by its prefixed `## Region` lines. A run's pull request files are recorded the moment its run ends, so a queued run that shares one waits from then, and a run whose files are not read yet holds its repository until a watch reads them. A plan the tracker cannot give holds only its own run, which says why it waits, and the other runs start. A run Blocked only on an overlap offers Start anyway, which starts it beside the run it overlapped and records the override on its row. The shared `create-ticket` plan template's `## Paths` section is not in this repository and is handed over in the pull request body.
