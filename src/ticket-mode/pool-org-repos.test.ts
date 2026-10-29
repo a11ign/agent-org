@@ -342,3 +342,19 @@ test("A11-282: the clone sweep lists the organisation through the code host's as
   assert.equal(await cloneMissing(ctx), 2, "corpus and .github are cloned from the list the asynchronous read gave");
   assert.deepEqual(asked, ["acme"]);
 });
+
+test("A11-282: a run stopped while the organisation is listed for its wrong-repo is not moved, nor its repository cloned (CONTROL: left alone, it is)", async () => {
+  const movedWhen = async (stopsIt: boolean) => {
+    const run = await working();
+    const repositories = run.codeHost.repositories!;
+    const listed = repositories.readRepositories.bind(repositories);
+    // The code host lists beside the pass now: a person's Stop can land while it answers.
+    repositories.readRepositories = (owner) => { if (stopsIt) run.pool.stop(KEY); return listed(owner); };
+    await run.ends(wrongRepo("acme/corpus: the backups code lives there, not in this repository"));
+    return { cloned: run.calls.length, plannedRepo: run.entry(KEY).plannedRepo, phase: run.entry(KEY).phase };
+  };
+  assert.deepEqual(await movedWhen(false), { cloned: 1, plannedRepo: "corpus", phase: "running" }, "CONTROL: the board clones the named repository and moves the run there");
+  const stopped = await movedWhen(true);
+  assert.equal(stopped.cloned, 0, "the run was stopped while the organisation was listed, so nothing is cloned");
+  assert.equal(stopped.plannedRepo, undefined, "and it is not moved");
+});
