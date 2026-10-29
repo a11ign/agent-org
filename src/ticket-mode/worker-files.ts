@@ -33,6 +33,7 @@ import { END_AT_PUSH } from "./ci-wait.ts";
 import { openDecisionOf, sectionsNeeded } from "./open-decisions.ts";
 import { claimsText, type HeldClaim } from "./path-claims.ts";
 import { PLANNER_TICKET_DECISIONS, RELAY_DECISION, TICKET_DECISIONS } from "./brief-decisions.ts";
+import { LIVE_CHECK_RULE, PLANNER_SCOPE_RULE, SCOPE_RULE } from "./brief-scope.ts";
 import { closedWorkText, type KeptClosedWork } from "./closed-work-account.ts";
 import { connectorsText, MISSING_SKILL, quoted, STALLING_COMMANDS } from "./brief-common.ts";
 import { decisionsChange, decisionsChangedSection } from "./decisions-change.ts";
@@ -434,6 +435,8 @@ ${PARENT_ONLY_PLAN}
 
 ${PLANNER_DECISIONS}
 
+${PLANNER_SCOPE_RULE}
+
 ${BLOCKED_BY_RULE}
 
 ${PLANNER_TICKET_DECISIONS}
@@ -520,6 +523,8 @@ ${plannerInstruction(run, keys, planDir)}
 ${PARENT_ONLY_PLAN}
 
 ${PLANNER_DECISIONS}
+
+${PLANNER_SCOPE_RULE}
 
 ${PLANNER_TICKET_DECISIONS}
 
@@ -663,6 +668,10 @@ ${TICKET_DECISIONS}
 
 ${RELAY_DECISION}
 
+${SCOPE_RULE}
+
+${LIVE_CHECK_RULE}
+
 ## The ticket
 
 ${ticket.url}
@@ -772,6 +781,10 @@ ${ESCALATION_RULE}
 ${TICKET_DECISIONS}
 
 ${RELAY_DECISION}
+
+${SCOPE_RULE}
+
+${LIVE_CHECK_RULE}
 
 ${OWN_PROCESS_WAIT}
 
