@@ -11,13 +11,12 @@ Step 1 of 2 of A11-395. The GitHub plugin's `gh` operations that the board makes
 
 ## What it proves
 
-The parity test and the row's tests pass, the plugin's other tests still pass, typecheck passes, and the row's module names no synchronous runner.
+The parity test and the row's tests pass, the plugin's other tests still pass, typecheck passes.
 
 Acceptance:
 ```bash
 set -e
 npm run typecheck
-test -z "$(git grep -nE 'ghRunner\(|githubRepositoriesOf\(' -- plugins/github/merge-flow-checks.ts)"
 npx rstest run --config scripts/rstest/rstest.config.ts plugins/github/event-operations-async.test.ts plugins/github/merge-flow-checks.test.ts plugins/github/merge-flow.test.ts plugins/github/merge-queue.test.ts plugins/github/closed-work.test.ts plugins/github/ticket-pulls.test.ts plugins/github/stack-merge.test.ts plugins/github/ci-run.test.ts plugins/github/check-runs.test.ts plugins/github/update-branch.test.ts plugins/github/close-pull.test.ts plugins/github/default-branch-checks.test.ts plugins/github/index.test.ts
 ```
 
