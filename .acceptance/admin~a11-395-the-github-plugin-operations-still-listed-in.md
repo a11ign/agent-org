@@ -9,7 +9,7 @@ Step 1 of 2 of A11-395. The GitHub plugin's `gh` operations that the board makes
 - `plugins/github/event-operations-async.test.ts` (new): for every pair, the same `gh` calls in the same order and the same answer or refusal.
 - `plugins/github/merge-flow-checks.test.ts`: the row is read over `execAsync`, and a case asserts that nothing ran through `deps.exec`.
 
-## Acceptance
+## What it proves
 
 The parity test and the row's tests pass, the plugin's other tests still pass, typecheck passes, and the row's module names no synchronous runner.
 
