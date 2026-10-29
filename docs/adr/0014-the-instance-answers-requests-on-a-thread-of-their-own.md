@@ -34,3 +34,11 @@ The ticket was reopened on 2026-10-29 with the figure at 14 an hour. After step 
 - The close is no longer finished when the code after it runs, so the pass's `fill` and every start wait for the closes that are out (`closesSettled`): a run queued again never opens a workspace beside the one it replaces, and `settleSessions` never reads a workspace that is closing. The pass waits, the event loop does not.
 - An instance that ends waits for the closes it asked, at most `CLOSES_WAIT_MS`, before it exits.
 - Still synchronous, by the same ledger: `sweepRunTmp`'s `workspace list`, the pane read of a run the tick finds not working, the start dialog's `agent read` and `send-keys`, and the workspace close of an unparked run (which reports its failure). Each is rare and each is listed in the pull request.
+
+## The prompts the board sends a worker (A11-282, step 5)
+
+The ticket was reopened again on 2026-10-29 at 15 an hour. The live ledger of the instance on v0.335.0 (38 minutes, 14 lines) held the GitHub plugin's event operations (A11-395's, ten lines), `pool-settle.ts:818` (step 4) and the `herdr agent prompt` the board sends a worker's pane (`pool-resume.ts:142`, 315 ms a call). The prompts that a sweep that is already asynchronous sends now go through `sendToAgentAsync` (`ctx.herdrCall`, `agentTargetAsync` for a run with no pane): the CI-budget warning (`ci-spend/watch.ts`), the notice of a blocked pull request the run waits on (`pool-wait-pulls.ts`) and the wake that says push access is fine (`pool-push-check.ts`, from `settleLostPush`).
+
+- A run can be stopped or ended while herdr answers, which the synchronous call made impossible. The waited-pulls watch no longer ends a run `needs-human` that was stopped, ended or started again after the prompt (`sameRun`), and `settleLostPush` returns when the run is not the one it started with.
+- Still synchronous: `sendToAgent` for `pool-watch.ts` (the idle and background-gone nudges, held by A11-374's plan), the resume prompt (`resumeRun`, from `resumeAfterRestart` and `reseatRuns`) and the plan send-back (`pool-plan-send-back.ts`), which are reached through synchronous chains and fire rarely. Their holds read as `pool-resume.ts:142` in the ledger.
+

@@ -18,7 +18,7 @@
 import { readFileSync, statSync, writeFileSync, mkdirSync, existsSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { dirname, join } from "node:path";
-import { herdrReason, readAgents, rootPaneOf, type ListedAgent } from "../herdr-agents.ts";
+import { herdrReason, readAgents, readAgentsAsync, rootPaneOf, type ListedAgent } from "../herdr-agents.ts";
 import { HERDR_UNIT } from "../install/herdr-place.ts";
 import { type PoolContext } from "./pool-context.ts";
 import { type RunPlace } from "./pool-paths.ts";
@@ -131,15 +131,48 @@ function writeRestartRecord(path: string, record: RestartRecord): void {
  */
 export function agentTarget(ctx: PoolContext, { name, pane }: Pick<RunPlace, "name" | "pane">): string {
   if (pane !== undefined) return pane;
-  const workspace = readAgents((args) => ctx.herdr(args), ctx.session)?.find((agent) => agent.label === name)?.workspace;
+  return rootPaneOfListed(readAgents((args) => ctx.herdr(args), ctx.session), name);
+}
+
+/** The root pane of the workspace herdr lists under `name`, or the refusal that says herdr lists none (a listing that failed lists none). PURE. */
+function rootPaneOfListed(agents: readonly ListedAgent[] | null, name: string): string {
+  const workspace = agents?.find((agent) => agent.label === name)?.workspace;
   if (workspace === undefined) throw new Error(`herdr lists no workspace for ${name}, so its agent has no pane to reach`);
   return rootPaneOf(workspace);
+}
+
+/** The arguments of the prompt that sends `text` to the agent at `target`, in the board's session. PURE. */
+const promptArgs = (ctx: PoolContext, target: string, text: string): string[] => ["--session", ctx.settings.herdrSession, "agent", "prompt", target, text];
+
+/** How long the board waits for herdr on a prompt or a listing it asks of a run's agent, in ms: the cut the synchronous call has always had. The wait holds no loop (A11-282). */
+const PROMPT_MS = 30_000;
+
+/**
+ * {@link agentTarget} without holding the loop (A11-282): the same pane, and the same refusal when herdr lists no workspace for the run, over `herdrCall`. A run that has its pane asks herdr nothing.
+ * The prompts the board sends from inside an already asynchronous sweep use this one; a caller still on the synchronous pass keeps {@link agentTarget}.
+ */
+export async function agentTargetAsync(ctx: PoolContext, { name, pane }: Pick<RunPlace, "name" | "pane">): Promise<string> {
+  if (pane !== undefined) return pane;
+  return rootPaneOfListed(await readAgentsAsync((args) => ctx.herdrCall(args, PROMPT_MS), ctx.session), name);
+}
+
+/**
+ * {@link sendToAgent} without holding the loop (A11-282): null when herdr took the prompt, or why it could not be sent. A prompt held the board thread for as long as herdr took, 300 ms and more, every time a worker
+ * was told of a pull request, a budget or a wake; the board's other work goes on while herdr answers.
+ */
+export async function sendToAgentAsync(ctx: PoolContext, place: Pick<RunPlace, "name" | "pane">, text: string): Promise<string | null> {
+  try {
+    await ctx.herdrCall(promptArgs(ctx, await agentTargetAsync(ctx, place), text), PROMPT_MS);
+    return null;
+  } catch (err) {
+    return herdrReason(err);
+  }
 }
 
 /** Send `text` to a run's agent by its pane: null when herdr took it, or why it could not be sent. */
 export function sendToAgent(ctx: PoolContext, place: Pick<RunPlace, "name" | "pane">, text: string): string | null {
   try {
-    ctx.herdr(["--session", ctx.settings.herdrSession, "agent", "prompt", agentTarget(ctx, place), text]);
+    ctx.herdr(promptArgs(ctx, agentTarget(ctx, place), text));
     return null;
   } catch (err) {
     return herdrReason(err);

@@ -15,6 +15,7 @@ import { requeuesOnLoss } from "./queue/queue-readopt.ts";
 import { OPENED_FILE, READY_FILE } from "./worker-files.ts";
 import type { PullFeedback } from "../plugins/contracts/code-host.ts";
 import type { Entry } from "./queue/queue-entries-and-outcomes.ts";
+import type { PoolDeps } from "./pool-context.ts";
 
 const NAME = herdrName("NBF-1");
 const PANE = "w1:p1";
@@ -27,7 +28,7 @@ const CHANGES: Partial<PullFeedback> = { verdictAtHead: "changes-requested" };
 const reasonOf = ({ outcome }: Entry): string => (outcome?.kind === "needs-human" ? outcome.reason : "");
 
 /** NBF-1 as the board holds it once its worker wrote `working` and went idle: a pool over a code host that holds toolchain#60, and the clock a test moves. `waits` is what the worker declared, `until` when. */
-async function waitingRun({ waits, until = "2026-10-28T10:00:00Z", feedback = {}, state = "open", refusePrompts = false, tickets = {} }: { waits?: readonly object[]; until?: string; feedback?: Partial<PullFeedback>; state?: "open" | "merged"; refusePrompts?: boolean; tickets?: Record<string, unknown> } = {}) {
+async function waitingRun({ waits, until = "2026-10-28T10:00:00Z", feedback = {}, state = "open", refusePrompts = false, tickets = {}, promptAsync }: { waits?: readonly object[]; until?: string; feedback?: Partial<PullFeedback>; state?: "open" | "merged"; refusePrompts?: boolean; tickets?: Record<string, unknown>; promptAsync?: (args: string[]) => Promise<string> } = {}) {
   let clock = T0;
   const host = createFakeCodeHost();
   const { url } = host.seedPull(TOOLCHAIN, 60, { feedback, state });
@@ -40,7 +41,9 @@ async function waitingRun({ waits, until = "2026-10-28T10:00:00Z", feedback = {}
     }
     return made.herdr.run(args);
   };
-  const pool = made.restart({ codeHost: host, herdr: throwing });
+  /** With `promptAsync`, a prompt goes to it through the async seam; everything else herdr is asked is the fixture's. */
+  const herdrAsync: PoolDeps["herdrAsync"] = async (args) => (promptAsync !== undefined && args.includes("prompt") ? promptAsync(args) : made.herdr.run(args));
+  const pool = made.restart({ codeHost: host, herdr: throwing, ...(promptAsync === undefined ? {} : { herdrAsync }) });
   await pool.tick();
   made.status.set(NAME, "working");
   await pool.tick();
@@ -271,4 +274,46 @@ test("A11-358: a record of opened pull requests that cannot be read is said in t
   writeFileSync(join(run.dir, OPENED_FILE), `${JSON.stringify(lab)}\n${JSON.stringify({ repo: TOOLCHAIN, url: run.url })}\n`);
   await run.pass();
   assert.deepEqual(run.run().opened?.map(({ url }) => url), [lab.url, run.url], "and once the record reads whole, the pull request it was missing is added");
+});
+
+test("A11-282: the worker is told of a blocked pull request through herdrAsync, so the watch holds no loop for the prompt, and is told once as before", async () => {
+  const asked: string[][] = [];
+  const run = await waitingRun({ feedback: CHANGES, promptAsync: async (args) => { asked.push(args); return "{}"; } });
+  await run.passes(3);
+  const told = asked.filter((args) => args.includes("prompt") && args.includes(PANE));
+  assert.equal(told.length, 1, "exactly one prompt, through the async seam");
+  assert.match(String(told[0].at(-1)), /^A pull request you wait on or opened needs you: a11ign\/toolchain #60 has a review asking for changes on its current head\. /);
+  assert.equal(run.prompts().length, 0, "and none through the synchronous call that holds the board thread");
+  assert.equal(run.run().working?.fed?.[run.url]?.sig, "head-60|changes", "the board records what it told");
+});
+
+/** NBF-1 whose changes-requested review has stood an hour untold (herdr refused the prompt each time), then asked again with an answer that is held until `release`: the watch is waiting on herdr with the run's end ready. */
+async function promptHeldWithTheRunDue() {
+  const herdr: { mode: "refuse" | "hold"; release: () => void } = { mode: "refuse", release: () => undefined };
+  const held = new Promise<string>((resolve) => { herdr.release = () => resolve("{}"); });
+  const run = await waitingRun({ feedback: CHANGES, promptAsync: () => (herdr.mode === "refuse" ? Promise.reject(new Error("herdr refused the prompt")) : held) });
+  await run.passes(57);
+  assert.equal(run.run().phase, "running", "refused prompts end nothing by themselves before the hour");
+  herdr.mode = "hold";
+  await run.pass(5 * MIN);
+  /** Change NBF-1 on the queue while herdr is still answering, let herdr answer, and let the watch go on. */
+  const meanwhile = async (change: (entry: Entry) => Entry) => {
+    run.store.set({ ...run.store.get(), entries: run.store.get().entries.map((entry) => (entry.ticket.key === "NBF-1" ? change(entry) : entry)) });
+    herdr.release();
+    await flush();
+    await flush();
+  };
+  return { run, meanwhile };
+}
+
+test("A11-282: a run stopped while herdr answers the prompt is not ended needs-human by the watch that standing review would have ended", async () => {
+  const { run, meanwhile } = await promptHeldWithTheRunDue();
+  await meanwhile((entry) => ({ ...entry, phase: "finished" as const, outcome: { kind: "checked" as const, reason: "stopped by a person" } }));
+  assert.deepEqual([run.run().phase, run.run().outcome?.kind], ["finished", "checked"], "the person's stop stands");
+});
+
+test("A11-282: a run started again while herdr answers the prompt is not ended needs-human by the watch of the run before", async () => {
+  const { run, meanwhile } = await promptHeldWithTheRunDue();
+  await meanwhile((entry) => ({ ...entry, workspace: "w9", startedAt: (entry.startedAt ?? 0) + 1 }));
+  assert.deepEqual([run.run().phase, run.run().outcome], ["running", undefined], "the run that started again is left running");
 });

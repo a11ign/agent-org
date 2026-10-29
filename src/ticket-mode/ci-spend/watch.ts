@@ -4,7 +4,7 @@
 // (`readBranchCi`, contract 1.22). A run reads as soon as its worker pushes, before a pull request exists: that is the point, since the pushes that cost the most are a live worker's. What is read is merged into `Queue.ciSpend` and a completed run is
 // never asked for again. The ticket's weighted total then decides a step (`budget.ts`): past the budget the worker is told once in its pane; at twice it, and at each further whole budget, the run is held (`hold.ts`): a live run is stopped and queued
 // again, a finished one only has the reason on its next round. A code host without the read, or one that cannot be asked, changes nothing and is said once.
-import { sendToAgent } from "../pool-resume.ts";
+import { sendToAgentAsync } from "../pool-resume.ts";
 import { closedOrGone } from "../pool-drain.ts";
 import { forgetRun, log, runPlace, update } from "../pool-state.ts";
 import { find, isLive, type Entry } from "../queue/queue-entries-and-outcomes.ts";
@@ -121,8 +121,8 @@ async function readTicket(ctx: PoolContext, entry: Entry, readBranchCi: NonNulla
 const weightedOf = (ctx: PoolContext, key: string): number => totalsOf(runsOf(ctx.store.get(), key)).weighted;
 
 /** Tell a running worker, in its pane, that its ticket is past the budget. True when herdr took the prompt; a refusal is said and the next sweep tells it again. */
-function tellWorker(ctx: PoolContext, entry: Entry, weighted: number): boolean {
-  const refusal = sendToAgent(ctx, runPlace(ctx, entry), warnPrompt(weighted, ctx.settings.ciBudgetMinutes));
+async function tellWorker(ctx: PoolContext, entry: Entry, weighted: number): Promise<boolean> {
+  const refusal = await sendToAgentAsync(ctx, runPlace(ctx, entry), warnPrompt(weighted, ctx.settings.ciBudgetMinutes));
   if (refusal !== null) log(`${entry.ticket.key} could not be told its ticket is past its CI budget: ${refusal}`);
   return refusal === null;
 }
@@ -131,15 +131,15 @@ function tellWorker(ctx: PoolContext, entry: Entry, weighted: number): boolean {
 const actable = (entry: Entry): boolean => entry.phase === "running" && entry.batch === undefined && entry.talk !== true;
 
 /** Whether the run's worker needs no telling or has now been told: a finished run has no pane, and a live one is told only while it is running. A run still starting is told by a later sweep. */
-function workerTold(ctx: PoolContext, entry: Entry, weighted: number): boolean {
+async function workerTold(ctx: PoolContext, entry: Entry, weighted: number): Promise<boolean> {
   if (!isLive(entry)) return true;
-  return actable(entry) && tellWorker(ctx, entry, weighted);
+  return actable(entry) && await tellWorker(ctx, entry, weighted);
 }
 
 /** Warn the worker of a run past the budget, once. A finished run has no pane: its card shows the line in amber, and that is all. */
-function warn(ctx: PoolContext, entry: Entry, weighted: number): void {
+async function warn(ctx: PoolContext, entry: Entry, weighted: number): Promise<void> {
   const key = entry.ticket.key;
-  if (!workerTold(ctx, entry, weighted)) return;
+  if (!await workerTold(ctx, entry, weighted)) return;
   update(ctx, (queue) => recordBudgetStep(queue, key, { warned: weighted }));
   log(`${key}: its ticket's CI is ~${weighted} weighted minutes, past the budget of ${ctx.settings.ciBudgetMinutes}${isLive(entry) ? "; its worker was told" : ""}`);
 }
@@ -165,13 +165,13 @@ function hold(ctx: PoolContext, entry: Entry, weighted: number, multiple: number
 }
 
 /** Act on the budget for one ticket's run, from the runs the board holds now. */
-function act(ctx: PoolContext, key: string): void {
+async function act(ctx: PoolContext, key: string): Promise<void> {
   const queue = ctx.store.get();
   const entry = find(queue, key);
   if (entry === undefined || !readable(entry)) return;
   const weighted = weightedOf(ctx, key);
   const step = budgetStep(weighted, ctx.settings.ciBudgetMinutes, queue.ciSpend?.[key]);
-  if (step.kind === "warn") warn(ctx, entry, weighted);
+  if (step.kind === "warn") await warn(ctx, entry, weighted);
   else if (step.kind === "hold") hold(ctx, entry, weighted, step.multiple);
 }
 
@@ -196,7 +196,7 @@ export async function watchCiSpend(ctx: PoolContext): Promise<void> {
   try {
     const runs = store.get().entries.filter(readable);
     for (const entry of firstReadsLimited(ctx, runs.filter((each) => dueToRead(ctx, each)))) await readTicket(ctx, entry, readBranchCi.bind(codeHost));
-    for (const entry of runs) act(ctx, entry.ticket.key);
+    for (const entry of runs) await act(ctx, entry.ticket.key);
   } catch (err) {
     log(`the CI of the runs could not be counted: ${err instanceof Error ? err.message : String(err)}`);
   } finally {

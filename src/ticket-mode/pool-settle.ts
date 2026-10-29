@@ -222,7 +222,8 @@ async function settleLostPush(ctx: PoolContext, entry: Entry, outcome: Extract<O
     const checked = await checkPush(ctx, entry, checkouts);
     if (!sameRun(ctx, entry)) return;
     if ("unchecked" in checked) return end(ctx, entry, outcome);
-    const woken = checked.ok && wakeWorker(ctx, entry, checked.repos);
+    const woken = checked.ok && await wakeWorker(ctx, entry, checked.repos);
+    if (!sameRun(ctx, entry)) return;
     const logged = checked.ok
       ? { kind: "push-check" as const, step: woken ? "passed" as const : "failed" as const, detail: woken ? checked.repos.join(", ") : `the push of ${checked.repos.join(", ")} worked, but herdr would not take the worker the message` }
       : { kind: "push-check" as const, step: "failed" as const, detail: checked.error };
