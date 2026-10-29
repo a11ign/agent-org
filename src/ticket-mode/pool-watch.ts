@@ -133,11 +133,13 @@ async function watch(ctx: PoolContext): Promise<void> {
   readoptCrashed(ctx, agents);
   // A run whose workspace a restart brought back under a new id is reached there; then a run left at a prompt is resumed in this pass, before the watch below could end it for having no outcome (A11-279).
   reseatMoved(ctx, agents);
-  await watchRunning(ctx, status, await resumeAfterRestart(ctx, status));
+  // Each step that may ask herdr is awaited only when it has something to ask, so a quiet pass takes no turn of the event loop that no test waits for (A11-282).
+  const resumed = resumeAfterRestart(ctx, status);
+  await watchRunning(ctx, status, resumed instanceof Promise ? await resumed : resumed);
   watchParked(ctx, status);
   rereadUnreadable(ctx);
-  await watchPublish(ctx, status);
-  await watchWriters(ctx, status);
+  if (ctx.store.get().publish?.phase === "running") await watchPublish(ctx, status);
+  if ((ctx.store.get().writers ?? []).some((run) => run.phase === "running")) await watchWriters(ctx, status);
 }
 
 /**
@@ -541,9 +543,12 @@ export async function tick(ctx: PoolContext): Promise<void> {
       // What is wrong with the host is put on the board's banner after the serves, so a serve that came back clears its alert in this pass; the slow reads of the host run beside the pass, not in it (A11-279).
       refreshHostAlerts(ctx);
       // The private temp directories of runs that hold no workspace any more are removed, within a budget of entries a pass (A11-279).
-      await sweepRunTmp(ctx);
+      const sweeping = sweepRunTmp(ctx);
+      if (sweeping !== undefined) await sweeping;
       // A draining update's deadline (A11-169): the runs still live are stopped and queued again before the pass fills slots, which a drain starts nothing in.
-      await forceDrain(ctx);
+      // eslint-disable-next-line clean-code/no-duplication -- the same two lines as the steps above: a helper that awaits would take the turn of the event loop these steps avoid when they have nothing to do (A11-282)
+      const draining = forceDrain(ctx);
+      if (draining !== null) await draining;
       // A run whose worker waits on a ticket not done lets go of its slot and its files, and is queued behind it, before the pass fills slots (A11-272).
       const releasing = releaseTicketWaits(ctx);
       if (releasing !== null) await releasing;

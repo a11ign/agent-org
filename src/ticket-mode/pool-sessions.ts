@@ -104,10 +104,14 @@ function byRun(entries: readonly Entry[]): Entry[][] {
  * starts beside a Talk session that holds its Claude session or its name, and a Talk never starts beside a round. Nothing is read when no such run is queued, or the queue is
  * paused, and herdr that cannot be asked changes nothing.
  */
-export async function settleSessions(ctx: PoolContext): Promise<void> {
+export function settleSessions(ctx: PoolContext): Promise<void> | null {
   const queue = ctx.store.get();
   const waiting = queue.entries.filter(resumes);
-  if (waiting.length === 0 || queue.paused) return;
+  // Null when no such run is queued, so a pass with nothing to settle awaits nothing and takes no turn of the event loop (A11-282).
+  return waiting.length === 0 || queue.paused ? null : settleWaiting(ctx, waiting);
+}
+
+async function settleWaiting(ctx: PoolContext, waiting: readonly Entry[]): Promise<void> {
   const occupants = await readOccupants(ctx);
   if (occupants === null) return;
   for (const members of byRun(waiting)) {

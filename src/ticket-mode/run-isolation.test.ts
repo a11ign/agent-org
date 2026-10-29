@@ -197,7 +197,7 @@ test("A11-279: the sweep keeps the directory of a live run, of a run that holds 
 });
 
 test("A11-279: a base that does not exist is nothing to sweep", async () => {
-  await assert.doesNotReject(sweepRunTmp(sweepCtx(join(tmpDir("run-isolation-"), "missing"), [], Date.now())));
+  await assert.doesNotReject(async () => sweepRunTmp(sweepCtx(join(tmpDir("run-isolation-"), "missing"), [], Date.now())));
 });
 
 test("A11-279: the sweep touches the directory of a held run on every pass and makes it again if it is gone, so the tmpfiles rule and another instance's sweep never find it old", async () => {

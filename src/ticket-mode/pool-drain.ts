@@ -101,14 +101,18 @@ async function stopLiveRuns(ctx: PoolContext, target: string, at: string): Promi
  * With a drain record whose deadline has passed and a run still live, stops every live run and queues it again, records it in the drain record, and starts the update. Nothing happens before the deadline,
  * with no record, or with no live run. A record that cannot be read has no deadline to read, so it forces nothing.
  */
-export async function forceDrain(ctx: PoolContext): Promise<void> {
+export function forceDrain(ctx: PoolContext): Promise<void> | null {
   const { now, store } = ctx;
-  const drain = storeOf(ctx);
-  const read = drain.read();
-  if (read.kind !== "draining") return;
-  const { record } = read;
+  const read = storeOf(ctx).read();
+  if (read.kind !== "draining") return null;
   const live = store.get().entries.some(isLive) || (store.get().publish !== undefined && LIVE.has(store.get().publish!.phase)) || (store.get().writers ?? []).some(writerLive);
-  if (!live || now() < Date.parse(record.deadline)) return;
+  // Null when nothing is due, so a pass with no update draining awaits nothing and takes no turn of the event loop (A11-282).
+  return !live || now() < Date.parse(read.record.deadline) ? null : stopForUpdate(ctx, read.record);
+}
+
+async function stopForUpdate(ctx: PoolContext, record: DrainRecord): Promise<void> {
+  const { now } = ctx;
+  const drain = storeOf(ctx);
   const stopped = await stopLiveRuns(ctx, record.target, clockOf(now()));
   log(`stopping ${stopped.length} ${stopped.length === 1 ? "run" : "runs"} for the update to ${record.target} (${stopped.join(", ")}): the wait of the update ended at ${record.deadline}`);
   drain.write({ ...record, forcedAt: record.forcedAt ?? new Date(now()).toISOString(), stopped: [...new Set([...record.stopped, ...stopped])] });

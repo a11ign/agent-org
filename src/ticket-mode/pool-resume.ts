@@ -103,11 +103,22 @@ function restartBetween(before: RestartRecord | null, now: RestartRecord): Resta
  * restart is seen once. A value that cannot be read this pass (the service manager timed out) keeps the one on record, so the next good read is no restart. A record that cannot be written is said, and the
  * next pass reads the restart again.
  */
-export async function readRestart(ctx: PoolContext): Promise<Restart | null> {
+export function readRestart(ctx: PoolContext): Restart | null | Promise<Restart | null> {
   const reads = ctx.deps.restartReads ?? LIVE_RESTART_READS;
   const path = join(ctx.settings.stateDir, "tickets", RESTARTS_FILE);
   const before = readRestartRecord(path);
-  const now: RestartRecord = { bootId: await reads.bootId() ?? before?.bootId ?? null, herdrStartedAt: await reads.herdrStart() ?? before?.herdrStartedAt ?? null };
+  const bootId = reads.bootId();
+  const herdrStartedAt = reads.herdrStart();
+  // A read that answers at once (the kernel's boot id, a test's) is worked on in this turn, as it was before the service manager was asked beside the loop: the pass adds no turn for it (A11-282).
+  if (!isPromise(bootId) && !isPromise(herdrStartedAt)) return recordRestart(ctx, path, before, bootId, herdrStartedAt);
+  return Promise.all([bootId, herdrStartedAt]).then(([boot, herdr]) => recordRestart(ctx, path, before, boot, herdr));
+}
+
+const isPromise = <T>(value: T | Promise<T>): value is Promise<T> => value instanceof Promise;
+
+/** The restart `bootId` and `herdrStartedAt` say against the record `before`, written as the new record when it changed. */
+function recordRestart(ctx: PoolContext, path: string, before: RestartRecord | null, bootId: string | null, herdrStartedAt: string | null): Restart | null {
+  const now: RestartRecord = { bootId: bootId ?? before?.bootId ?? null, herdrStartedAt: herdrStartedAt ?? before?.herdrStartedAt ?? null };
   const first = !ctx.restart.read;
   ctx.restart.read = true;
   const seen = restartBetween(before, now) ?? (first ? "instance" : null);
@@ -232,10 +243,15 @@ const stillResumable = (ctx: PoolContext, entry: Entry): boolean => {
  * again. Returns the herdr names of the runs it prompted, which the rest of this pass neither ends for having no outcome nor prompts again: the status it read was taken before the prompt. On an instance's own start herdr
  * kept every session, so a run that was not interrupted and is waiting (on a declared wait inside its `until`, on background work, or stalled after the board woke it for its wait) is left as it is.
  */
-export async function resumeAfterRestart(ctx: PoolContext, status: ReadonlyMap<string, string>): Promise<ReadonlySet<string>> {
-  const restart = await readRestart(ctx);
+export function resumeAfterRestart(ctx: PoolContext, status: ReadonlyMap<string, string>): ReadonlySet<string> | Promise<ReadonlySet<string>> {
+  const restart = readRestart(ctx);
+  if (restart instanceof Promise) return restart.then((read) => (read === null ? new Set<string>() : promptAfter(ctx, status, read)));
+  // No restart, which is nearly every pass: nothing is asked of herdr and the pass takes no turn of the event loop (A11-282).
+  return restart === null ? new Set<string>() : promptAfter(ctx, status, restart);
+}
+
+async function promptAfter(ctx: PoolContext, status: ReadonlyMap<string, string>, restart: Restart): Promise<ReadonlySet<string>> {
   const prompted = new Set<string>();
-  if (restart === null) return prompted;
   for (const listed of ctx.store.get().entries.filter(resumable)) {
     // Each pane is read without holding the loop, so the queue moves between two runs: each is taken as the queue holds it now.
     if (!stillResumable(ctx, listed)) continue;

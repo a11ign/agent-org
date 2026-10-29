@@ -2560,7 +2560,8 @@ test("feedback from before the run's last round ended, from the workers' own acc
 test("a check that is red at the head commit starts a round naming it, and a run the board does not watch is never read", async () => {
   const gh = ghFor({ 1: feedbackPull({ checks: [{ __typename: "CheckRun", name: "typecheck", conclusion: "FAILURE", completedAt: at(400), isRequired: false }] }) });
   const { pool, entry } = await readyRun(gh);
-  await pool.watchFeedback();
+  // The round the watch starts is waited for: the pass it wakes must end before the test's directory is removed (A11-282 made a pass take more turns of the event loop).
+  await watchRound(pool);
   assert.equal(briefWithoutAdvice(entry("NBF-1").feedback), `typecheck failed on the head commit of ${approvedPr.url}; its log could not be read.`, "a check with no job page has no log to quote, and is named as such, and has no job to rerun: the round starts at once");
   const unwatched = ghFor({});
   const { pool: other } = setup(1, ["NBF-1"], {}, { gh: unwatched });

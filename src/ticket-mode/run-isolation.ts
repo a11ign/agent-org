@@ -140,8 +140,9 @@ async function sweepRunDirs(ctx: PoolContext, base: string, budget: Budget): Pro
  * directory when the pool gives runs no private directory (`ctx.runTmpBase` unset: every test, and an instance started without one), and nothing in `/tmp` when it names none. A directory that cannot be read or removed
  * is said, and tried at the next pass. Never throws.
  */
-export async function sweepRunTmp(ctx: PoolContext): Promise<void> {
+export function sweepRunTmp(ctx: PoolContext): Promise<void> | void {
   const budget: Budget = { left: MAX_REMOVALS_PER_PASS };
-  if (ctx.runTmpBase !== undefined) await sweepRunDirs(ctx, ctx.runTmpBase, budget);
-  sweepLegacyTmp(ctx, budget);
+  // A pool with no private base has no run directory to list herdr for: its pass takes no turn of the event loop for this (A11-282).
+  if (ctx.runTmpBase === undefined) return sweepLegacyTmp(ctx, budget);
+  return sweepRunDirs(ctx, ctx.runTmpBase, budget).then(() => sweepLegacyTmp(ctx, budget));
 }

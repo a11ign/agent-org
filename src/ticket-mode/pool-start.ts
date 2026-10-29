@@ -510,7 +510,8 @@ export async function fill(ctx: PoolContext): Promise<void> {
   // The workspaces the watch just asked herdr to close are closed first, so the listing below never reads one that is closing as a leftover or an agent that holds a name (A11-282).
   if (closesOut(ctx)) await closesSettled(ctx);
   // A round or a talk session never starts beside an agent that holds its Claude session or its name (A11-154): one that works holds it back, a leftover is closed.
-  await settleSessions(ctx);
+  const settling = settleSessions(ctx);
+  if (settling !== null) await settling;
   // What the overlap hold decides on is brought up to date from the queue alone, and a stack whose base is done is cleared (A11-374).
   followOverlaps(ctx);
   // A batch is planned together only while this machine's planner plans batches: otherwise each of its tickets is planned alone.
