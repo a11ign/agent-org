@@ -1,24 +1,20 @@
-Closes A11-282
-
-Step 2 of 2 (agent-org): the instance answers requests on a thread of its own (ADR 0014). `serve()` keeps the pool, the tick and the sweeps on the board thread, which stays the queue's one writer, and starts the HTTP server in a `worker_threads` worker (`src/ticket-mode/request-thread.ts`). The board thread posts a snapshot of the queue and the pool's readings after every queue change and every second (`board-thread.ts`); the request thread answers every GET route of `read-routes.ts` (moved out of `server.ts`), `/api/health` and `POST /api/terminal-run` from it, with its own activation of the tracker, and forwards every other request whole to `createBoard(...).api`, carrying the page's copies of the tickets the body names. `/api/health` answers `{ loop: { requests, board }, boardSnapshotAgeMs, blocking, requestThreadSyncCalls }`. A request thread that exits is started again, 3 times a minute at most. `request-thread-guard.test.ts` walks the request thread's imports and refuses a synchronous spawn outside its listed exceptions; `request-thread-load.test.ts` and `scripts/loop-load.ts` prove every read stays under 200 ms p99 while a 2 s `gh` holds the board thread.
+Step 3 of 4 (agent-org): the board thread's own calls hold no loop (ADR 0014, "Taking the board thread's own calls off its loop"). The ticket was reopened on 2026-10-28 with the board's figure "synchronous holds an hour" at 26 against a threshold of 10: the request thread (step 2) keeps reads from waiting on the board thread, but the board thread still held its loop for every synchronous `gh`, `git` and `herdr` call of its tick and sweeps, which delays writes and `GET /api/session-asks` and is what the figure counts. This step makes asynchronous the calls that run on every pass or every sweep and that the code could take without a rewrite of the reviewer's start: the start-up `gh` wrapper check, the tick's herdr listings, the clone sweep's organisation listing and the stacked pull requests' base sweep (code host contract 2.2, two OPTIONAL operations). It also repairs `scripts/loop-load.ts`, which reached the real Linear and failed its own 200 ms bound on 300 ms of internet.
 
 Acceptance:
 
 ```bash
-# board-thread.test.ts: reads over a snapshot answer what the board's routes answer; a forwarded write carries the page's copies and brings back the tracker's; restarts and their budget
-# read-routes.test.ts: the request gate (host, key, a route's sentence as a 400) and the tracker's reads both threads use
-# health-route.test.ts: the request thread's health view, and its ledger counting a synchronous spawn only after it listens
-# request-thread-guard.test.ts: no module the request thread runs spawns synchronously, but the listed exceptions, none stale
-# serve-ticket-only-host.test.ts ("stopping the instance stops the plugin checks it started"): a SIGTERM leaves no gh a check started running, so nothing writes under a test's HOME after it ends
-# request-thread-load.test.ts: a real instance, 2 s gh, every local read p99 under 200 ms, the board thread held meanwhile, a forwarded write lands
+# blocking-ledger.test.ts: a herdr call's site is the code that asked, not herdr-agents.ts or pool-herdr.ts
+# server.test.ts: the start-up check runs in a child the loop is not held for, and its exit status is the check's
+# org-repos.test.ts, pool-org-repos.test.ts, plugins/github/repositories.test.ts: the organisation is listed through the asynchronous read, as the synchronous one lists it
+# plugins/github/stack-retarget.test.ts, pool-stack-merge.test.ts, plugins/github/sync-gh-guard.test.ts: the stacked bases are swept through an asynchronous gh with the synchronous sweep's rules, calls and notes
+# request-thread-load.test.ts: a held tick herdr listing leaves the board thread free; a held synchronous call still leaves every request-thread read answered
+# loop-load-fetch.test.ts: the load script's network is refused from the machine itself, at once
 bash -c 'set -euo pipefail
-[ -d ui/node_modules ] || pnpm --dir ui install --frozen-lockfile --ignore-scripts >/dev/null
 npm run typecheck
-pnpm ui:typecheck
 T=$(mktemp -d); printf "#!/bin/sh\nexit 0\n" > "$T/tailscale"; chmod +x "$T/tailscale"
 P=$(mktemp -d); cp -r src/packaging/fixtures/project-tree/. "$P"; sed -i "s|@@PROJECT@@|$P|" "$P/.agent-org/host.json"; git -C "$P" init -q; git -C "$P" add -A; git -C "$P" -c user.name=ci -c user.email=ci@localhost commit -q -m fixture
-PATH="$T:$PATH" AGENT_ORG_HOST="$P/.agent-org/host.json" npm exec -- rstest run --config scripts/rstest/rstest.config.ts src/ticket-mode/board-thread.test.ts src/ticket-mode/read-routes.test.ts src/ticket-mode/health-route.test.ts src/ticket-mode/request-thread-guard.test.ts src/ticket-mode/request-thread-load.test.ts src/ticket-mode/serve-ticket-only-host.test.ts src/ticket-mode/server.test.ts src/ticket-mode/session-asks.test.ts src/ticket-mode/ui-server.test.ts src/ticket-mode/ui-server-health.test.ts src/ticket-mode/loop-load-routes.test.ts src/ticket-mode/settings-read.test.ts src/ticket-mode/blocking-ledger.test.ts
-# The after: every read the request thread answers is under 200 ms p99 while the sweeps hold the board thread, and the request thread spawned nothing synchronously.
+PATH="$T:$PATH" AGENT_ORG_HOST="$P/.agent-org/host.json" npm exec -- rstest run --config scripts/rstest/rstest.config.ts src/ticket-mode/blocking-ledger.test.ts src/ticket-mode/server.test.ts src/ticket-mode/org-repos.test.ts src/ticket-mode/pool-org-repos.test.ts plugins/github/repositories.test.ts plugins/github/stack-retarget.test.ts src/ticket-mode/pool-stack-merge.test.ts plugins/github/sync-gh-guard.test.ts src/ticket-mode/request-thread-load.test.ts src/ticket-mode/request-thread-guard.test.ts src/ticket-mode/loop-load-fetch.test.ts src/ticket-mode/loop-load-routes.test.ts src/ticket-mode/pool-restack.test.ts src/ticket-mode/pool.test.ts
+# The after: every read the request thread answers is under 200 ms p99 while a 2 s gh and a held systemctl keep the sweeps busy, and the request thread spawned nothing synchronously.
 PATH="$T:$PATH" node scripts/loop-load.ts --json > "$T/load.json"
-node -e "const r = require(process.argv[1]); if (!r.pass || r.health.requestThreadSyncCalls !== 0 || r.health.loop.requests === undefined) process.exit(1); console.log(r.routes.map((x) => x.route + \" p99 \" + x.p99Ms + \" ms\").join(\"\\n\"))" "$T/load.json"'
+node -e "const r = require(process.argv[1]); if (!r.pass || r.health.requestThreadSyncCalls !== 0) process.exit(1); console.log(r.routes.map((x) => x.route + \" p99 \" + x.p99Ms + \" ms\").join(\"\\n\"))" "$T/load.json"'
 ```
