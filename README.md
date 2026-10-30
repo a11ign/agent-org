@@ -654,6 +654,7 @@ Every external concern of ticket mode is an **agent-org plugin**: a code module 
 | [`tickets.stallMinutes`](src/ticket-mode/config-schema.ts) | |
 | [`tickets.ciBudgetMinutes`](src/ticket-mode/config-schema.ts) | |
 | [`tickets.updateMaxDeferHours`](src/ticket-mode/config-schema.ts) | |
+| [`tickets.reviewComments`](src/ticket-mode/config-schema.ts) | |
 | [`tickets.workingState`](src/ticket-mode/config-schema.ts) | |
 | [`stateDir`](src/ticket-mode/config-schema.ts) | |
 
@@ -665,6 +666,7 @@ Every external concern of ticket mode is an **agent-org plugin**: a code module 
 - [`tickets.pick`](src/ticket-mode/config-schema.ts): Canary: the Pick view's count reads `assigned to you` by default and `open in team <key>` or `open in project <name>` with a team or a project, and the Anyone chip reads as that count. Revert: remove the line.
 - [`tickets.stallMinutes`](src/ticket-mode/config-schema.ts): Canary: a `<key> has been idle for <n> minutes or more since it wrote working` line in the board's log, once per stall. Revert: remove the line.
 - [`tickets.ciBudgetMinutes`](src/ticket-mode/config-schema.ts): Canary: set it low (`20`) on one machine, push a ticket's branch with a macOS job, and see its run's card read `CI: 1 push, 1 job, ~10 min` and, past the budget, `· over budget (20)`; the worker's pane gets the one `CI budget:` line, and at twice the budget the log says `Held: CI ~<n> min, over twice this ticket's budget of 20` and the run starts its next round a pass later. Revert: remove the line, or set it to `0`, which keeps the figures and stops the warning and the hold.
+- [`tickets.reviewComments`](src/ticket-mode/config-schema.ts): Canary: set `[{ "author": "ci-bot", "startsWith": "Review finished" }]` (the login and the opening text your CI review comment uses) on one machine, and see a reviewed run whose pull request has that comment after its head and no approving review read `review comment by ci-bot at <head>, awaiting approval` where it read `review: none yet at <head>`. Its status stays Awaiting review and nothing merges on it. Revert: remove the line.
 
 The Linear key is a personal API key, so ticket mode reads as you and needs no workspace admin. On macOS, store it once with
 `security add-generic-password -a "$USER" -s agent-org-linear -w`, which prompts for it without echoing it.

@@ -3,6 +3,7 @@
 // `src/ticket-port/` with the rest of ticket mode's GitHub reads (A11-160). Which checks are red is core's to decide (`red-pr.ts`, #2956, which row mode shares), so this file
 // asks the `policy` it is given, since a plugin imports core's types only (ADR 0001).
 import type { FailingCheck, PullFeedback, PullQueue, QueueRemoval, ReviewDecision } from "../../src/plugins/contracts/code-host.ts";
+import type { CommentReview, ReviewCommentMatcher } from "../../src/plugins/contracts/review-comments.ts";
 import type { CodeHostPolicy } from "../../src/plugins/manifest.ts";
 import type { AsyncGh } from "./gh.ts";
 import { flowGateOf, MAX_FILE_PAGES, rollupOf, type PullSnapshots, type RepoFlow } from "./pull-snapshot.ts";
@@ -144,7 +145,8 @@ function detailsUrlOf(runs: readonly Check[], name: string, policy: CodeHostPoli
  * THE FEEDBACK ON THE PULL REQUEST AT `url`, leaving out what `self` wrote and what `alsoIgnore` wrote, or null for "could not ask": an address that is not a GitHub pull
  * request, a repository `snapshots` cannot read, and an answer without the pull request. Null is never "no feedback". The pull request is the repository's snapshot's, shared with every other reader (A11-365).
  */
-export async function readPullFeedback(url: string, self: string, snapshots: PullSnapshots, policy: CodeHostPolicy, alsoIgnore: readonly string[] = []): Promise<PullFeedback | null> {
+export async function readPullFeedback(url: string, self: string, snapshots: PullSnapshots, policy: CodeHostPolicy, alsoIgnore: readonly string[] = [], reviewComments: readonly ReviewCommentMatcher[] = []):
+  Promise<PullFeedback | null> {
   const pull = pullOf(url);
   if (pull === null) return null;
   const repository = `${pull.owner}/${pull.repo}`;
@@ -153,7 +155,7 @@ export async function readPullFeedback(url: string, self: string, snapshots: Pul
     const pr = read?.node;
     if (read === null || pr === undefined || typeof pr.state !== "string") return null;
     const files = await changedFiles(pull, pr.files, snapshots);
-    return { ...feedbackOf(pr, self, alsoIgnore, policy, await flowRequiresOf(snapshots, repository, pr, read.flow)), files: files.paths, filesComplete: files.complete };
+    return { ...feedbackOf(pr, self, alsoIgnore, policy, await flowRequiresOf(snapshots, repository, pr, read.flow)), ...commentReviewFeedback(pr, reviewComments), files: files.paths, filesComplete: files.complete };
   } catch {
     // An answer of an unexpected shape is no reading either.
     return null;
@@ -224,6 +226,57 @@ function verdictAt(reviews: readonly Review[], head: string, counts: (author: Lo
   const newer = (latest: Review | null, review: Review): Review => (latest === null || at(review) >= at(latest) ? review : latest);
   const newest = reviews.filter((review) => rulesOn(review, head, counts)).reduce<Review | null>(newer, null);
   return newest === null ? null : newest.state === "APPROVED" ? "approved" : "changes-requested";
+}
+
+/** The latest of some times, or null when none is known. */
+const latestOf = (times: readonly (number | null)[]): number | null => {
+  const known = times.filter((at): at is number => at !== null);
+  return known.length === 0 ? null : Math.max(...known);
+};
+
+/** A bot's login as GraphQL gives it (`ci-bot`) and as REST and the web give it (`ci-bot[bot]`): one account either way. */
+const accountOf = (login: string): string => login.replace(/\[bot\]$/, "");
+
+/**
+ * When the head arrived on the branch, or null when the answer does not say (contract 4.1). GitHub's GraphQL gives no time for an ordinary push (`pushedDate` is deprecated and answers null), so this is the later of
+ * the head commit's own time (`committedDate`), which no push can precede, and the time of a force-push that left the branch at the head, which is when a rebased or an older commit arrived. The commit is the last
+ * of the commits connection, which can lag the branch for a few seconds after a push, so its time counts only when it is the head.
+ */
+export function headArrivedAt(pr: Record<string, any>, head: string): number | null {
+  const commit = pr.commits?.nodes?.at(-1)?.commit;
+  const committed = commit?.oid === head ? time(commit.committedDate) : null;
+  const forcePushes = (Array.isArray(pr.timelineItems?.nodes) ? pr.timelineItems.nodes : [])
+    .filter((node: any) => node?.__typename === "HeadRefForcePushedEvent" && node.afterCommit?.oid === head).map((node: any) => time(node.createdAt));
+  return latestOf([committed, ...forcePushes]);
+}
+
+/** Whether a comment `login` wrote with the body `body` is one a matcher names: its author, a bot's `[bot]` ending aside, and the start of its body once trimmed. */
+function isReviewComment(login: string, body: string, matchers: readonly ReviewCommentMatcher[]): boolean {
+  const account = accountOf(login);
+  const text = body.trim();
+  return matchers.some(({ author, startsWith }) => account === accountOf(author) && text.startsWith(startsWith));
+}
+
+type Comment = { createdAt?: string; lastEditedAt?: string | null; body?: string; url?: string; author: Login };
+
+/**
+ * The review comment at the head (contract 4.1): the newest conversation comment by an account a matcher names whose body, trimmed, starts with that matcher's text, posted or LAST EDITED after the head arrived. A CI review
+ * often posts a placeholder and edits it in place when it finishes, so the later of the two times is the comment's. Left out when no matcher is given, or when the answer does not say when the head arrived; null when none is there.
+ */
+export function commentReviewFeedback(pr: Record<string, any>, matchers: readonly ReviewCommentMatcher[]): { commentReviewAtHead?: CommentReview | null } {
+  const head = typeof pr.headRefOid === "string" ? pr.headRefOid : null;
+  if (matchers.length === 0 || head === null) return {};
+  const arrived = headArrivedAt(pr, head);
+  if (arrived === null) return {};
+  const reviews = (pr.comments?.nodes ?? []).flatMap((comment: Comment): CommentReview[] => {
+    const login = comment.author?.login;
+    const body = comment.body;
+    const at = latestOf([time(comment.createdAt), time(comment.lastEditedAt)]);
+    if (typeof login !== "string" || typeof body !== "string" || at === null || at <= arrived || !isReviewComment(login, body, matchers)) return [];
+    const url = typeof comment.url === "string" ? comment.url : "";
+    return [{ author: login, at, url }];
+  });
+  return { commentReviewAtHead: reviews.length === 0 ? null : reviews.reduce((newest: CommentReview, review: CommentReview) => (review.at > newest.at ? review : newest)) };
 }
 
 /** The queue's part of the feedback: left out when the host did not say. */
