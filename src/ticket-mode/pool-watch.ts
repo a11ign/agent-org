@@ -67,6 +67,7 @@ import { recordMergeNote } from "./queue/queue-merge-note.ts";
 import type { MergeFlow } from "../plugins/contracts/code-host.ts";
 import { sweepRunTmp } from "./run-isolation.ts";
 import { retryCrashed } from "./pool-crash-retry.ts";
+import { recoverCrashed } from "./pool-crash-recovery.ts";
 import { recordOpenedPulls, watchWaitedPulls } from "./pool-wait-pulls.ts";
 
 /** The longest a publish run may take. Posting a few messages takes a minute or two. */
@@ -556,6 +557,8 @@ export async function tick(ctx: PoolContext): Promise<void> {
       ageCiHolds(ctx);
       // A run that crashed on a transient network error is queued again once its back-off has passed, so this pass's fill may start it (A11-345).
       retryCrashed(ctx);
+      // One that used its retries is queued again once its back-off has passed and the board's own network calls succeed (A11-399).
+      recoverCrashed(ctx);
       // What a start is decided on is read beside the pass, and a read that ends wakes it (A11-364): the fill below awaits none, and decides from what was last recorded.
       refreshStartReads(ctx, () => tick(ctx));
       await fill(ctx);

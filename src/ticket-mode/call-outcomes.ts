@@ -20,10 +20,15 @@ export const CALL_WINDOW_MS = 3_600_000;
 export type CallFigure = Readonly<{ calls: number; failures: number; failuresPer100: number }>;
 export type CallFigures = Readonly<Record<CallService, CallFigure>>;
 
+/** When the last call to a service succeeded and when the last failed, in the ledger's clock: undefined for a kind that has not happened in the window (A11-399). */
+export type LastCalls = Readonly<{ ok?: number; failed?: number }>;
+
 export type CallLedger = Readonly<{
   /** Counts one call to `service`, and whether it failed. */
   record: (service: CallService, failed: boolean) => void;
   figures: () => CallFigures;
+  /** When the last good and the last failed call to `service` were made, within the window. */
+  lastCalls: (service: CallService) => LastCalls;
 }>;
 
 /** The failures per 100 calls, to one decimal place. PURE. */
@@ -32,11 +37,15 @@ export const per100 = (failures: number, calls: number): number => (calls === 0 
 /** A ledger of calls over the last CALL_WINDOW_MS as `now` says. */
 export function createCallLedger(now: () => number = Date.now): CallLedger {
   const counts = Object.fromEntries(CALL_SERVICES.map((service) => [service, { calls: rollingCount(CALL_WINDOW_MS, now), failures: rollingCount(CALL_WINDOW_MS, now) }])) as Record<CallService, { calls: RollingCount; failures: RollingCount }>;
+  const last = Object.fromEntries(CALL_SERVICES.map((service) => [service, {} as { ok?: number; failed?: number }])) as Record<CallService, { ok?: number; failed?: number }>;
+  const inWindow = (at: number | undefined): number | undefined => (at !== undefined && at > now() - CALL_WINDOW_MS ? at : undefined);
   return {
     record: (service, failed) => {
       counts[service].calls.add();
       if (failed) counts[service].failures.add();
+      last[service][failed ? "failed" : "ok"] = now();
     },
+    lastCalls: (service) => ({ ok: inWindow(last[service].ok), failed: inWindow(last[service].failed) }),
     figures: () => Object.fromEntries(CALL_SERVICES.map((service) => {
       const calls = counts[service].calls.total();
       const failures = counts[service].failures.total();
@@ -105,4 +114,16 @@ export function addCallFigures(a: CallFigures, b: CallFigures): CallFigures {
     const failures = a[service].failures + b[service].failures;
     return [service, { calls, failures, failuresPer100: per100(failures, calls) }];
   })) as CallFigures;
+}
+
+/** Whether `service`'s latest call within the window was a failure: a failure with no good call at or after it. */
+const lastFailed = ({ ok, failed }: LastCalls): boolean => failed !== undefined && (ok === undefined || failed >= ok);
+
+/**
+ * Whether the board's own network calls work again after `crashedAt` (A11-399): some call to a service succeeded after it, and neither service's latest call failed. A service the board has not called in the window is
+ * not failing. PURE.
+ */
+export function networkUpSince(ledger: CallLedger, crashedAt: number): boolean {
+  const calls = CALL_SERVICES.map((service) => ledger.lastCalls(service));
+  return calls.some(({ ok }) => ok !== undefined && ok > crashedAt) && !calls.some(lastFailed);
 }

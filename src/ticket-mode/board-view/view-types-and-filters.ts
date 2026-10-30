@@ -4,6 +4,7 @@ import type { QueueHead } from "./queue-head.ts";
 import type { BlockerPullDeclared, PartialOverruled, PullDeclared } from "./pull-declared.ts";
 import type { CiView } from "./ci-note.ts";
 import type { OverlapStackRecord } from "./overlap-stack.ts";
+import type { CrashRetry } from "../crash-retry.ts";
 
 export type ViewTicket = Readonly<{
   key: string; title: string; status: string; statusOrder: number; priority: number; project: string | null; parent?: string | null; uploads?: readonly string[];
@@ -55,6 +56,8 @@ export type ViewEntry = Readonly<{
   standoff?: Readonly<{ url: string; head: string; reasons: string; reply: string | null; stage: string; planner?: Readonly<{ decision: string; reason: string }>; decidedAt?: number }>;
   /** Set on a finished run the planner marked as waiting on another ticket (A11-343): the ticket, why, and when. The run reads Waiting. */
   waitingOnTicket?: Readonly<{ key: string; reason: string; since: number }>;
+  /** Set on a run that crashed on a transient network error and the board starts again by itself (A11-345, A11-399): the card says when. */
+  crashRetry?: CrashRetry;
   /** Set on a queued round or talk session held back by the working agent of an earlier session: what it waits for (A11-154). */
   sessionWait?: string;
   /** Set on a round or talk session started after the board closed the leftover of an earlier session beside it: what it closed (A11-154). */

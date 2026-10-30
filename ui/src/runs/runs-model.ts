@@ -15,6 +15,7 @@ import { cycleNote } from "../../../src/ticket-mode/board-view/wait-cycles.ts";
 import {
   isParked, overrideNote, rebaseNote, retargetNote, runsShown, shownStatus, stackedOn, stackNote, statusCounts, verdictNote, waitNote, waitsOn, workingNote,
 } from "../../../src/ticket-mode/board-view/pull-status-and-notes.ts";
+import { crashedHoldsNote, crashedRunOf, isCrashedBlocker } from "../../../src/ticket-mode/board-view/crashed-blockers.ts";
 import { stackedOnItNote, stackWaitNote } from "../../../src/ticket-mode/board-view/stack-wait.ts";
 import { publishingOffLine } from "../../../src/ticket-mode/board-view/publishing-off.ts";
 import { RUN_STATUSES, type RunStatus } from "../../../src/ticket-mode/board-view/view-types-and-filters.ts";
@@ -198,6 +199,10 @@ export function ciLineOf(entry: Pick<RunEntry, "ci">): CiLine | null {
   return { text, tone: state === "over" || state === "held" ? "warn" : "plain" };
 }
 
+/** The keys of the queued tickets that wait on a crashed run of ticket `key`, or none when the run is not a crashed one (A11-399). */
+const waitingOnCrashed = (key: string, entries: QueueView["entries"]): string[] =>
+  crashedRunOf(key, entries) === null ? [] : entries.filter((other) => other.phase === "queued" && waitsOn(other, entries).some((blocker) => blocker.key === key)).map((other) => other.ticket.key);
+
 /** The lines of a note, with the CI line, when given, where `ciNote` puts it. */
 function linesOf(entry: RunEntry, { queue, publisher, now }: NoteContext, ci?: string | null): string[] {
   const { entries } = queue;
@@ -209,12 +214,13 @@ function linesOf(entry: RunEntry, { queue, publisher, now }: NoteContext, ci?: s
   const lines: (string | null | undefined)[] = [
     promptNote(entry),
     sharedRunNote(entry, entries),
-    waits.length > 0 ? `Waits on ${waits.map((blocker) => `${blocker.key} (${blocker.status})`).join(", ")}` : null,
+    waits.length > 0 ? `Waits on ${waits.map((blocker) => `${blocker.key} (${isCrashedBlocker(entry, blocker, entries) ? "crashed" : blocker.status})`).join(", ")}` : null,
     stacked.length > 0 ? stackNote(stacked, entry.overlapStack) : null,
     stackWaitNote(entry, entries),
     stackedOnItNote(entry, entries),
     rebaseNote(entry),
     waitNote(entry, entries),
+    crashedHoldsNote(entry, waitingOnCrashed(entry.ticket.key, entries), now),
     cycleNote(entry, entries),
     publishingOffLine(entry, queue, publisher),
     entry.sessionNote,
