@@ -38,6 +38,7 @@ import type { RunChoice } from "./queue/queue-entries-and-outcomes.ts";
 import { type FlakeLog, flakesPath, flakesViewOf, recordFlakes } from "./flakes.ts";
 import type { StartReadsState } from "./pool-start-reads.ts";
 import { READ_TIMEOUT_MS } from "./queue/start-reads.ts";
+import { callOutcomes, type CallLedger } from "./call-outcomes.ts";
 
 /** Where a planning run's plan attach stands after a failure worth trying again: the tries that failed, and the time (the pool's clock) the next may start. */
 export type AttachRetry = Readonly<{ failures: number; nextAt: number }>;
@@ -118,6 +119,8 @@ export type PoolDeps = Readonly<{
   runChoice?: () => RunChoice;
   /** The longest one read of the tracker, a remote or a plan, or the host's preflight, is waited for (A11-359, A11-364); `READ_TIMEOUT_MS` (20 s) when absent. A test gives a short one. */
   readMs?: number;
+  /** The ledger of the board's calls to Linear and GitHub, which a crashed run's recovery reads to tell the network is back (A11-399): this thread's `callOutcomes` when absent. A test gives its own. */
+  calls?: CallLedger;
 }>;
 
 /** A run the board will start again where it is, because its pane lacks the environment the board set at start (A11-279): by ticket key, with the resume note its card will carry. */
@@ -142,6 +145,8 @@ export type PoolContext = Readonly<{
   herdrCall: HerdrAsync;
   wait: (ms: number) => Promise<void>;
   now: () => number;
+  /** The board's calls to Linear and GitHub, as they went (A11-399). */
+  calls: CallLedger;
   /** The `tickets.preflight` commands, asked before a run starts: a failure holds every start, and says why. */
   gate: ReturnType<typeof createGate>;
   transcripts: string;
@@ -333,7 +338,7 @@ export function newPoolContext(store: QueueStore, deps: PoolDeps): PoolContext {
   /** The new-ticket runs whose drafts are being read, by id, so a tick that sees the same outcome meanwhile reads them once. */
   const finishing = new Set<string>();
   return {
-    store, settings, source, codeHost, hook, deps, herdr, herdrAsync, herdrCall, wait, now, gate, transcripts, git, feedbackIgnores, hostFile, stallMs, session, misses, answered, rebasing: new Set<string>(),
+    store, settings, source, codeHost, hook, deps, herdr, herdrAsync, herdrCall, wait, now, calls: deps.calls ?? callOutcomes, gate, transcripts, git, feedbackIgnores, hostFile, stallMs, session, misses, answered, rebasing: new Set<string>(),
     startedHere, attaching, cloning: new Map<string, Promise<string>>(), cloneSweep: { busy: false }, attachRetries, writeRetries, telling: new Set<string>(), answering: new Set<string>(), pendingMoves, removing, batches, reviewerOn, reviewerFile, reviewerMemory, reviewer, reviewerState, offPulls: new Set<string>(), publisher: deps.publisher, reviewerStarted, reviewerResumed,
     reviewerReposts, reviewerRereviewed, closing, pullReads, refusedHeads, greenSeen, reviewerDropped, claudeSessions, finishing, tickState: { busy: false, again: false }, fillState: newFillState(), ownLogin: { value: null }, flakes: flakeLog(settings.stateDir, now), repliesRead: new Set<string>(), baseMerges: new Map<string, BaseMerge>(), mergeFlows: new Map(), settledPulls: new Set<string>(), listingMs: deps.listingMs ?? 60_000, readMs: deps.readMs ?? READ_TIMEOUT_MS, idleSaid: { reason: null }, keptSweep: { busy: false, done: Promise.resolve() }, stackMergeAsked: new Map<string, StackMergeAsk>(), restacked: new Map<string, RestackDone>(), restackSaid: new Set<string>(), waitPolls: new Map(), pullReadAt: new Map<string, number>(), recordSaid: new Set<string>(), waitReading: new Set<string>(), restart: { read: false },
     reseating: new Map<string, Reseat>(), envLost: new Map<string, readonly string[]>(), paneEnv: deps.paneEnv ?? livePaneEnv(herdrCall, settings.herdrSession),

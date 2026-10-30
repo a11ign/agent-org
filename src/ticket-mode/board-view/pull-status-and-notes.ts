@@ -11,6 +11,7 @@ import { clockOf } from "./update-banner.ts";
 import { deadlineOf } from "./wait-deadline.ts";
 import { DEFAULT_PUBLISH_WHEN, type PublishWhen } from "./publish-when.ts";
 import { blockersFailureNote, retryTime } from "../queue/start-reads.ts";
+import { crashedWait, isCrashedBlocker, isParked, liveRunOf } from "./crashed-blockers.ts";
 
 /**
  * The blockers still holding a queued run back, given every run on the queue. A blocker lets go once the tracker completes it, or, when it is on
@@ -54,22 +55,6 @@ function liveWord(run: Omit<ViewEntry, "talkFrom">): string {
   if (run.review) return "in a review round";
   return run.phase === "queued" ? "queued" : "running";
 }
-
-/**
- * The run of a blocker's ticket that is still at work, or null (A11-206): one queued, starting or running (planning, working, in a review round or waiting on a question), or finished but parked on a question,
- * whose workspace is still held ({@link isParked}). More of that ticket's work may come from it, whatever its pull requests did so far. A talk session is a person talking to a finished run, not more work on the
- * ticket, so it is judged by the run it resumed (`talkFrom`). PURE.
- */
-function liveRunOf(key: string, entries: readonly ViewEntry[]): Omit<ViewEntry, "talkFrom"> | null {
-  for (const entry of entries.filter((e) => e.ticket.key === key)) {
-    const judged = entry.talk === true ? entry.talkFrom : entry;
-    if (judged !== undefined && isAtWork(judged)) return judged;
-  }
-  return null;
-}
-
-/** Whether a run is at work or waits on a question: it has not finished, or it has and its workspace is still held ({@link isParked}). */
-const isAtWork = (run: Omit<ViewEntry, "talkFrom">): boolean => run.phase !== "finished" || isParked(run);
 
 /** The merged pull requests of a blocker. PURE. */
 const mergedPullsOf = (blocker: ViewBlocker): string[] => Object.entries(blocker.pulls ?? {}).filter(([, state]) => state === "merged").map(([url]) => url);
@@ -180,6 +165,7 @@ const overlapWhy = ({ shared }: OverlapStackRecord): string => (shared === null 
 function blockerWait(entry: ViewEntry, blocker: ViewBlocker, entries: readonly ViewEntry[]): string {
   if (isStoppedFor(entry, blocker)) return `Waits for ${blocker.key} to be done: its worker waits on it`;
   if (blocker.state === "canceled" || blocker.state === "duplicate") return `${blocker.key} was ${blocker.state === "canceled" ? "canceled" : "marked a duplicate"}: a person decides`;
+  if (isCrashedBlocker(entry, blocker, entries)) return crashedWait(blocker.key);
   const held = holdReason(entry, blocker, entries);
   if (held !== null) return `Waits for ${blocker.key} (${held})`;
   if (repoOf(entry) === null) return `Waits for ${blocker.key}: no repository is planned for this ticket, so it cannot stack`;
@@ -198,11 +184,13 @@ export function waitNote(entry: ViewEntry, entries: readonly ViewEntry[]): strin
   if (entry.sessionWait !== undefined) plan.push(entry.sessionWait);
   if (entry.ciHold !== undefined && entry.ciHold.released !== true) plan.push(entry.ciHold.reason);
   const waits = waitsOn(entry, entries);
-  const merging = waits.filter((blocker) => waitsToMerge(entry, blocker)).map((blocker) => {
+  // A blocker whose run crashed is no wait to merge: it is said as it is, never as a plain wait (A11-399).
+  const crashed = waits.filter((blocker) => isCrashedBlocker(entry, blocker, entries)).map((blocker) => crashedWait(blocker.key));
+  const merging = waits.filter((blocker) => waitsToMerge(entry, blocker) && !isCrashedBlocker(entry, blocker, entries)).map((blocker) => {
     const held = holdReason(entry, blocker, entries);
     return held === null ? blocker.key : `${blocker.key} (${held})`;
   });
-  if (merging.length > 0) return [...plan, `Waits for ${merging.join(", ")} to merge`].join("; ");
+  if (merging.length > 0) return [...plan, `Waits for ${merging.join(", ")} to merge`, ...crashed].join("; ");
   const reasons = [...plan, ...waits.map((blocker) => blockerWait(entry, blocker, entries))];
   const overlap = overlapWait(entry, entries);
   if (overlap !== null) reasons.push(overlapNote(overlap));
@@ -422,8 +410,8 @@ export function runsShown<T extends ViewEntry>(entries: readonly T[], filter: Ru
   return entries.filter((entry) => filter === null || shownStatus(entry, publish, entries) === filter).sort((a, b) => latest(b) - latest(a));
 }
 
-/** A parked run: a finished one that kept its herdr workspace, so a person can still answer its agent there. It holds no slot. */
-export const isParked = (entry: ViewEntry): boolean => entry.phase === "finished" && entry.workspace !== undefined;
+/** A parked run ({@link isParked}, defined with the runs a blocker's ticket may still have at work). */
+export { isParked };
 
 /** A talk session that holds its pane: its agent is starting or running in it, or waits there for the person (parked). A queued one holds none yet (A11-171). */
 const isTalking = (entry: ViewEntry): boolean => entry.talk === true && entry.phase !== "queued" && (entry.phase !== "finished" || isParked(entry));

@@ -1,7 +1,7 @@
 // no-token: gh -- the clock and the fetch are injected; nothing is spawned or sent
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { addCallFigures, CALL_WINDOW_MS, countedFetch, countProgram, createCallLedger, ghFailed, per100, serviceOfUrl, statusFailed } from "./call-outcomes.ts";
+import { addCallFigures, CALL_WINDOW_MS, countedFetch, countProgram, createCallLedger, ghFailed, networkUpSince, per100, serviceOfUrl, statusFailed } from "./call-outcomes.ts";
 
 test("failures per 100 calls is rounded to one decimal place, and 0 when there were no calls", () => {
   assert.deepEqual([per100(0, 0), per100(1, 3), per100(3, 200), per100(5, 5)], [0, 33.3, 1.5, 100]);
@@ -67,4 +67,41 @@ test("two threads' figures are added and the failures per 100 are worked out fro
   const board = { linear: { calls: 100, failures: 0, failuresPer100: 0 }, github: { calls: 0, failures: 0, failuresPer100: 0 } };
   const page = { linear: { calls: 100, failures: 4, failuresPer100: 4 }, github: { calls: 50, failures: 5, failuresPer100: 10 } };
   assert.deepEqual(addCallFigures(board, page), { linear: { calls: 200, failures: 4, failuresPer100: 2 }, github: { calls: 50, failures: 5, failuresPer100: 10 } });
+});
+
+test("A11-399: the ledger says when each service's last good and last failed call were, within the hour", () => {
+  let clock = 5 * CALL_WINDOW_MS;
+  const ledger = createCallLedger(() => clock);
+  assert.deepEqual(ledger.lastCalls("linear"), { ok: undefined, failed: undefined });
+  const start = clock;
+  ledger.record("linear", true);
+  clock += 1_000;
+  ledger.record("linear", false);
+  clock += 1_000;
+  ledger.record("github", true);
+  assert.deepEqual(ledger.lastCalls("linear"), { ok: start + 1_000, failed: start });
+  assert.deepEqual(ledger.lastCalls("github"), { ok: undefined, failed: start + 2_000 });
+  clock += CALL_WINDOW_MS;
+  assert.deepEqual(ledger.lastCalls("linear"), { ok: undefined, failed: undefined }, "past the hour they are out");
+});
+
+test("A11-399: the network is up since a crash only when a call succeeded after it and neither service's latest call failed", () => {
+  let clock = 10 * CALL_WINDOW_MS;
+  const ledger = createCallLedger(() => clock);
+  const crashedAt = clock;
+  /** One millisecond on, `service` is called and fails or not; whether the network is up since the crash then. */
+  const upAfter = (service: "linear" | "github", failed: boolean): boolean => {
+    clock += 1;
+    ledger.record(service, failed);
+    return networkUpSince(ledger, crashedAt);
+  };
+  assert.equal(networkUpSince(ledger, crashedAt), false, "no call at all");
+  ledger.record("linear", false);
+  assert.equal(networkUpSince(ledger, crashedAt), false, "a good call at the moment of the crash is not after it");
+  assert.equal(upAfter("linear", false), true, "a good Linear call, and GitHub not called");
+  assert.equal(upAfter("github", true), false, "GitHub's latest call failed");
+  assert.equal(upAfter("github", false), true, "and answers again");
+  assert.equal(upAfter("linear", true), false, "Linear's latest call failed");
+  clock += CALL_WINDOW_MS;
+  assert.equal(networkUpSince(ledger, crashedAt), false, "calls of an hour ago are no evidence");
 });
