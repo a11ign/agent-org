@@ -121,6 +121,10 @@ const ALWAYS: Readonly<Record<string, (subject: Subject) => unknown>> = {
     expect(feedback.queue === undefined || (isObject(feedback.queue) && typeof feedback.queue.queued === "boolean" && Array.isArray(feedback.queue.removals)
       && feedback.queue.removals.every((removal) => isString(removal.reason) && Number.isFinite(removal.at) && (removal.actor === null || isString(removal.actor)) && (removal.groupCommit === null || isString(removal.groupCommit)))),
     "feedback.queue, when the host says it, must be { queued, removals: [{ at, reason, actor, groupCommit }] } (contract 1.21)");
+    const isCommentReview = (named: unknown): boolean => named === undefined || named === null || (isObject(named) && isString(named.author) && Number.isFinite(named.at) && isString(named.url));
+    expect(isCommentReview(feedback.commentReviewAtHead), "feedback.commentReviewAtHead, when the host says it, must be { author, at, url } or null (contract 4.1)");
+    const named = await host.readPullFeedback(probe.pull, probe.self, [], [{ author: "ci-bot", startsWith: "Review finished" }]);
+    expect(isObject(named) && isCommentReview(named.commentReviewAtHead), "readPullFeedback given review comments must read the pull request, and name its review comment as { author, at, url } or null (contract 4.1)");
   },
   "readPullFeedback answers null for a pull request it cannot read": async ({ host, probe }) => {
     expect((await host.readPullFeedback(probe.missing, probe.self)) === null, "readPullFeedback must answer null for what it cannot read: null is never 'no feedback'");

@@ -42,6 +42,9 @@ type Subscriber = { filter: Readonly<{ kinds?: readonly CodeHostEventKind[]; ref
 const reviewStateOf = (pull: FakePull | undefined): ReviewState | null => (pull === undefined ? null : { head: pull.head, trust: pull.trust, reviews: pull.reviews, settled: pull.settled,
   ...(pull.unrequiredRed === undefined ? {} : { unrequiredRed: pull.unrequiredRed }), view: { number: pull.number, ...(pull.body === undefined ? {} : { body: pull.body }), ...pull.view } });
 
+/** The seeded feedback without its review comment (contract 4.1): what a caller that names no review comments is answered, since a host says nothing of one it was not told how to find. */
+const withoutCommentReview = ({ commentReviewAtHead: _named, ...rest }: Partial<PullFeedback>): Partial<PullFeedback> => rest;
+
 /** The reads of pull requests: `null` for one the fake was never given, as a host does that cannot read it. */
 function readsOf(pulls: Pulls, repositories: Set<string>, defaultBranches: Map<string, DefaultBranchRed>, login: string | null, calls: string[]):
   Pick<CodeHost, "readOwnLogin" | "readPullFeedback" | "readDefaultBranchRed" | "readReplies" | "readReviewState" | "peekReviewState" | "readPullState" | "readMergedFindings" | "openPullUrlsOf" | "pullsNaming" | "openDependencyPulls" | "readChange" | "refreshPull"> {
@@ -53,7 +56,7 @@ function readsOf(pulls: Pulls, repositories: Set<string>, defaultBranches: Map<s
       calls.push("readOwnLogin");
       return login;
     },
-    async readPullFeedback(url, self, alsoIgnore = []) {
+    async readPullFeedback(url, self, alsoIgnore = [], reviewComments = []) {
       calls.push(`readPullFeedback ${url}`);
       const pull = pulls.get(url);
       if (pull === undefined) return null;
@@ -62,7 +65,7 @@ function readsOf(pulls: Pulls, repositories: Set<string>, defaultBranches: Map<s
       const authors = (pull.feedback.authors ?? []).filter((author) => !ignored(author));
       const approvedAtHead = pull.reviews.some((review) => review.commit === pull.head && review.state === "APPROVED" && !ignored(review.author));
       return { state: pull.state, feedbackAt: null, failing: [], failures: [], failedAt: null, conflicting: false, mergeable: pull.merge.mergeable === true, head: pull.head, approvedAtHead,
-        base: pull.base, files: pull.files, filesComplete: true, reviewDecision: null, verdictAtHead: verdictAtHead(pull, self), pendingRequired: [], body: pull.body ?? "", ...(pull.queue === undefined ? {} : { queue: pull.queue }), ...pull.feedback, authors };
+        base: pull.base, files: pull.files, filesComplete: true, reviewDecision: null, verdictAtHead: verdictAtHead(pull, self), pendingRequired: [], body: pull.body ?? "", ...(pull.queue === undefined ? {} : { queue: pull.queue }), ...(reviewComments.length === 0 ? withoutCommentReview(pull.feedback) : pull.feedback), authors };
     },
     async readDefaultBranchRed(repository) {
       calls.push(`readDefaultBranchRed ${repository}`);

@@ -416,6 +416,14 @@ test("A11-295: at most two re-arms for a head: the third removal starts a round,
   assert.deepEqual([three.heads[URL]?.step, three.heads[URL]?.rearms, three.heads[URL]?.roundStarted, host.queues.holds], ["held", 2, true, [{ url: URL, on: true }]]);
 });
 
+test("a review comment at the head (tickets.reviewComments, code host 4.1) is no approval: the arm bot is not asked, as for a head nobody reviewed", async () => {
+  const commented = world({ logs: { [MIDDLEWARE]: ETARGET }, runs: [lost()] });
+  const read = feedback(removedFrom(removal(0)), { approvedAtHead: false, verdictAtHead: null, commentReviewAtHead: { author: "ci-bot", at: 1, url: `${URL}#issuecomment-1` } });
+  const answer = await answerQueue(commented.ctx, entryWith(), [{ url: URL, read }]);
+  assert.deepEqual([answer.feedback, answer.heads[URL]?.step, commented.host.stackMerges.requests], [null, "named", []]);
+  assert.match(answer.heads[URL]?.note ?? "", /not armed again: it is not approved at this head$/);
+});
+
 test("A11-295: a removal that is the change's, a pull request that is not approved or conflicts, and a code host that cannot ask are not given to the arm bot", async () => {
   const read = (over: Partial<PullFeedback>) => feedback(removedFrom(removal(0)), over);
   const lostRun = { logs: { [MIDDLEWARE]: ETARGET }, runs: [lost()] };

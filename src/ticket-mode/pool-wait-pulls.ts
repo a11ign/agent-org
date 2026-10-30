@@ -8,6 +8,7 @@
 //      or a conflict is told to the worker at once with one prompt, for each head, and not at its `until`. A changes-requested review that stands for an hour with the worker idle ends the run `needs-human`, naming why, so it reads Needs you.
 import { readOpenedRecord } from "./opened-record.ts";
 import { type PoolContext } from "./pool-context.ts";
+import { readFeedbackOf } from "./read-feedback.ts";
 import { log, messageOf, runMembers, runPlace, sameRun, updateEach } from "./pool-state.ts";
 import { sendToAgentAsync, utcClock } from "./pool-resume.ts";
 import { end } from "./pool-settle.ts";
@@ -54,13 +55,12 @@ type Troubles = Readonly<{ found: ReadonlyMap<string, PullTrouble>; unread: Read
 
 /** The pull requests of a run read once. A pull request the host could not be asked about is said, and is not read as clear: the next watch asks again. */
 async function troublesOf(ctx: PoolContext, entry: Entry, self: string): Promise<Troubles> {
-  const { codeHost, feedbackIgnores } = ctx;
   const found = new Map<string, PullTrouble>();
   const unread = new Set<string>();
   for (const [url, wait] of watchedPulls(entry)) {
     let read: PullFeedback | null;
     try {
-      read = await codeHost.readPullFeedback(url, self, feedbackIgnores);
+      read = await readFeedbackOf(ctx, url, self);
     } catch (err) {
       read = null;
       log(`${entry.ticket.key}: ${url} could not be read for the wait (${messageOf(err).split("\n")[0]}); the next watch asks again`);

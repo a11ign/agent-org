@@ -45,6 +45,7 @@ import type { PullFeedback } from "../plugins/contracts/code-host.ts";
 import { reviewerLines } from "./pool-reviewers.ts";
 import { startStandoffRound } from "./pool-standoff.ts";
 import { type PoolContext } from "./pool-context.ts";
+import { readFeedbackOf } from "./read-feedback.ts";
 import { forceDrain } from "./pool-drain.ts";
 import { releaseTicketWaits } from "./pool-ticket-wait.ts";
 import { settleQueuedRounds } from "./pool-round-pulls.ts";
@@ -592,7 +593,7 @@ const finishedNow = (ctx: PoolContext, entry: Entry): Entry | undefined => {
  */
 async function readFeedback(ctx: PoolContext, finished: readonly Entry[], self: string): Promise<{ entry: Entry; reads: { url: string; read: PullFeedback | null }[] }[]> {
   const pulls = finished.flatMap((entry) => openPulls(entry).map(({ url }) => ({ entry, url })));
-  const answers = await readEach(pulls, ({ url }) => ctx.codeHost.readPullFeedback(url, self, ctx.feedbackIgnores));
+  const answers = await readEach(pulls, ({ url }) => readFeedbackOf(ctx, url, self));
   return finished.flatMap((entry) => {
     const current = finishedNow(ctx, entry);
     return current === undefined ? [] : [{ entry: current, reads: pulls.flatMap(({ entry: owner, url }, at) => (owner === entry ? [{ url, read: answers[at] }] : [])) }];
@@ -616,7 +617,7 @@ const WATCHING = new WeakMap<object, Promise<void>>();
 
 /** {@link watchFeedback}, one pass. */
 async function watchEach(ctx: PoolContext): Promise<void> {
-  const { codeHost, feedbackIgnores, now, store } = ctx;
+  const { codeHost, now, store } = ctx;
   // What each ticket's pushes cost in CI is read on the same cadence, whether or not a pull request is finished: a live worker's pushes are the ones that cost (A11-261). It never throws and the watch does not wait for it.
   void watchCiSpend(ctx);
   clearOverStaleBlocks(ctx);

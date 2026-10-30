@@ -177,7 +177,9 @@ export type AfterMergeLine = Readonly<{ line: string; owner: string | null }>;
  * `notMerging` is the reason the watch gave once it had been so for `NOT_MERGING_MINUTES`, which is what makes the card say so; it stays while the reading does. `firstFlow` marks an approved head whose pull request adds the repository's first merge flow, which nothing can merge but a person.
  */
 export type PullHead = Readonly<{
-  head: string; approved: boolean; review?: "approved" | "none" | "changes-requested"; red?: readonly string[]; pending?: readonly string[]; mergeable?: boolean; conflict?: Readonly<{ base: string | null }>; blockedSince?: number;
+  head: string; approved: boolean; review?: "approved" | "none" | "changes-requested";
+  /** The review comment the code host named at this head (`tickets.reviewComments`, code host contract 4.1): who posted it and when. The card names it where no review is at the head; IT IS NEVER AN APPROVAL. */
+  commentReview?: Readonly<{ author: string; at: number }>; red?: readonly string[]; pending?: readonly string[]; mergeable?: boolean; conflict?: Readonly<{ base: string | null }>; blockedSince?: number;
   unmergedSince?: number; notMerging?: string; firstFlow?: true;
 }>;
 
