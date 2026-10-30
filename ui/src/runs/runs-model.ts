@@ -199,9 +199,9 @@ export function ciLineOf(entry: Pick<RunEntry, "ci">): CiLine | null {
   return { text, tone: state === "over" || state === "held" ? "warn" : "plain" };
 }
 
-/** The keys of the queued tickets that wait on a crashed run of ticket `key`, or none when the run is not a crashed one (A11-399). */
+/** The keys of the queued tickets that wait on a crashed run of ticket `key`, or none when the run is not a crashed one (A11-399). A ticket whose card says a person or its worker decides about `key` (canceled, a duplicate, stopped for) does not wait on the crash. */
 const waitingOnCrashed = (key: string, entries: QueueView["entries"]): string[] =>
-  crashedRunOf(key, entries) === null ? [] : entries.filter((other) => other.phase === "queued" && waitsOn(other, entries).some((blocker) => blocker.key === key)).map((other) => other.ticket.key);
+  crashedRunOf(key, entries) === null ? [] : entries.filter((other) => other.phase === "queued" && waitsOn(other, entries).some((blocker) => blocker.key === key && isCrashedBlocker(other, blocker, entries))).map((other) => other.ticket.key);
 
 /** The lines of a note, with the CI line, when given, where `ciNote` puts it. */
 function linesOf(entry: RunEntry, { queue, publisher, now }: NoteContext, ci?: string | null): string[] {
