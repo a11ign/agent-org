@@ -2,6 +2,8 @@ A run that crashes on a transient network error (`fetch failed`, `ECONNRESET`, `
 
 A ticket the board watches from its table of closed tickets (A11-282, A11-345) and has reopened is watched again only from a release installed after its next fix merged, as a ticket watched from its own `Figure:` line already is. Before, the watch began at the second the ticket was closed again, and read the hour of failures before the fix: A11-345 was reopened on 2026-11-01 after a ninety-second network outage of the host, and its next close would have breached on that same hour and reopened it again (`src/ticket-mode/reliability/sweep.ts`, `fixInstalled`).
 
+A reopened ticket the board watches (A11-345 is one) that is completed again with no fix merged on its run log -- a fix made by hand, or a pruned log -- waited for ever and was never watched. Thirty minutes after the close without a recorded merge, the close is taken for the fix, and the window begins once a release other than the one running then is installed (`src/ticket-mode/reliability/sweep.ts`, `notingFixRelease`). A merge recorded within the thirty minutes follows the rule of a merged fix, unchanged.
+
 Acceptance:
 ```bash
 npx rstest run --config scripts/rstest/rstest.config.ts src/ticket-mode/reliability/sweep.test.ts src/ticket-mode/pool-crash-retry.test.ts plugins/linear/linear.test.ts src/ticket-mode/pool-attach-retry.test.ts src/ticket-mode/pool-write-retry.test.ts
