@@ -102,10 +102,10 @@ function notingFixRelease(ctx: PoolContext, watch: Watch): Watch {
 
 /**
  * Whether `watch`'s fix is on this host. A ticket the board reopened counts only the fixes merged since, and those only once a release other than the one it ran when it first saw them is installed: the
- * first fix's acceptance file is still in the tool folder, so `isInstalled` alone would begin the window before the second fix is released (A11-366 review).
+ * first fix's acceptance file is still in the tool folder, so `isInstalled` alone would begin the window before the second fix is released (A11-366 review). A backfilled ticket's first window needs no release (its fix was installed long before there was a watch), but once the board has reopened it, its next fix is a new one and is held to the same rule (A11-345).
  */
 function fixInstalled(ctx: PoolContext, watch: Watch): boolean {
-  if (watch.origin === "backfill") return true;
+  if (watch.origin === "backfill" && watch.reopenedAt === undefined) return true;
   const toolRoot = toolPinOf(ctx).toolRoot;
   const merges = fixMerges(ctx, watch);
   if (watch.reopenedAt === undefined) return isInstalled({ toolRoot, now: ctx.now, merges: () => merges }, watch.key);
