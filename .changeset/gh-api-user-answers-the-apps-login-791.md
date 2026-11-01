@@ -1,5 +1,0 @@
----
-"agent-org": patch
----
-
-`gh api user` under a role that authenticates as a GitHub App is answered from the declaration instead of reaching GitHub, which refuses an installation token `GET /user` with a 403 (a11ign/agent-org#791). `host.json`'s `github.identity.<role>` takes an optional `slug` (the app's name in `github.com/apps/<slug>`, without `[bot]`; refused by field name when it is not one, or when it sits on a `user-accounts` role), `AppIdentity` carries it, and the rendered `app_declared()` sets `app_slug`. `host/gh` prints `{"login":"<slug>[bot]"}` for `api user` and `<slug>[bot]` for `api user --jq .login` (`-q`, `--jq=`, `-q.login`, `-q=`; `user` or `/user`) when the call goes out under the role's App, and records the ledger line as `app:<role>` with resource `declared` (no pool spent). A role with an App and no `slug`, any other `api user` form, an explicit `GH_TOKEN`, a role with no App and a mint that failed are sent through as before. `pr:open`'s review-only-lane check, the review door's `gh api user --jq .login` and the weekly post's login read the App's login instead of failing.
