@@ -94,10 +94,28 @@ function fixMerges(ctx: PoolContext, watch: Watch): readonly Merge[] {
   return watch.reopenedAt === undefined ? merges : merges.filter(({ at }) => at > watch.reopenedAt!);
 }
 
-/** `watch` with the release this host runs noted, the first sweep that sees a fix merged after its reopen. */
+/** How long a reopened ticket may stay completed with no fix merged on its run log before the close is taken to be a fix made by hand: well past the time the board takes to record a merge, which the tracker's close comes ahead of. */
+export const HAND_FIX_AFTER_MS = 30 * 60_000;
+
+/** Whether `watch`'s ticket has been completed again for {@link HAND_FIX_AFTER_MS}. */
+const closedLongEnough = (ctx: PoolContext, watch: Watch): boolean => watch.state === "watching" && watch.closedAt !== undefined && ctx.now() - watch.closedAt >= HAND_FIX_AFTER_MS;
+
+/**
+ * `watch` with the release this host runs noted, the first sweep that sees a fix merged after its reopen. A merge recorded after the close was taken for the fix ({@link notingHandFix}) is the fix: the release is noted
+ * again, so a release installed between the two does not begin the window.
+ */
 function notingFixRelease(ctx: PoolContext, watch: Watch): Watch {
-  if (watch.reopenedAt === undefined || watch.releaseAtFix !== undefined || fixMerges(ctx, watch).length === 0) return watch;
-  return { ...watch, releaseAtFix: releaseOf(toolPinOf(ctx).toolRoot) };
+  if (watch.reopenedAt === undefined || fixMerges(ctx, watch).length === 0) return watch;
+  if (watch.releaseAtFix !== undefined && watch.closeTakenForFix !== true) return watch;
+  const { closeTakenForFix: _byHand, ...rest } = watch;
+  return { ...rest, releaseAtFix: releaseOf(toolPinOf(ctx).toolRoot) };
+}
+
+/** `watch`, whose ticket the tracker has completed, with the release this host runs noted when its close has gone {@link HAND_FIX_AFTER_MS} with no fix merged on its run log: the close is taken for a fix made by hand. */
+function notingHandFix(ctx: PoolContext, watch: Watch): Watch {
+  if (watch.reopenedAt === undefined || watch.releaseAtFix !== undefined) return watch;
+  if (!closedLongEnough(ctx, watch) || fixMerges(ctx, watch).length > 0) return watch;
+  return { ...watch, releaseAtFix: releaseOf(toolPinOf(ctx).toolRoot), closeTakenForFix: true };
 }
 
 /**
@@ -109,7 +127,7 @@ function fixInstalled(ctx: PoolContext, watch: Watch): boolean {
   const toolRoot = toolPinOf(ctx).toolRoot;
   const merges = fixMerges(ctx, watch);
   if (watch.reopenedAt === undefined) return isInstalled({ toolRoot, now: ctx.now, merges: () => merges }, watch.key);
-  if (merges.length === 0 || watch.releaseAtFix === undefined) return false;
+  if (watch.releaseAtFix === undefined) return false;
   const released = watch.releaseAtFix === null || releaseOf(toolRoot) !== watch.releaseAtFix;
   return released && isInstalled({ toolRoot, now: ctx.now, merges: () => merges }, watch.key);
 }
@@ -125,7 +143,7 @@ function factsOf(ctx: PoolContext, watch: Watch, completed: ReadonlyMap<string, 
   const installed = fixInstalled(ctx, watch);
   const isCompleted = completed?.get(watch.key) ?? null;
   if (isCompleted === true && !installed && awaitsReleaseAfterReopen(watch)) {
-    sayOnce(`${watch.key}:unwatched`, `${watch.key}: completed again after the board reopened it, but its figure is not watched yet: it waits for a fix merged since the reopen (none is on its run log) and a release installed after it`);
+    sayOnce(`${watch.key}:unwatched`, `${watch.key}: completed again after the board reopened it, but its figure is not watched yet: it waits for a fix merged since the reopen (none is on its run log) and a release installed after it, or, if none merges within ${HAND_FIX_AFTER_MS / 60_000} minutes of the close, for the next release after that`);
   }
   return { now, completed: isCompleted, installed, read: figures === null || value === null ? null : { value, readings: readingsOf(figures, now) } };
 }
@@ -209,7 +227,8 @@ export async function syncReliabilityWatches(ctx: PoolContext): Promise<void> {
     const completed = await completedAmong(ctx, Object.values(enrolment.watches).filter(({ state }) => state !== "held").map(({ key }) => key));
     changeWatches(path, (file) => {
       const watches = Object.fromEntries(Object.entries(file.watches).map(([key, was]) => {
-        const watch = notingFixRelease(ctx, was);
+        const merged = notingFixRelease(ctx, was);
+        const watch = completed?.get(key) === true ? notingHandFix(ctx, merged) : merged;
         return [key, advance(watch, factsOf(ctx, watch, completed))];
       }));
       return JSON.stringify(watches) === JSON.stringify(file.watches) ? file : { watches };
