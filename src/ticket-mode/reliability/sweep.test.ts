@@ -181,6 +181,61 @@ test("a reopened ticket closed with no fix merged on its run log is watched from
   assert.deepEqual([watch().state, watch().releaseAtFix, watch().began], ["watching", "1.0.0", w.clock.at], "the close is taken for the fix, and the window begins once a release after it is installed");
 });
 
+/** A backfilled A11-345 the board reopened, closed again with no merge on its run log, and swept {@link HAND_FIX_AFTER_MS} after the close: its close is taken for the fix at release 1.0.0. */
+async function closedAgainWithNoMerge() {
+  const w = world(["A11-345"], {});
+  const tool = toolFolder("1.0.0", "A11-345");
+  (w.ctx as { hook: { bin: string } }).hook = { bin: join(tool.root, "src", "bin.ts") };
+  await w.sweep();
+  w.served.figures = figures(0, { calls: 133, failures: 11, failuresPer100: 8.3 });
+  await closeAndRead(w, "A11-345");
+  w.served.figures = figures(0);
+  await closeAndRead(w, "A11-345");
+  return { w, tool, watch: () => w.watch("A11-345") };
+}
+
+/** Move the clock on by `ms` and sweep. */
+async function sweepAfter(w: ReturnType<typeof world>, ms: number): Promise<void> {
+  w.clock.at += ms;
+  await w.sweep();
+}
+
+async function takenForFix() {
+  const closed = await closedAgainWithNoMerge();
+  await sweepAfter(closed.w, HAND_FIX_AFTER_MS);
+  return closed;
+}
+
+test("a merge recorded after the close was taken for the fix is the fix: a release installed between the two does not begin the window (A11-345)", async () => {
+  const { w, tool, watch } = await takenForFix();
+  assert.equal(watch().releaseAtFix, "1.0.0");
+  tool.release("1.0.1");
+  mergeRecorder(w, "A11-345")(w.clock.at - 1);
+  await sweepAfter(w, 60_000);
+  assert.deepEqual([watch().releaseAtFix, watch().began], ["1.0.1", undefined], "the release that ran when the merge was seen does not carry it");
+  tool.release("1.0.2");
+  await sweepAfter(w, 60_000);
+  assert.equal(watch().began, w.clock.at);
+});
+
+test("a ticket put back to work after its close was taken for the fix forgets that release, and is not watched from the next close with no fix (A11-345)", async () => {
+  const { w, tool, watch } = await takenForFix();
+  await w.tracker.restoreState!("A11-345", { from: "In Progress", to: "Done" });
+  await sweepAfter(w, 60_000);
+  assert.deepEqual([watch().state, watch().releaseAtFix], ["open", undefined], "at work again");
+  tool.release("1.0.1");
+  w.tracker.completeAs("A11-345", "person");
+  await sweepAfter(w, 60_000);
+  assert.deepEqual([watch().began, watch().releaseAtFix], [undefined, undefined], "closed again: the 1.0.1 release says nothing of this fix");
+});
+
+test("a tracker that cannot say whether the ticket is completed does not have its close taken for a fix (A11-345)", async () => {
+  const { w } = await closedAgainWithNoMerge();
+  (w.ctx as { source: unknown }).source = { ...w.tracker, stateTypes: undefined };
+  await sweepAfter(w, HAND_FIX_AFTER_MS);
+  assert.equal(w.watch("A11-345").releaseAtFix, undefined);
+});
+
 test("a figure that holds is never reopened, and the window closes held", async () => {
   const w = world();
   w.tracker.completeAs("A11-900", "person");

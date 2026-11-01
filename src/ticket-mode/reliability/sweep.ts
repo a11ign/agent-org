@@ -97,14 +97,25 @@ function fixMerges(ctx: PoolContext, watch: Watch): readonly Merge[] {
 /** How long a reopened ticket may stay completed with no fix merged on its run log before the close is taken to be a fix made by hand: well past the time the board takes to record a merge, which the tracker's close comes ahead of. */
 export const HAND_FIX_AFTER_MS = 30 * 60_000;
 
-/** Whether `watch`'s ticket has stayed completed again for {@link HAND_FIX_AFTER_MS}. */
+/** Whether `watch`'s ticket has been completed again for {@link HAND_FIX_AFTER_MS}. */
 const closedLongEnough = (ctx: PoolContext, watch: Watch): boolean => watch.state === "watching" && watch.closedAt !== undefined && ctx.now() - watch.closedAt >= HAND_FIX_AFTER_MS;
 
-/** `watch` with the release this host runs noted, the first sweep that sees a fix merged after its reopen, or its close, with no merge on the run log for {@link HAND_FIX_AFTER_MS}, taken for a fix made by hand. */
+/**
+ * `watch` with the release this host runs noted, the first sweep that sees a fix merged after its reopen. A merge recorded after the close was taken for the fix ({@link notingHandFix}) is the fix: the release is noted
+ * again, so a release installed between the two does not begin the window.
+ */
 function notingFixRelease(ctx: PoolContext, watch: Watch): Watch {
+  if (watch.reopenedAt === undefined || fixMerges(ctx, watch).length === 0) return watch;
+  if (watch.releaseAtFix !== undefined && watch.closeTakenForFix !== true) return watch;
+  const { closeTakenForFix: _byHand, ...rest } = watch;
+  return { ...rest, releaseAtFix: releaseOf(toolPinOf(ctx).toolRoot) };
+}
+
+/** `watch`, whose ticket the tracker has completed, with the release this host runs noted when its close has gone {@link HAND_FIX_AFTER_MS} with no fix merged on its run log: the close is taken for a fix made by hand. */
+function notingHandFix(ctx: PoolContext, watch: Watch): Watch {
   if (watch.reopenedAt === undefined || watch.releaseAtFix !== undefined) return watch;
-  if (fixMerges(ctx, watch).length === 0 && !closedLongEnough(ctx, watch)) return watch;
-  return { ...watch, releaseAtFix: releaseOf(toolPinOf(ctx).toolRoot) };
+  if (!closedLongEnough(ctx, watch) || fixMerges(ctx, watch).length > 0) return watch;
+  return { ...watch, releaseAtFix: releaseOf(toolPinOf(ctx).toolRoot), closeTakenForFix: true };
 }
 
 /**
@@ -216,7 +227,8 @@ export async function syncReliabilityWatches(ctx: PoolContext): Promise<void> {
     const completed = await completedAmong(ctx, Object.values(enrolment.watches).filter(({ state }) => state !== "held").map(({ key }) => key));
     changeWatches(path, (file) => {
       const watches = Object.fromEntries(Object.entries(file.watches).map(([key, was]) => {
-        const watch = notingFixRelease(ctx, was);
+        const merged = notingFixRelease(ctx, was);
+        const watch = completed?.get(key) === true ? notingHandFix(ctx, merged) : merged;
         return [key, advance(watch, factsOf(ctx, watch, completed))];
       }));
       return JSON.stringify(watches) === JSON.stringify(file.watches) ? file : { watches };
