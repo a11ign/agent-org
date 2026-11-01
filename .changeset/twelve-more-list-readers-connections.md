@@ -1,5 +1,0 @@
----
-"agent-org": patch
----
-
-Twelve more list readers use connections, not GitHub search, and the guard walks them (a11ign/a11ign#5076, the third half of #5050). `ready-label-audit.ts`, `untiered-ready-rows.ts`, `board-snapshot.ts`, `provider-low-confidence.ts` and `org-retro.ts`'s claimed rows read `repository.issues(labels:)` through `readRowsByLabel`; the merged, closed and created windows of `board-data.ts`, `close-rows-sweep.ts`, `hand-fix-ledger.ts`, `dora.ts`, `org-retro.ts`, `messaging/watch.ts` and `trace/haiku-tier-report.ts` read the `pullRequests`/`issues` connections newest-first back to the window's start, through the new `ticket-port/rows-since.ts`, and keep each row by its own `mergedAt`/`closedAt`; a window longer than ten pages is refused, never returned in part. `close-rows-for-merged-pr.ts`'s verify-row lookup reads the newest 200 rows and matches the build's marker. `src/packaging/no-search-reads.test.ts` walks all twelve. The price, said in the files: the verify-row lookup does not see a row older than the newest 200. `fleet-gated-nightly.ts`, which lists through `work-gate.ts`'s selector, is its own row.
