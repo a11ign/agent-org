@@ -142,6 +142,15 @@ describe("the Timeline's cancelled-rerun rows", () => {
       ["a11ign/lab #150 is blocked behind a cancelled run of gate at 8b3d0ba9: could not rerun it (run 40438392613 cannot be rerun)", "3 min ago", "amber"],
     ]);
   });
+
+  it("word the stop, once the head's third cancelled run was read, in amber (A11-403)", () => {
+    const rows = rowsOf([
+      { at: NOW - 30_000, kind: "cancelled-rerun", url: PULL, head: "2f3f57e1d1b24e3b5828da68e14db3d2540d87f3", checks: ["gate"], stopped: true },
+    ], { phase: "queued" });
+    expect(rows.map(({ text, when, tone }) => [text, when, tone])).toEqual([
+      ["a11ign/lab #150 is blocked behind a cancelled run of gate at 2f3f57e1: cancelled 3 times, the board has stopped rerunning it; a new push or a rerun clears it", "just now", "amber"],
+    ]);
+  });
 });
 
 describe("the Timeline's tracker-write rows", () => {

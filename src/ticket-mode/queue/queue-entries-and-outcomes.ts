@@ -1,5 +1,6 @@
 import type { FedTrouble, Wait, Woke } from "../wait-on/wait-types.ts";
 import type { QueueHead } from "../board-view/queue-head.ts";
+import type { CancelledStop } from "../board-view/cancelled-rerun-words.ts";
 import { openPulls, type AfterMergeLine, type CheckHead, type PullHead, type StackBaseRecord } from "../board-view/view-types-and-filters.ts";
 import type { OverlapStackRecord } from "../board-view/overlap-stack.ts";
 import { isBeingPublished, isParked } from "../board-view/pull-status-and-notes.ts";
@@ -371,6 +372,11 @@ export type Entry = Readonly<{
    * for failed checks finds no push between. Carried through a review round, so a round that has not pushed yet does not answer the same removal again. A pull request that is no longer open is dropped from it.
    */
   queueHeads?: Readonly<Record<string, QueueHead>>;
+  /**
+   * The open pull requests of the run the board has stopped rerunning the cancelled runs of, by URL (A11-403): the head their third cancelled run blocked them at, and the line the card shows. Written by the watch that reads the stop in the run's log, and dropped
+   * when the head moves or the watch no longer reads cancelled runs blocking it. Not carried through a round: the next watch reads it again.
+   */
+  cancelledRerunStopped?: Readonly<Record<string, CancelledStop>>;
   /**
    * Set on a queued review round or talk session that a working agent in another workspace holds back, because that agent holds the run's Claude session or its herdr
    * name (A11-154): what the board says it waits for. Cleared when the agent ends, and when the run starts.
