@@ -37,6 +37,16 @@ export function queueNote(entry: ViewEntry): string | null {
   return notes.length > 0 ? notes.join("; ") : null;
 }
 
+/**
+ * The line the board shows for a finished run whose open pull request it has stopped rerunning the cancelled runs of (A11-403), one per pull request, or null when none: "a11ign/agent-org #2017 is blocked behind a cancelled run of gate at 2f3f57e1: cancelled 3 times, the
+ * board has stopped rerunning it; a new push or a rerun clears it". A pull request that is no longer open says nothing, and the run's status does not change for it. PURE.
+ */
+export function cancelledStopNote(entry: ViewEntry): string | null {
+  const open = new Set(openPulls(entry).map(({ url }) => url));
+  const notes = entry.phase === "finished" ? Object.entries(entry.cancelledRerunStopped ?? {}).flatMap(([url, { note }]) => (open.has(url) ? [note] : [])) : [];
+  return notes.length > 0 ? notes.join("; ") : null;
+}
+
 /** What a card says of a run's agent sitting on a dialog (A11-174): the safety prompt the board declined for it (naming the subagent that raised it, A11-209), or the dialog a person must answer, with its first line when one could be read. PURE. */
 export function promptNote(entry: ViewEntry): string | null {
   if (entry.waiting === true) return entry.prompt === undefined ? "Waiting on a person" : `Waiting on a person: ${entry.prompt}`;
@@ -180,7 +190,7 @@ export function reasonOf(entry: ViewEntry, now?: number): Readonly<{ line: strin
   const cleared = blockerClearedLine(entry);
   if (cleared !== null) return { line: ticketChangeLine(entry) ?? [cleared, stepNote(entry)].filter((part) => part !== null).join("; "), question: asking ?? asked };
   // That a ticket's text changed under the run comes first: it is what the run is doing about it (A11-167). A pull request approved and green that nothing merges says so, with the reason (A11-291). A reviewed run that is not ready says what it waits on (A11-179).
-  return { line: ticketChangeLine(entry) ?? asked ?? notMergingLine(entry) ?? stepNote(entry) ?? mergeWait(entry), question: asking };
+  return { line: ticketChangeLine(entry) ?? asked ?? cancelledStopNote(entry) ?? notMergingLine(entry) ?? stepNote(entry) ?? mergeWait(entry), question: asking };
 }
 
 

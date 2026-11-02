@@ -1,6 +1,7 @@
 import type { MergedStep } from "./plan-steps.ts";
 import type { RerunRecord } from "./check-rerun-record.ts";
 import type { QueueHead } from "./queue-head.ts";
+import type { CancelledStop } from "./cancelled-rerun-words.ts";
 import type { BlockerPullDeclared, PartialOverruled, PullDeclared } from "./pull-declared.ts";
 import type { CiView } from "./ci-note.ts";
 import type { OverlapStackRecord } from "./overlap-stack.ts";
@@ -155,6 +156,8 @@ export type ViewEntry = Readonly<{
   checkHeads?: Readonly<Record<string, CheckHead>>;
   /** What the board did about the merge queue's removals of each open pull request, by URL: the head they were at, and the line the card shows (A11-264). */
   queueHeads?: Readonly<Record<string, QueueHead>>;
+  /** The open pull requests the board has stopped rerunning the cancelled runs of, by URL: the head they were at, and the line the card shows (A11-403). */
+  cancelledRerunStopped?: Readonly<Record<string, CancelledStop>>;
   /** The commit each open pull request of the run was at when it ended, by URL: what its question or work was about (A11-153). Unset until read. */
   outcomeHeads?: Readonly<Record<string, string>>;
   /** The open pull requests a `needs-human` run ended with changes requested at their head, by URL, with that head: what it stopped on, so a review lifted at that head clears it (A11-258). Unset when none was blocked, or the end could not read them. */

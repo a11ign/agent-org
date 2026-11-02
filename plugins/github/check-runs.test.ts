@@ -5,7 +5,7 @@ import { rerunFailedJobsOf } from "../../src/ticket-port/ci-reads.ts";
 import { fakePluginDeps } from "../../src/plugins/fakes/deps.ts";
 import { create } from "./index.ts";
 import { jobOfDetails, readCheckLog, rerunFailedChecks } from "./check-runs.ts";
-import { rerunRuns } from "./rerun-runs.ts";
+import { rerunRuns, runsInProgressAsync } from "./rerun-runs.ts";
 import { GhFailure } from "./gh.ts";
 
 const JOB = "https://github.com/a11ign/agent-org/actions/runs/38391781529/job/112233";
@@ -71,4 +71,42 @@ test("A11-342: rerunRuns reruns the whole run each address names, once, with no 
   assert.deepEqual(calls.map((args) => args.join(" ")), ["run rerun 38391781529 -R a11ign/agent-org", "run rerun 7 -R a11ign/other"], "each run once, whole, and an address that names no run is left out");
   assert.equal(rerunRuns([], () => { throw new Error("no call is made for no runs"); }), null);
   assert.equal(rerunRuns([JOB], () => { throw new Error("run 38391781529 cannot be rerun\nmore"); }), "run 38391781529 cannot be rerun");
+});
+
+/** The list GitHub gives of the runs at a head, as the `--jq` of `runsInProgressAsync` shapes it. */
+const listOf = (...runs: { id: number; workflow_id: number; status: string }[]): string => JSON.stringify(runs);
+
+test("A11-403: runsInProgress lists the runs at the head, and a run of the cancelled run's workflow that has not completed makes it busy, a queued one with no job yet included", async () => {
+  const asked: string[][] = [];
+  const over = (list: string) => async (args: string[]) => { asked.push(args); return list; };
+  for (const status of ["queued", "in_progress", "waiting", "pending", "requested"]) {
+    const sibling = { id: 41399933489, workflow_id: 11, status };
+    assert.equal(await runsInProgressAsync([JOB], "2f3f57e1", over(listOf({ id: 38391781529, workflow_id: 11, status: "completed" }, sibling))), true, status);
+  }
+  assert.deepEqual(asked[0], ["api", "repos/a11ign/agent-org/actions/runs?head_sha=2f3f57e1&per_page=100", "--jq", "[.workflow_runs[] | {id, workflow_id, status}]"], "one read of the repository's runs at the head");
+  assert.equal(await runsInProgressAsync([JOB], "2f3f57e1", over(listOf({ id: 38391781529, workflow_id: 11, status: "completed" }, { id: 41399933489, workflow_id: 11, status: "completed" }))), false, "every run completed");
+});
+
+test("A11-403: a run of another workflow at the head holds nothing, and the cancelled run itself, rerun and queued, is a run that has not completed", async () => {
+  const over = (list: string) => async () => list;
+  assert.equal(await runsInProgressAsync([JOB], "h", over(listOf({ id: 38391781529, workflow_id: 11, status: "completed" }, { id: 5, workflow_id: 12, status: "in_progress" }))), false, "another workflow");
+  assert.equal(await runsInProgressAsync([JOB], "h", over(listOf({ id: 38391781529, workflow_id: 11, status: "queued" }))), true, "the run itself, queued after a rerun");
+});
+
+test("A11-403: the runs of each repository an address names are listed once, and the answer is busy when any of them is", async () => {
+  const asked: string[] = [];
+  const answer = async (args: string[]) => {
+    asked.push(args[1]);
+    return args[1].includes("a11ign/other") ? listOf({ id: 7, workflow_id: 3, status: "in_progress" }) : listOf({ id: 38391781529, workflow_id: 11, status: "completed" });
+  };
+  assert.equal(await runsInProgressAsync([JOB, OTHER_JOB_SAME_RUN, OTHER_RUN], "h", answer), true);
+  assert.deepEqual(asked, ["repos/a11ign/agent-org/actions/runs?head_sha=h&per_page=100", "repos/a11ign/other/actions/runs?head_sha=h&per_page=100"]);
+});
+
+test("A11-403: a list that cannot be read, is not a list of runs, or does not hold the cancelled run is null, never false, and an address that names no run asks nothing and is null too", async () => {
+  assert.equal(await runsInProgressAsync([JOB], "h", async () => { throw new Error("HTTP 502"); }), null, "a refused read");
+  assert.equal(await runsInProgressAsync([JOB], "h", async () => "not json"), null, "not JSON");
+  assert.equal(await runsInProgressAsync([JOB], "h", async () => JSON.stringify({ workflow_runs: [] })), null, "not a list of runs");
+  assert.equal(await runsInProgressAsync([JOB], "h", async () => listOf({ id: 99, workflow_id: 11, status: "completed" })), null, "the cancelled run is not listed: its workflow is unknown");
+  assert.equal(await runsInProgressAsync(["https://github.com/a11ign/agent-org/pull/1"], "h", async () => { throw new Error("no call is made for no runs"); }), null, "no run to ask about: nothing is known of the head");
 });

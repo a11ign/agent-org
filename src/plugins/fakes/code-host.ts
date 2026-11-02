@@ -159,6 +159,10 @@ export type FakeChecksAndClaims = {
   /** The whole runs `rerunRuns` was asked to rerun (contract 1.28), as the addresses it was given. */
   runReruns: string[][];
   rerunRefusal: string | null;
+  /** What `runsInProgress` answers (contract 4.1): whether a run of the cancelled runs' workflow has not completed at the head, or null for a read that failed. Quiet (false) until a test says otherwise. */
+  runsInProgress: boolean | null;
+  /** The questions `runsInProgress` was asked, as the addresses and the head it was given. */
+  inProgressAsked: { detailsUrls: string[]; head: string }[];
   claims: Map<string, ReviewClaimEntry[]>;
   now: () => number;
   claimReadRefusal: string | null;
@@ -167,7 +171,7 @@ export type FakeChecksAndClaims = {
 };
 
 /** The reads and writes of checks and review claims over what a test seeded. */
-function checksAndClaimsOf(state: FakeChecksAndClaims, calls: string[]): Pick<CodeHost, "readCheckLog" | "rerunFailedChecks" | "rerunRuns" | "readReviewClaims" | "writeReviewClaim"> {
+function checksAndClaimsOf(state: FakeChecksAndClaims, calls: string[]): Pick<CodeHost, "readCheckLog" | "rerunFailedChecks" | "rerunRuns" | "runsInProgress" | "readReviewClaims" | "writeReviewClaim"> {
   const keyOf = (repository: string, head: string): string => `${repository}@${head}`;
   /** A rerun of the runs the addresses name: refused with `rerunRefusal` when a test set it, and recorded in `record` otherwise. */
   const rerunning = (name: string, record: string[][]) => async (detailsUrls: readonly string[]): Promise<string | null> => {
@@ -183,6 +187,11 @@ function checksAndClaimsOf(state: FakeChecksAndClaims, calls: string[]): Pick<Co
     },
     rerunFailedChecks: rerunning("rerunFailedChecks", state.reruns),
     rerunRuns: rerunning("rerunRuns", state.runReruns),
+    async runsInProgress(detailsUrls, head) {
+      calls.push("runsInProgress");
+      state.inProgressAsked.push({ detailsUrls: [...detailsUrls], head });
+      return state.runsInProgress;
+    },
     async readReviewClaims(repository, head) {
       calls.push(`readReviewClaims ${repository} ${head}`);
       return state.claimReadRefusal === null ? { entries: [...(state.claims.get(keyOf(repository, head)) ?? [])] } : { unreadable: state.claimReadRefusal };
@@ -470,7 +479,7 @@ export function createFakeCodeHost(login: string | null = "fake-worker") {
   const retargets: { url: string; base: string }[] = [];
   const wrapperState: FakeWrapperState = { refusal: null, mintFailures: {} };
   const repositoriesWorld: FakeRepositories = { owners: login === null ? null : [{ login, kind: "account" }], byOwner: new Map(), cloneFailures: new Map(), cloned: [] };
-  const checksAndClaims: FakeChecksAndClaims = { logs: new Map(), reruns: [], runReruns: [], rerunRefusal: null, claims: new Map(), now: Date.now, claimReadRefusal: null, claimWriteRefusal: null, claimWrites: [] };
+  const checksAndClaims: FakeChecksAndClaims = { logs: new Map(), reruns: [], runReruns: [], rerunRefusal: null, runsInProgress: false, inProgressAsked: [], claims: new Map(), now: Date.now, claimReadRefusal: null, claimWriteRefusal: null, claimWrites: [] };
   const branchUpdates: FakeBranchUpdates = { answers: new Map(), asked: [] };
   const closes: FakeCloses = { refusals: new Map(), closed: [] };
   const comments: FakeComments = { refusals: new Map(), posted: [] };

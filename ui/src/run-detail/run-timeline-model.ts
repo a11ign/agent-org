@@ -80,7 +80,7 @@ function rowOf(event: TimelineEvent, { now, startedAt, newest, going, canceled, 
     case "answered": return { text: "Answered", when: joined(ago, ANSWER_WORDS[event.by]), tone: "grey" };
     case "published": return { text: "Published", when: joined(ago, note), tone: "violet" };
     case "base-merge": return { text: baseMergeWords(event.url, event.base, event.step), when: joined(ago, note), tone: BASE_MERGE_TONES[event.step] };
-    case "cancelled-rerun": return { text: cancelledRerunWords(event), when: joined(ago, note), tone: event.refused === undefined ? "violet" : "amber" };
+    case "cancelled-rerun": return { text: cancelledRerunWords(event), when: joined(ago, note), tone: event.refused === undefined && event.stopped === undefined ? "violet" : "amber" };
     case "merged": return { text: "Pull request merged", when: joined(pullLabel(event.url), ago, note), tone: "violet" };
     case "finished": return newest && canceled ? { text: "Ticket canceled in the tracker", when: joined(ago, note), tone: "grey" } : event.outcome === "needs-human" ? { text: "Handed back to a person", when: joined(ago, note), tone: "amber" } : {
       text: FAILED_OUTCOMES.has(event.outcome) ? "Run failed" : "Run finished",

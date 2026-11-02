@@ -1,5 +1,5 @@
 // @ts-check
-// module: the code host contract, version 4.0 -- what ticket mode asks of the place pull requests live (A11-158)
+// module: the code host contract, version 4.1 -- what ticket mode asks of the place pull requests live (A11-158)
 //
 // A TYPE FILE: it imports nothing at run time. It is SYNCHRONOUS, because the readers of it are, EXCEPT THE READS THE INSTANCE'S LOOP MAKES ON A SWEEP (contract 2.0), THE REVIEW CLAIM'S TWO CALLS (3.0) AND THE OPERATIONS IT MAKES ON AN EVENT (4.0), which answer a promise: the ticket port's gate (`ticket-port/port.ts`) and ticket
 // mode's injected `gh: (args) => string` (`pool-context.ts`). It is written from the GitHub operations ticket mode makes today, and carries `CodeHostPort`'s four
@@ -9,6 +9,7 @@
 //
 // ROW MODE'S GITHUB OPERATIONS are an optional `rows` group of this contract, not a second plugin (`docs/adr/0002-row-mode-github-is-an-optional-part-of-the-code-host-contract.md`); the group is declared in `code-host-rows.ts`.
 //
+// 4.1 (A11-403): `runsInProgress`, OPTIONAL: whether any run of the workflow a cancelled run belongs to has not completed at a head, which the board asks before it reruns a cancelled run, because a rerun joins the workflow's concurrency group and cancels a healthy sibling that is still running (#2017: the rerun of one `ci` run cancelled the other, and `gate` had no check run yet to show it was running). A host without it is read as one that cannot tell, and the board then reruns without asking. A minor only adds.
 // 4.0 (A11-395): the operations the board makes ON AN EVENT ANSWER A PROMISE, where they answered the value, which is a MAJOR change: `readQueueFailure`, `holdFromQueue`, `readDefaultBranchRed`, `readMergeFlow`, `readClosedWork`, `pullsNaming`, `sweepRetargets`, `stackMergeFactsOf`, `requestStackMerge`, `readCiRun`, `readCheckLog`, `rerunFailedChecks`, `rerunRuns`, `updateBranch`, `closePull` and `commentOnPull` each held the board's loop while `gh` ran. A promise resolves to what the call answered before (a null for "could not ask" and a refusal text included, never a rejection for a call the place refused), and one that THROWS now REJECTS with the same first line. `sweepRetargetsAsync` (2.2) is folded into `sweepRetargets`: after this there is one sweep. `armMerge` stays synchronous: it is `CodeHostPort`'s, which `ticket-port/port.ts` declares, and nothing on the board's loop calls it. A plugin of major 3 is refused (`READ_MAJORS`), since its operations answer the value.
 // 3.0 (A11-379): `readReviewClaims` and `writeReviewClaim` ANSWER A PROMISE, where they answered the value, which is a MAJOR change: the reviewer's start made both as a synchronous `gh` on the board's thread, and held the loop for each. A promise resolves to what the call answered before (`{ unreadable }` and a refusal text included, never a rejection for a call GitHub refused), and a host runs both without holding the process still. A plugin of major 2 is refused (`READ_MAJORS`), since its claim calls answer the value.
 // 2.2 (A11-282): `repositories.readRepositoriesAsync` and `sweepRetargetsAsync`, both OPTIONAL: the organisation's repositories, and the sweep of the stacked pull requests' bases, answering a promise, which the board's clone sweep and its restack sweep read, so a `gh` of a second no longer holds the board thread. A host without it is read through `readRepositories`, as before; a minor only adds.
@@ -66,7 +67,7 @@ import type { CodeHostRows } from "./code-host-rows.ts";
 export type { ChangeFacts, ChangeRef, CodeHostEvent, CodeHostEventKind, CodeHostPort, CodeHostRows };
 
 /** The code host contract's version, `<major>.<minor>`: a minor only adds, and a major breaks (`src/plugins/version.ts`). */
-export const CODE_HOST_CONTRACT_VERSION = "4.0";
+export const CODE_HOST_CONTRACT_VERSION = "4.1";
 
 /** The account the host's dependency bot opens its pull requests as (contract 1.19): the only author {@link CodeHost.openDependencyPulls} returns. */
 export const DEPENDENCY_PULL_AUTHOR = "dependabot[bot]";
@@ -480,6 +481,12 @@ export interface CodeHost extends CodeHostPort {
    * A host without it is read as one that cannot, and the board then reruns nothing for a pull request blocked behind a cancelled run.
    */
   rerunRuns?(detailsUrls: readonly string[]): Promise<string | null>;
+  /**
+   * Whether any run of the workflows the addresses name (`FailingCheck.detailsUrl`) has not completed at `head` (contract 4.1): queued, waiting or in progress, a run with no job yet included, which the check rollup cannot show. A rerun joins the workflow's concurrency group
+   * and cancels a sibling run that is still running, so the board reruns only when this answers false. Null when it could not be read, or when an address names no run the host can find at the head: the board then waits for its next watch. Only runs of the same workflow
+   * count; a run of another workflow at the head holds nothing. A host without it is read as one that cannot tell.
+   */
+  runsInProgress?(detailsUrls: readonly string[], head: string): Promise<boolean | null>;
   /**
    * How many calls the host has made to the place pull requests live since it started (contract 2.1): `/api/health` serves this. A host without it is read as one that counts none.
    */

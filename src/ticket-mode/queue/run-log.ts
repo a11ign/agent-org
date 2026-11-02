@@ -78,10 +78,10 @@ type EventBody =
   /** `base` is the branch the pull request merges into, or null when the host did not say. */
   | Readonly<{ kind: "base-merge"; url: string; base: string | null; step: BaseMergeStep }>
   /**
-   * The board reran the cancelled runs of the required `checks` that blocked an approved, armed pull request at `head` (A11-342): once for a head, and this event is what says so. `refused` is why the code host would not rerun them, in its own first line: the board
-   * asks again at the next watch, up to three refusals for a head.
+   * The board reran a cancelled run of the required `checks` that blocked an approved, armed pull request at `head` (A11-342): each accepted rerun of a head is one of these, up to two (A11-403), and they are what bound it. `refused` is why the code host would not rerun it, in
+   * its own first line: the board asks again at the next watch, up to three refusals for a head. `stopped` marks the one event a head gets when its third cancelled run was read and the board stopped rerunning (A11-403): it is no try, and it is written once.
    */
-  | Readonly<{ kind: "cancelled-rerun"; url: string; head: string; checks: readonly string[]; refused?: string }>
+  | Readonly<{ kind: "cancelled-rerun"; url: string; head: string; checks: readonly string[]; refused?: string; stopped?: true }>
   /** `outcome` is the kind of outcome the run ended on, and `reason` the one it gave, where it has one. */
   | Readonly<{ kind: "finished"; outcome: string; reason?: string }>
   /** A failed write of the run's result to the tracker (A11-304): the `failures`th, and the first line of the error the tracker or the network gave. */

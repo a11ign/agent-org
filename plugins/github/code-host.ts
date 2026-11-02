@@ -29,7 +29,7 @@ import { readMergeFlowAsync } from "./merge-flow.ts";
 import { holdPullRequestAsync, readQueueFailureAsync, releasePullRequestAsync } from "./merge-queue.ts";
 import { readMergedFindings } from "./merged-findings.ts";
 import { repoCloneArgs, repoViewArgs } from "./repo-args.ts";
-import { rerunRunsAsync } from "./rerun-runs.ts";
+import { rerunRunsAsync, runsInProgressAsync } from "./rerun-runs.ts";
 import { readReplies } from "./replies.ts";
 import { createReviewReads } from "./reviews.ts";
 import { pullsNamingAsync } from "./ticket-pulls.ts";
@@ -146,6 +146,7 @@ export function createCodeHost(rawDeps: PluginDeps, settle: ArmMergeSeams = {}, 
     readCheckLog: (detailsUrl) => readCheckLogAsync(detailsUrl, ghAsync, deps.log),
     rerunFailedChecks: (detailsUrls) => writingAsync(rerunRepositories(detailsUrls), () => rerunFailedChecksAsync(detailsUrls, ghAsync)),
     rerunRuns: (detailsUrls) => writingAsync(rerunRepositories(detailsUrls), () => rerunRunsAsync(detailsUrls, ghAsync)),
+    runsInProgress: (detailsUrls, head) => runsInProgressAsync(detailsUrls, head, ghAsync),
     updateBranch: (url, expectedHead) => writingAsync(repositoriesOf(url), () => updateBranchAsync(url, expectedHead, ghAsync)),
     closePull: (url, comment) => writingAsync(repositoriesOf(url), () => closePullAsync(url, comment, ghAsync)),
     commentOnPull: (url, comment) => writingAsync(repositoriesOf(url), () => commentOnPullAsync(url, comment, ghAsync)),

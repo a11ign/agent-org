@@ -68,6 +68,7 @@ const ASYNCHRONOUS_EVENT_OPERATIONS: Readonly<Record<string, (host: ReturnType<t
   readCheckLog: (host) => host.readCheckLog(`${RUN}/job/2`),
   rerunFailedChecks: (host) => host.rerunFailedChecks([`${RUN}/job/2`]),
   rerunRuns: (host) => host.rerunRuns!([`${RUN}/job/2`]),
+  runsInProgress: (host) => host.runsInProgress!([`${RUN}/job/2`], "abc"),
   updateBranch: (host) => host.updateBranch!(PULL, "abc"),
   closePull: (host) => host.closePull!(PULL, "closed"),
   commentOnPull: (host) => host.commentOnPull!(PULL, "a comment"),
