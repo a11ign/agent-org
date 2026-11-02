@@ -23,7 +23,7 @@
     "react-dom": "^19.3.1"
   },
   "devDependencies": {
-    "@a11ign/toolchain": "0.10.2",
+    "@a11ign/toolchain": "0.13.0",
     "@astrojs/check": "^0.9.12",
     "@rstest/core": "^0.12.3",
     "@testing-library/dom": "^10.4.2",
