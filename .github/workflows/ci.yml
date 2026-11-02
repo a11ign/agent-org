@@ -25,9 +25,12 @@ on:
   # reviewer never started (it starts when the checks are green), and the board said nothing of why (agent-org#1984 on #1982, 2026-10-28). `main` stays protected by the merge queue, whose `merge_group` run below is the merge condition: a stacked
   # pull request is retargeted to `main` when the one below it merges (A11-106) and enters the queue like any other.
   pull_request:
-    # `edited`: the `no-release:` line that excuses a change with no changeset is added by editing the pull request body, and the `changeset` job must re-read it.
+    # NO `edited` (A11-403): ONE PUSH IS ONE `ci` RUN. A pull request's body is usually edited seconds after its push (the worker writes it, the board adds a line), and an `edited` event started a second `ci` run in the group
+    # below, which cancelled the push's run (a11ign/agent-org#2017: runs 41399910129 and 41399933489, 2026-11-02). Two runs of one head are two `gate` checks, and a cancelled one keeps the pull request BLOCKED. A body edit
+    # is `pr-body-edit.yml`'s: it starts no suite, and when the `ci` run of the head has failed on the body (the `changeset` or the Closes check) it reruns only the failed jobs, which read the body live, so a `no-release:` line
+    # added by editing the body still turns `gate` green. A retarget is an `edited` event too, and `gate` is a check on the head, so a retargeted pull request keeps it (the `merge_group` run below is the merge condition).
     # `ready_for_review`: a draft skips the `ui` job (below), so marking it ready must start the run that includes it.
-    types: [opened, synchronize, reopened, edited, ready_for_review]
+    types: [opened, synchronize, reopened, ready_for_review]
   # A merge queue tests the queue's merge commit and waits for a check reporting on THIS event; without it a queued pull request never merges.
   merge_group:
   # A run on `main` itself, so "green on main" is a run and not an inference from a pull request's merge ref.
@@ -109,15 +112,21 @@ jobs:
       # step is a `suite` that is not `success`), and because only here is a project declared: it resolves the project's declaration at import and REFUSES, naming the field, from a bare
       # checkout of this repository, so it runs under the fixture's `AGENT_ORG_HOST` set above. The SECOND ARGUMENT is the point: left off, the check judges the pull request number against a11ign/a11ign, a different pull request, and says "REFUSED" about
       # a body that is right here (measured 2026-10-11: #856's own body, refused without it and `ok` with it).
-      # `pull_request` only: a `merge_group` or `push` run has no pull request body or number, and the pull request's own run decided before it entered the queue. `edited` is in `on:`, so a
-      # body edit re-runs it. The body goes by `env:` and never argv, which is the CLI's own rule (an author's text is one opaque string). Lookup failure exits 2 (CANNOT ASK) and fails the job:
-      # the check does not go quiet when the API is unwell.
+      # `pull_request` only: a `merge_group` or `push` run has no pull request body or number, and the pull request's own run decided before it entered the queue. A body edit reruns this job through
+      # `pr-body-edit.yml`, and a rerun replays the event payload it started with, so the body is READ LIVE here (A11-403), as `changeset-required.yml` reads it: `github.event.pull_request.body` is the body as it was
+      # when the run began. The body goes by `env:` and never argv, which is the CLI's own rule (an author's text is one opaque string). It is assigned on its own line so that `bash -e` fails the step when the API
+      # fails (an `export` of the substitution would hide the exit status), and `// ""` makes a pull request with no body an empty one, which is a real answer where a failed read is none. Lookup failure of the
+      # Closes check itself exits 2 (CANNOT ASK) and fails the job: the check does not go quiet when the API is unwell.
       - name: The declared Closes matches what GitHub will actually close, for this repository's own pull requests (agent-org#863)
         if: github.event_name == 'pull_request' && matrix.shard == 1
         env:
           GH_TOKEN: ${{ github.token }}
-          PR_BODY: ${{ github.event.pull_request.body }}
-        run: node src/closes-mismatch-check.ts ${{ github.event.pull_request.number }} ${{ github.repository }}
+          REPOSITORY: ${{ github.repository }}
+          NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          PR_BODY="$(gh api "repos/$REPOSITORY/pulls/$NUMBER" --jq '(.body // "") | sub("[\\r\\n]+$"; "")')"
+          export PR_BODY
+          node src/closes-mismatch-check.ts "$NUMBER" "$REPOSITORY"
       - name: pnpm, which `packaging/installed-layout.test.ts` installs the tool through as a project would (a runner image carries npm, not pnpm)
         run: npm install --global pnpm@10.34.5
       # THE RUNNER IS RSTEST (a11ign/a11ign#3738, ADR 0043 Decision 3, #3549 item 3). `scripts/rstest/rstest.config.ts` is a thin call into `@a11ign/toolchain`'s shared config, run from this
@@ -300,7 +309,7 @@ jobs:
     permissions:
       contents: read
       pull-requests: read
-    uses: a11ign/toolchain/.github/workflows/changeset-required.yml@08fcafc094e6b45c993f7754f0dcfd259c96be93
+    uses: a11ign/toolchain/.github/workflows/changeset-required.yml@7c69486d4becc9794e98c3004a36fdf0f8148cf6
     with:
       releasable-paths: src/
 

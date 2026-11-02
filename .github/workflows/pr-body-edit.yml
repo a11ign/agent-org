@@ -1,0 +1,105 @@
+name: pr-body-edit
+
+# A BODY EDIT STARTS NO `ci` RUN; IT REPAIRS THE ONE THAT FAILED ON THE BODY (A11-403). `ci.yml` used to run on `edited`, because the `no-release:` line that excuses a change with no changeset is added by editing the pull request body,
+# and the `changeset` job must re-read it. But a worker edits the body seconds after its push, so one push started two `ci` runs in one concurrency group: the second cancelled the first, and the board's rerun of the first cancelled the second
+# (a11ign/agent-org#2017, runs 41399910129 and 41399933489, 2026-11-02). Two runs of one head are two `gate` checks, and a cancelled one keeps the pull request BLOCKED with nothing left to act on.
+#
+# THIS WORKFLOW KEEPS THE REPAIR AND DROPS THE SECOND RUN. It runs only when the BODY changed (`github.event.changes.body`: a title edit or a retarget is an `edited` event too, and neither can change what the body checks read). It starts no suite.
+# It finds the `ci` run of the head, waits for that run to complete, and reruns its failed jobs only when the body is the ONLY thing that failed: the `changeset` job, or the Closes check, which is a step of `suite (1)` (and `gate`, which
+# follows them). A run with any other red job is left alone: a body edit cannot turn that green, a rerun would repeat a real failure (and read to the board as a failure again at the same head), and the push that fixes it starts a run
+# of its own. The rerun reads the body live (`changeset-required.yml` and the Closes step fetch it; a rerun replays the event payload it started with, so the payload's body would still be the old one).
+#
+# KNOWN GAPS, recorded in A11-403: only red-to-green is repaired. A body edit that REMOVES a `no-release:` line from a green head starts no run, so `gate` stays green until the `merge_group` run, where `changeset` succeeds without
+# evaluating; the Closes check is a `pull_request` step too. A retargeted pull request keeps the `gate` of its old base for the same reason.
+#
+# NO JOB OF THIS FILE IS NAMED `gate`, and none is required: a run of it that is cancelled (a newer body edit supersedes it, its own group below) or that gives up blocks no merge. That is why the repair is not a second job in `ci.yml`,
+# and not a second `gate` in this file: a non-green `gate` beside a green one blocks a merge (#2017), so an old red one could block for ever.
+#
+# THE WAIT IS BOUNDED. The `ci` run of a head may still be queued or running when the body is edited (that is the usual case), so the job polls the run list and rereads the head each time: a push since the edit has a `ci` run of its own, and rerunning
+# the run of the head it replaced would join the group and cancel that newer run, so it does nothing then. When the run has not completed after `WAIT_SECONDS` it says so as a warning and ends green; the board's own rerun of a cancelled
+# `gate` and a person's rerun remain.
+#
+# THE TOKEN IS `github.token`, with `actions: write` (a rerun) and `contents: read` (the head's ref and the run list) and no more. A Dependabot run and a fork's run hold a read-only token, so they are skipped. THE BODY AND THE BRANCH reach the
+# script through `env`, never interpolated into it.
+on:
+  pull_request:
+    types: [edited]
+
+permissions:
+  contents: read
+
+# THE GROUP NAMES WHAT THE EVENT CHANGED. A group is evaluated when the run is created, before any job's `if`, so a title edit or a retarget (an `edited` event whose job is skipped) in the same group as a repair that is waiting for
+# `ci` would cancel it, and the body fix it was waiting to apply would be lost. A run for another change gets a group of its own, and only a newer body edit supersedes a waiting repair.
+concurrency:
+  group: pr-body-edit-${{ github.event.pull_request.number }}-${{ github.event.changes.body != null && 'body' || 'other' }}
+  cancel-in-progress: true
+
+jobs:
+  repair:
+    # `changes.body` is set only when the body was edited. A bot's token cannot rerun, and a fork's `pull_request` token is read-only.
+    if: github.event.changes.body != null && github.actor != 'dependabot[bot]' && github.event.pull_request.head.repo.full_name == github.repository
+    permissions:
+      actions: write
+      contents: read
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - name: Rerun the failed jobs of the head's `ci` run when the body is what failed them, once that run has completed
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          EVENT_HEAD: ${{ github.event.pull_request.head.sha }}
+          # The wait is 30 minutes, which is longer than a `ci` run takes; the job's own limit above is five minutes more.
+          WAIT_SECONDS: "1800"
+          POLL_SECONDS: "30"
+        # `bash` is `bash -eo pipefail`, so an API failure fails the step and is never read as "no run" or "nothing failed".
+        run: |
+          set -u
+          deadline=$((SECONDS + WAIT_SECONDS))
+          while :; do
+            head=$(gh api "repos/$REPOSITORY/git/ref/heads/$HEAD_REF" --jq .object.sha)
+            if [ "$head" != "$EVENT_HEAD" ]; then
+              echo "pr-body-edit: the branch has moved on from ${EVENT_HEAD:0:8} to ${head:0:8}; that push has its own ci run, and rerunning the old head's would cancel it"
+              exit 0
+            fi
+            # The newest `ci` run of this head for a pull request. A run that is queued has no jobs yet, so the run list, not the check rollup, says whether it has completed.
+            run=$(gh api "repos/$REPOSITORY/actions/workflows/ci.yml/runs?head_sha=$head&event=pull_request&per_page=100" \
+              --jq '(.workflow_runs | sort_by(.created_at) | last) as $r | if $r == null then empty else "\($r.id) \($r.status) \($r.conclusion // "none")" end')
+            read -r run_id status conclusion <<<"${run:-none none none}"
+            if [ "$status" = completed ]; then break; fi
+            if [ "$SECONDS" -ge "$deadline" ]; then
+              echo "::warning::pr-body-edit: the ci run of ${head:0:8} (${run_id}, ${status}) had not completed after ${WAIT_SECONDS}s, so nothing was rerun; a new push, a rerun or the board's rerun of a cancelled gate remains"
+              exit 0
+            fi
+            sleep "$POLL_SECONDS"
+          done
+          if [ "$conclusion" != failure ]; then
+            echo "pr-body-edit: ci run $run_id of ${head:0:8} concluded $conclusion, so a body edit has nothing to repair (a cancelled run is the board's to rerun)"
+            exit 0
+          fi
+          # The jobs a body edit can turn green: `changeset` (the shared check reads the body) and the Closes check, a step of `suite (1)`. `gate` fails with them and is not counted. Rerun only when at least one of them
+          # failed AND nothing else did, because `--failed` reruns every failed job.
+          failed=$(gh api "repos/$REPOSITORY/actions/runs/$run_id/jobs?per_page=100" --jq '
+            [.jobs[] | select(.conclusion == "failure")
+              | if .name == "changeset / changeset-required" or (.name == "suite (1)" and ([.steps[] | select(.conclusion == "failure" and (.name | startswith("The declared Closes")))] | length > 0)) then "body"
+                elif .name == "gate" then empty
+                else "other" end] | "\(map(select(. == "body")) | length) \(map(select(. == "other")) | length)"')
+          read -r body_failed other_failed <<<"$failed"
+          if [ "$body_failed" -eq 0 ]; then
+            echo "pr-body-edit: ci run $run_id of ${head:0:8} failed, but not in the changeset check or the Closes check, so the body is not what failed it"
+            exit 0
+          fi
+          if [ "$other_failed" -gt 0 ]; then
+            echo "pr-body-edit: ci run $run_id of ${head:0:8} failed in the body's checks and in $other_failed other job(s); a body edit cannot fix those, so nothing is rerun and the push that fixes them starts a new run"
+            exit 0
+          fi
+          # One more look at the head: the wait may have been long, and a push since has a ci run this rerun would cancel.
+          head=$(gh api "repos/$REPOSITORY/git/ref/heads/$HEAD_REF" --jq .object.sha)
+          if [ "$head" != "$EVENT_HEAD" ]; then
+            echo "pr-body-edit: the branch moved on to ${head:0:8} while waiting, so ci run $run_id is not rerun"
+            exit 0
+          fi
+          echo "pr-body-edit: ci run $run_id of ${head:0:8} failed in the changeset or the Closes check; rerunning its failed jobs (only the body's checks and gate failed), which read the body live"
+          gh run rerun "$run_id" --repo "$REPOSITORY" --failed
