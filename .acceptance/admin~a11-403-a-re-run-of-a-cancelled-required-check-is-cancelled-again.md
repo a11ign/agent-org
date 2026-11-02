@@ -1,17 +1,18 @@
 ## What it is
 
-Step 1 of 3 of A11-403. a11ign/agent-org #2017 sat approved, armed, green and BLOCKED because the board reran a cancelled `gate` once, and that rerun cancelled the healthy sibling `ci` run (both runs share one concurrency group). The board now asks the code host whether a run of the cancelled run's workflow is in progress at the head (`runsInProgress`, contract 4.1) and reruns only when none is, one run for each watch. It takes at most two reruns for a head; the third cancelled run stops it, with one `cancelled-rerun` event marked `stopped`, a line in the board's log, and a line on the run's card.
+Step 3 of 3 of A11-403, which completes it. One push to a pull request started two `ci` runs: the push's, and one for the body edit that followed it seconds later (`edited` was in `ci.yml`'s `pull_request` types). Both ran in the group `pull-request-<n>`, so the second cancelled the first, and the board's rerun of the first then cancelled the second (a11ign/agent-org#2017). `edited` is gone from `ci.yml`. `.github/workflows/pr-body-edit.yml` keeps the repair a body edit used to give (a `no-release:` line added to the body turns the `changeset` job green) without a second run: on a body edit it waits for the head's `ci` run to complete and reruns its failed jobs only when the `changeset` job or the Closes check failed. The Closes step of `ci.yml` and the shared `changeset` job (pinned to the toolchain commit of step 2) read the body live, because a rerun replays the event payload.
 
 ## Acceptance
 
-`src/ticket-mode/pool-cancelled-gate.test.ts` drives the sequence of #2017 through `pool.watchFeedback()` over the fake code host: a rerun, no rerun while a sibling is in progress, a rerun after it finished, then the stop, which the run's log, the board's log and `reasonOf` on the stored run all say. `plugins/github/check-runs.test.ts` holds the GitHub plugin's `runsInProgress` to the run list (`workflow_id` and `status`). The Timeline row of the stop is in `ui/src/run-detail/run-detail-timeline.test.tsx`.
+`src/ci-one-run-per-push.test.ts` fails if `edited` is in `ci.yml`'s `pull_request` types or any step of `ci.yml` reads `github.event.pull_request.body`, holds `pr-body-edit.yml` to its trigger, permissions, group and conditions, and runs the repair step's shell for real over a stand-in `gh` (waits for the run, reruns on a body failure only, never on another red, a moved branch, a cancelled run or a timeout). `src/ci-stacked-triggers.test.ts` holds that `merge_group` stays and `edited` does not. The live checks (one push and one body edit show one `ci` run; a body fix turns `gate` green) are in the pull request body.
 
 Acceptance:
 ```bash
 set -e
 npm run typecheck
 P=$(mktemp -d); cp -r src/packaging/fixtures/project-tree/. "$P"; sed -i "s|@@PROJECT@@|$P|" "$P/.agent-org/host.json"; git -C "$P" init -q; git -C "$P" add -A; git -C "$P" -c user.name=ci -c user.email=ci@localhost commit -q -m fixture
-AGENT_ORG_HOST="$P/.agent-org/host.json" npm exec -- rstest run --config scripts/rstest/rstest.config.ts src/ticket-mode/pool-cancelled-gate.test.ts plugins/github/check-runs.test.ts plugins/github/sync-gh-guard.test.ts src/plugins/built-in.test.ts src/plugins/cli.test.ts
+AGENT_ORG_HOST="$P/.agent-org/host.json" npm exec -- rstest run --config scripts/rstest/rstest.config.ts src/ci-one-run-per-push.test.ts src/ci-stacked-triggers.test.ts src/ticket-mode/pool-stacked-review.test.ts
+node .github/scripts/workflow-paths.ts
 ```
 
-Consumer-declaration: none -- no option is added: `runsInProgress` is an optional operation of the code host contract, which the bundled GitHub plugin implements.
+Consumer-declaration: none -- no option is added: a workflow, its tests and a comment.
