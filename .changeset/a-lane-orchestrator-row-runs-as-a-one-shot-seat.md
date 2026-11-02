@@ -1,5 +1,0 @@
----
-"agent-org": patch
----
-
-A ready `lane:orchestrator` row can be run by a one-shot seat that carries the orchestrator brief instead of waiting for the standing `orchestrator` seat (a11ign/agent-org#832, Phase 1b of a11ign/a11ign#4505), behind `workers.orchestratorOneShot` in the host declaration, which is OFF. With it on, `wake.ts` turns the gate's order for such a row into one addressed to `engineers` with the sibling cause `ready-orchestrator-row-unclaimed` (`SPAWN_CAUSES` is untouched) and `briefRole: "orchestrator"`; the spawn path starts the spare named for the row, briefs it with `orchestrator.md`, writes #947's record of the spawn before the claim and takes it back if the claim is refused or the spawn fails; and a row whose Acceptance names a fleet or lab command, or that is under a future `Fleet-hold-until`, is held while any orchestrator run is live. With the flag off the order, what `deliver` does with it and the record file are unchanged, and no record is written. `ROUTED_TO`, `FLEET_LAB_PATTERNS`, `fleetOrLabAcceptance` and `laneReason` are not edited. Revert: remove `workers.orchestratorOneShot` (or set it to `false`).
