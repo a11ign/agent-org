@@ -35,6 +35,7 @@ const HOST = {
     writer: { run: "write {request} into {dir}", model: "opus", effort: "high" }, preflight: [{ name: "lint", run: "true", timeoutSeconds: 30 }],
     workingState: "In Progress", connectors: ["^mcp__linear__(get|list)_"], publish: { run: "publish {prs} into {dir}", model: "haiku", effort: "low", connectors: ["^mcp__slack__send"] },
     drafts: true, designTools: true, prReview: "a11ign:clean-code-review", reviewer: "atomic", pick: { team: "A11" }, stallMinutes: 30, updateMaxDeferHours: 2,
+    reviewComments: [{ author: "ci-bot", startsWith: "Review finished" }],
     serve: "tailscale", servePorts: { ui: 9443, terminal: 9444 },
     // The named provider blocks (A11-144), each setting in the place its old key holds, with the same value: the drift test reads both, so each new key
     // has an entry and each alias one, and the aliases still parse beside their blocks.

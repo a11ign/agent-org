@@ -9,6 +9,7 @@
 //
 // ROW MODE'S GITHUB OPERATIONS are an optional `rows` group of this contract, not a second plugin (`docs/adr/0002-row-mode-github-is-an-optional-part-of-the-code-host-contract.md`); the group is declared in `code-host-rows.ts`.
 //
+// 4.1: `PullFeedback.commentReviewAtHead` and `readPullFeedback`'s fourth argument, `reviewComments`, both OPTIONAL: the newest conversation comment, posted or last edited after the head, by an account the host file names (`tickets.reviewComments`) whose body starts with the text it names, which is how a repository whose review runs as a CI workflow that comments says it reviewed a head. The board names it on the card and NEVER reads it as an approval: merge gating and readiness are the reviews' alone. A plugin of 4.0 is read as one that says none, and the card then says no review is at the head, as before.
 // 4.0 (A11-395): the operations the board makes ON AN EVENT ANSWER A PROMISE, where they answered the value, which is a MAJOR change: `readQueueFailure`, `holdFromQueue`, `readDefaultBranchRed`, `readMergeFlow`, `readClosedWork`, `pullsNaming`, `sweepRetargets`, `stackMergeFactsOf`, `requestStackMerge`, `readCiRun`, `readCheckLog`, `rerunFailedChecks`, `rerunRuns`, `updateBranch`, `closePull` and `commentOnPull` each held the board's loop while `gh` ran. A promise resolves to what the call answered before (a null for "could not ask" and a refusal text included, never a rejection for a call the place refused), and one that THROWS now REJECTS with the same first line. `sweepRetargetsAsync` (2.2) is folded into `sweepRetargets`: after this there is one sweep. `armMerge` stays synchronous: it is `CodeHostPort`'s, which `ticket-port/port.ts` declares, and nothing on the board's loop calls it. A plugin of major 3 is refused (`READ_MAJORS`), since its operations answer the value.
 // 3.0 (A11-379): `readReviewClaims` and `writeReviewClaim` ANSWER A PROMISE, where they answered the value, which is a MAJOR change: the reviewer's start made both as a synchronous `gh` on the board's thread, and held the loop for each. A promise resolves to what the call answered before (`{ unreadable }` and a refusal text included, never a rejection for a call GitHub refused), and a host runs both without holding the process still. A plugin of major 2 is refused (`READ_MAJORS`), since its claim calls answer the value.
 // 2.2 (A11-282): `repositories.readRepositoriesAsync` and `sweepRetargetsAsync`, both OPTIONAL: the organisation's repositories, and the sweep of the stacked pull requests' bases, answering a promise, which the board's clone sweep and its restack sweep read, so a `gh` of a second no longer holds the board thread. A host without it is read through `readRepositories`, as before; a minor only adds.
@@ -62,11 +63,12 @@
 import type { ChangeFacts, ChangeRef, CodeHostEvent, CodeHostEventKind, CodeHostPort } from "../../ticket-port/port.ts";
 import type { GithubCallCounts } from "./call-counts.ts";
 import type { CodeHostRows } from "./code-host-rows.ts";
+import type { CommentReview, ReviewCommentMatcher } from "./review-comments.ts";
 
 export type { ChangeFacts, ChangeRef, CodeHostEvent, CodeHostEventKind, CodeHostPort, CodeHostRows };
 
 /** The code host contract's version, `<major>.<minor>`: a minor only adds, and a major breaks (`src/plugins/version.ts`). */
-export const CODE_HOST_CONTRACT_VERSION = "4.0";
+export const CODE_HOST_CONTRACT_VERSION = "4.1";
 
 /** The account the host's dependency bot opens its pull requests as (contract 1.19): the only author {@link CodeHost.openDependencyPulls} returns. */
 export const DEPENDENCY_PULL_AUTHOR = "dependabot[bot]";
@@ -171,6 +173,11 @@ export type PullFeedback = Readonly<{
    * `approved`, `changes-requested`, or null when no review takes a side on the head. Absent when the host does not say.
    */
   verdictAtHead?: "approved" | "changes-requested" | null;
+  /**
+   * The newest conversation comment by an account one of the `reviewComments` given to {@link CodeHost.readPullFeedback} names, whose body starts with its text once trimmed, posted or last edited after the head arrived (contract 4.1), or null when there
+   * is none. Absent when the host does not say: no matchers were given, or it cannot tell when the head arrived. IT IS NEVER AN APPROVAL: what it names is shown, and nothing decides on it.
+   */
+  commentReviewAtHead?: CommentReview | null;
   /** The required checks on the head commit that have not concluded, by name (contract 1.13). Empty when every required check has; absent when the host does not say. */
   pendingRequired?: readonly string[];
   /** The pull request's body (contract 1.13), where a `Blocked-by:` line names the ticket that owns what it is waiting on. Absent when the host does not say. */
@@ -363,9 +370,9 @@ export interface CodeHost extends CodeHostPort {
   readOwnLogin(): Promise<string | null>;
   /**
    * The feedback on the pull request at `url`, leaving out what `self` wrote and what `alsoIgnore` wrote (the reviewer's, which a worker does not answer and which must never
-   * move `feedbackAt`), or null for "could not ask".
+   * move `feedbackAt`), or null for "could not ask". `reviewComments` (contract 4.1) names the comments that say a review was done, which `commentReviewAtHead` answers; none given leaves that field out.
    */
-  readPullFeedback(url: string, self: string, alsoIgnore?: readonly string[]): Promise<PullFeedback | null>;
+  readPullFeedback(url: string, self: string, alsoIgnore?: readonly string[], reviewComments?: readonly ReviewCommentMatcher[]): Promise<PullFeedback | null>;
   /**
    * The checks failing on the head of `repository`'s default branch (contract 1.13), or null for "could not ask": a repository the host cannot read, a branch with no head, and an answer of another shape are all
    * null. Null is never "nothing is red". A host without it is read as one that names none, and no red check is called main's.

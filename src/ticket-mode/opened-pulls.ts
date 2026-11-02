@@ -7,6 +7,7 @@
 
 import { type OpenedPull } from "./brief-ticket-text.ts";
 import { type PoolContext } from "./pool-context.ts";
+import { readFeedbackOf } from "./read-feedback.ts";
 import { log, messageOf } from "./pool-state.ts";
 import { reviewedRepositoriesOf, warmOrigins } from "./reviewer-port.ts";
 import { pullsOf } from "./board-view/view-types-and-filters.ts";
@@ -74,14 +75,14 @@ export async function openedPullsOf(ctx: PoolContext, entry: Entry): Promise<rea
 
 /** {@link openedPullsOf}, over the reads of the code host, which may throw. */
 async function readOpened(ctx: PoolContext, entry: Entry): Promise<readonly OpenedPull[]> {
-  const { codeHost, feedbackIgnores } = ctx;
+  const { codeHost } = ctx;
   const key = entry.ticket.key;
   const keywords = keywordsOf(ctx);
   const candidates = candidatesOf(entry, await ticketPullsOf(ctx, key));
   if (candidates.some(({ state }) => state === "open")) ctx.ownLogin.value ??= await codeHost.readOwnLogin();
   const self = ctx.ownLogin.value;
   return Promise.all(candidates.map(async ({ url, repo, state, body }): Promise<OpenedPull> => {
-    const read = state === "open" && self !== null ? await codeHost.readPullFeedback(url, self, feedbackIgnores) : null;
+    const read = state === "open" && self !== null ? await readFeedbackOf(ctx, url, self) : null;
     const text = read?.body ?? body ?? "";
     return { url, repo, state: read?.state ?? state, head: read?.head ?? null, failing: read?.failing ?? [], declared: declarationOf(text, key, keywords) };
   }));

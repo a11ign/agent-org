@@ -57,13 +57,14 @@ const PULL_SELECTION = `
   timelineItems(last: ${QUEUE_WINDOW}, itemTypes: [REMOVED_FROM_MERGE_QUEUE_EVENT, PULL_REQUEST_COMMIT, HEAD_REF_FORCE_PUSHED_EVENT]) { nodes {
     __typename
     ... on RemovedFromMergeQueueEvent { createdAt reason actor { login } beforeCommit { oid } }
+    ... on HeadRefForcePushedEvent { createdAt afterCommit { oid } }
   } }
   files(first: 100) { pageInfo { hasNextPage endCursor } nodes { path } }
   reviews(last: ${LAST}) { nodes { state submittedAt body url ${AUTHOR} commit { oid } } }
-  comments(last: ${LAST}) { nodes { createdAt body url ${AUTHOR} } }
+  comments(last: ${LAST}) { nodes { createdAt lastEditedAt body url ${AUTHOR} } }
   reviewThreads(last: ${LAST}) { nodes { comments(last: 20) { nodes { createdAt body url ${AUTHOR} } } } }
   baseRef { rules(first: 50) { nodes { type parameters { ... on RequiredStatusChecksParameters { requiredStatusChecks { context } } } } } branchProtectionRule { requiredStatusChecks { context } } }
-  commits(last: 1) { nodes { commit { statusCheckRollup { contexts(first: 100) { pageInfo { hasNextPage } nodes {
+  commits(last: 1) { nodes { commit { oid committedDate statusCheckRollup { contexts(first: 100) { pageInfo { hasNextPage } nodes {
     __typename
     ... on CheckRun { name status conclusion startedAt completedAt detailsUrl }
     ... on StatusContext { context state createdAt targetUrl }

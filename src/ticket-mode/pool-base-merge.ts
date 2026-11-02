@@ -20,6 +20,7 @@ import { CONCLUDED, openPulls } from "./board-view/view-types-and-filters.ts";
 import { unwatchedPullsOf } from "./kept-pulls.ts";
 import { log, messageOf, update } from "./pool-state.ts";
 import type { PoolContext } from "./pool-context.ts";
+import { readFeedbackOf } from "./read-feedback.ts";
 import type { PullFeedback } from "../plugins/contracts/code-host.ts";
 import { find, replace, reviewRound, SETTLED, type Entry, type PullRequest, type Queue } from "./queue/queue-entries-and-outcomes.ts";
 import { conflictFields, conflictRoundFeedback, conflictRoundLeft, type ConflictOn } from "./queue/queue-conflict-rounds.ts";
@@ -254,7 +255,7 @@ function roundFeedback(ctx: PoolContext, ready: readonly OpenPull[]): string {
 
 /** What a sweep of one ticket's kept pull requests reads: the open ones, and whether any could not be read. A pull request found merged or closed is remembered as settled. */
 async function readOpenKept(ctx: PoolContext, entry: Entry, pulls: readonly PullRequest[], self: string): Promise<readonly OpenPull[]> {
-  const reads = await readEach(pulls, async ({ url }) => ({ url, read: await ctx.codeHost.readPullFeedback(url, self, ctx.feedbackIgnores) }));
+  const reads = await readEach(pulls, async ({ url }) => ({ url, read: await readFeedbackOf(ctx, url, self) }));
   const unread = reads.filter(({ read }) => read === null).map(({ url }) => url);
   if (unread.length > 0) log(`${entry.ticket.key}: the feedback on ${unread.join(", ")} could not be read, so it was not checked; the next watch asks again`);
   const readable = reads.filter((pull): pull is OpenPull => pull.read !== null);

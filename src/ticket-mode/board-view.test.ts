@@ -7,7 +7,7 @@ import { CONCLUDED, HANDED_BACK, NO_PROJECT, RUN_STATUSES, flatten, groupByStatu
 import { cutListNote, footprintOf, overlapWait, pathsOverlap } from "./board-view/overlap-hold.ts";
 import { overrideNote, START_ANYWAY_TITLE, rebaseNote, repoLabel, repoOf, hasEdit, isParked, queueLabel, batchChoice, batchNote, batchOverride, isDefaultBatch, workersLabel, runActions, runStatus, runsShown, shownStatus, statusCounts, terminalLink, waitsOn, waitNote, repoOfPull, stackedOn, stackNote, isBeingPublished, isWatched, publishable, publishLabel, publishNote, publishTerminalLink, unplannedCount, workingNote, resumesOnConflict, type ViewPublish } from "./board-view/pull-status-and-notes.ts";
 import { settledByPulls } from "./board-view/pull-settled.ts";
-import { isReadyToMerge, mergeWaitLine } from "./board-view/pull-readiness.ts";
+import { isPullReadyToMerge, isReadyToMerge, mergeWaitLine } from "./board-view/pull-readiness.ts";
 import type { PullHead } from "./board-view/view-types-and-filters.ts";
 import type { PullDeclared } from "./board-view/pull-declared.ts";
 import { sharedRunNote, terminalTab } from "./board-view/run-terminal.ts";
@@ -435,6 +435,18 @@ test("A11-179: a reviewed run whose pull request has no approval at its head is 
   assert.deepEqual([changes.status, changes.line], ["awaiting-review", "changes requested at 58848c34"]);
   assert.equal(publishable(unreviewed.entry), false, "a person cannot tick Publish on it");
   assert.equal(isWatched(unreviewed.entry), true, "and it is read again until it merges, or it could never become ready");
+});
+
+test("a review comment at the head is named where no review is, and the run still awaits an approving review: it is never an approval", () => {
+  const commentReview = { author: "ci-bot", at: 1 };
+  const commented = reviewedRun({ approved: false, review: "none", commentReview });
+  assert.deepEqual([commented.status, commented.line, commented.kind], ["awaiting-review", "review comment by ci-bot at 58848c34, awaiting approval", "reviewed"]);
+  assert.deepEqual([isPullReadyToMerge(commented.entry, commented.url), isReadyToMerge(commented.entry), publishable(commented.entry)], [false, false, false], "not ready, whatever the comment says");
+  assert.equal(reviewedRun({ approved: false, review: "none", commentReview, red: ["gate"] }).line, "review comment by ci-bot at 58848c34, awaiting approval; checks red: gate", "one clause, then the checks");
+  assert.equal(reviewedRun({ approved: false, review: "none" }).line, "review: none yet at 58848c34", "without one the card says what it said");
+  assert.equal(reviewedRun({ approved: false, review: "changes-requested", commentReview }).line, "changes requested at 58848c34", "changes requested outranks it");
+  const approved = reviewedRun({ commentReview });
+  assert.deepEqual([approved.status, isPullReadyToMerge(approved.entry, approved.url)], ["ready-to-merge", true], "an approved head reads as it did");
 });
 
 test("A11-179: a reviewed run whose pull request is approved but has a required check red is Awaiting review, and names the check", () => {

@@ -23,6 +23,7 @@ import { defaultBinDir } from "./worker-files.ts";
 import { DEFAULT_CI_BUDGET_MINUTES } from "./ci-spend/budget.ts";
 import { isActive, PROVIDER_BLOCKS, PUBLISHER_SHAPE, resolveProviders, type BlockReport, type Providers, type Setting } from "./providers.ts";
 import type { Catalog } from "../plugins/manifest.ts";
+import type { ReviewCommentMatcher } from "../plugins/contracts/review-comments.ts";
 import { defaultCatalog, isTrackerConnector, pluginNamed } from "../plugins/registry.ts";
 import { TicketSettingsRefusal } from "./settings-refusal.ts";
 import { DEFAULT_PUBLISH_WHEN, PUBLISH_WHEN, type PublishWhen } from "./board-view/publish-when.ts";
@@ -138,6 +139,11 @@ export type TicketSettings = Readonly<{
    * once it has passed are stopped and queued again, and the update applies (A11-90, A11-169). A release that is not breaking waits for nothing. 2 by default.
    */
   updateMaxDeferHours: number;
+  /**
+   * The conversation comments that say a review was done, by their author's login and the text their body starts with: a repository whose review runs as a CI workflow that comments. The card names one posted or edited
+   * after a head (`review comment by <author> at <head>`) where it would say no review is there, and NOTHING reads it as an approval. Empty, the default, names none.
+   */
+  reviewComments: readonly ReviewCommentMatcher[];
   /** Whether doctor requires the `gh stack` extension of the workers' account, the code host's `stack` setting. True by default. */
   stackRequired: boolean;
   /** The named provider blocks and the old keys still read, as `providers.ts` reports them, for doctor and the Settings page (A11-144). */
@@ -399,6 +405,21 @@ function publisherSettingsOf(publish: BlockReport): Publisher {
     connectors: connectorPatterns(connectors.value, connectors.at) });
 }
 
+const REVIEW_COMMENT_SHAPE = "{ \"author\": \"<login>\", \"startsWith\": \"<text>\" }";
+
+/** `tickets.reviewComments`: a list of {@link REVIEW_COMMENT_SHAPE}, each with a login and a text that is not blank. Absent is none. Anything else is refused by name and place. */
+function reviewCommentsOf(value: unknown): readonly ReviewCommentMatcher[] {
+  if (value === undefined) return [];
+  if (!Array.isArray(value)) throw new TicketSettingsRefusal("tickets.reviewComments", `must be a list of ${REVIEW_COMMENT_SHAPE}, not ${JSON.stringify(value)}`);
+  return Object.freeze(value.map((matcher: unknown, i) => {
+    const field = `tickets.reviewComments[${i}]`;
+    if (!isObject(matcher)) throw new TicketSettingsRefusal(field, `must be ${REVIEW_COMMENT_SHAPE}`);
+    if (typeof matcher.author !== "string" || matcher.author.trim() === "") throw new TicketSettingsRefusal(`${field}.author`, "must be the login of the account that posts the review comment");
+    if (typeof matcher.startsWith !== "string" || matcher.startsWith.trim() === "") throw new TicketSettingsRefusal(`${field}.startsWith`, "must be the text the review comment's body starts with, not blank");
+    return Object.freeze({ author: matcher.author.trim(), startsWith: matcher.startsWith.trim() });
+  }));
+}
+
 function denyRules(value: unknown): readonly DenyRule[] {
   if (value === undefined) return [];
   if (!Array.isArray(value)) throw new TicketSettingsRefusal("tickets.deny", `must be a list of ${DENY_RULE_SHAPE}`);
@@ -587,6 +608,7 @@ export function parseTicketSettings(host: unknown, home: string = homedir(), mac
     brief: tickets.brief === undefined ? null : absolutePath(tickets.brief, "tickets.brief"),
     review: tickets.review === undefined ? null : absolutePath(tickets.review, "tickets.review"),
     deny: denyRules(tickets.deny),
+    reviewComments: reviewCommentsOf(tickets.reviewComments),
     plugins: pluginList(tickets.plugins),
     terminal: terminalTemplate(terminal.value, terminal.at),
     plan,

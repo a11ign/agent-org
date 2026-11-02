@@ -27,7 +27,7 @@ test("only `clones` is required, every repository in it is offered, and every ot
 
 test("the `tickets` block and `stateDir` override the defaults", () => {
   const settings = parseTicketSettings({ clones, stateDir: "/state", tickets: { max: 5, port: 5000, herdrSession: "nbl", worktreeRoot: "/wt", linearKey: { path: "/keys/linear" } } });
-  assert.deepEqual({ ...settings, clones: undefined, providers: undefined }, { clones: undefined, providers: undefined, stackRequired: true, takenStates: [], max: 5, port: 5000, uiPort: 4748, herdrSession: "nbl", instance: defaultInstance(), worktreeRoot: "/wt", stateDir: "/state", binDir: join(homedir(), ".local", "bin"), brief: null, review: null, deny: [], plugins: [], terminal: null, plan: null, planner: null, writer: null, preflight: [], workingState: null, connectors: [], publish: null, drafts: true, designTools: false, capture: false, prReview: null, reviewer: null, reviewerRequired: false, publishWhen: "ready-to-merge", pick: "assigned", stallMinutes: 30, ciBudgetMinutes: 300, updateMaxDeferHours: 2 });
+  assert.deepEqual({ ...settings, clones: undefined, providers: undefined }, { clones: undefined, providers: undefined, stackRequired: true, takenStates: [], max: 5, port: 5000, uiPort: 4748, herdrSession: "nbl", instance: defaultInstance(), worktreeRoot: "/wt", stateDir: "/state", binDir: join(homedir(), ".local", "bin"), brief: null, review: null, deny: [], plugins: [], terminal: null, plan: null, planner: null, writer: null, preflight: [], workingState: null, connectors: [], publish: null, drafts: true, designTools: false, capture: false, prReview: null, reviewer: null, reviewerRequired: false, publishWhen: "ready-to-merge", pick: "assigned", stallMinutes: 30, ciBudgetMinutes: 300, updateMaxDeferHours: 2, reviewComments: [] });
 });
 
 test("A11-261: the CI budget is a whole number of weighted minutes per ticket, 300 by default, and 0 is none", () => {
@@ -284,6 +284,21 @@ test("A11-90: a machine names how many hours auto-update may wait on a live run,
   for (const updateMaxDeferHours of [0, 1.5, "2", null]) {
     assert.throws(() => parseTicketSettings({ clones, tickets: { updateMaxDeferHours } }), /`tickets\.updateMaxDeferHours` in the host file must be a whole number of 1 or more/, JSON.stringify(updateMaxDeferHours));
   }
+});
+
+test("tickets.reviewComments names the comments that say a review was done: none by default, each a login and a text, trimmed, and any other shape refused by name and place", () => {
+  assert.deepEqual(parseTicketSettings({ clones }).reviewComments, []);
+  assert.deepEqual(parseTicketSettings({ clones, tickets: { reviewComments: [] } }).reviewComments, []);
+  assert.deepEqual(parseTicketSettings({ clones, tickets: { reviewComments: [{ author: " ci-bot ", startsWith: " Review finished" }] } }).reviewComments, [{ author: "ci-bot", startsWith: "Review finished" }]);
+  const refused: readonly [unknown, RegExp][] = [
+    [{ author: "ci-bot", startsWith: "Review finished" }, /`tickets\.reviewComments` in the host file must be a list of/],
+    ["ci-bot", /`tickets\.reviewComments` in the host file must be a list of/],
+    [["ci-bot"], /`tickets\.reviewComments\[0\]` in the host file must be \{/],
+    [[{ startsWith: "Review finished" }], /`tickets\.reviewComments\[0\]\.author` in the host file must be the login/],
+    [[{ author: "ci-bot", startsWith: "Review finished" }, { author: "ci-bot", startsWith: "  " }], /`tickets\.reviewComments\[1\]\.startsWith` in the host file must be the text/],
+    [[{ author: "", startsWith: "Review finished" }], /`tickets\.reviewComments\[0\]\.author`/],
+  ];
+  for (const [reviewComments, message] of refused) assert.throws(() => parseTicketSettings({ clones, tickets: { reviewComments } }), message, JSON.stringify(reviewComments));
 });
 
 test("tickets.serve is absent by default, and \"tailscale\" names the exposure that serves the page and the terminal on the tailnet, with the ports it was given", () => {
