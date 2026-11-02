@@ -1,5 +1,0 @@
----
-"agent-org": patch
----
-
-`trace-publish` asks GitHub less and redraws less (a11ign/a11ign#4077, #4055 move 11). The head of `main` of each repository is a conditional GET (`If-None-Match`, the ETag kept in `.validators.json` beside the pages), so an idle ten-minute run is eight 304s, which GitHub does not charge to the primary rate limit. The closed-rows list is read newest-UPDATED first and stops once no unread issue can displace the answer (an issue closed at T was updated at or after T): one page where creation order needed thirteen, MEASURED 2026-10-08 against `a11ign/a11ign` with the same six rows. A row's swimlane is redrawn only when its issue's `updated_at` moved since the page was drawn, or the page is a day old; the map is drawn each publication as before. A missing, corrupt or ill-shaped validator store sends no validator, an unreadable stamp or one from before this change redraws every page, and a row named by `--row` that is not in the recent set is always drawn. The journal line now ends with the reads asked and the share answered 304.
