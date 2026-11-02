@@ -1159,6 +1159,7 @@ export function failingChecksOrder(pr: any, required: string[] | null = null, ba
  */
 export const SAME_HEAD_REFAIL_FLAG = "checks.sameHeadRefail";
 /** A run that REPORTED a failure. `CANCELLED` is not one: a run superseded in its group (a push, or a rerun of a sibling run of the same head) is cancelled, and that is not the check failing. */
+// (scratch check for A11-403: a comment-only change with no changeset, to prove a body edit turns the changeset job green)
 const REPORTED_FAILURES = ["FAILURE", "TIMED_OUT"];
 
 /**
