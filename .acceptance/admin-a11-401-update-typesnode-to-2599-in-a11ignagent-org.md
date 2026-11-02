@@ -1,4 +1,4 @@
-The root package's `@types/node` moves from `^22.20.5` to `^25.9.9` (a11ign/agent-org#2016's `package.json` and `pnpm-lock.yaml`, carried unchanged), and the typecheck passes on it with no source change. `ui/`, `engines` and CI's Node 24.21.0 are as they were. `pool-org-repos.test.ts` no longer reads a wrong-repo's move before it ends: its helper waits for the clone and the restart, which a loaded runner made `suite (2)` fail on #2016. A new case with a clone slower than the old fixed turns fails without that wait.
+The root package's `@types/node` is `^25.9.9` (a11ign/agent-org#2016 merged it to main; this branch carries main's `package.json` and `pnpm-lock.yaml`), and the typecheck passes on it with no source change. `ui/`, `engines` and CI's Node 24.21.0 are as they were. `pool-org-repos.test.ts` no longer reads a wrong-repo's move before it ends: its helper waits for the clone and the restart, which a loaded runner made `suite (2)` fail on #2016. A new case with a clone slower than the old fixed turns fails without that wait.
 
 Acceptance:
 ```bash
