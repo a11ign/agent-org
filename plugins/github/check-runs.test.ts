@@ -83,7 +83,7 @@ test("A11-403: runsInProgress lists the runs at the head, and a run of the cance
     const sibling = { id: 41399933489, workflow_id: 11, status };
     assert.equal(await runsInProgressAsync([JOB], "2f3f57e1", over(listOf({ id: 38391781529, workflow_id: 11, status: "completed" }, sibling))), true, status);
   }
-  assert.deepEqual(asked[0], ["api", "repos/a11ign/agent-org/actions/runs?head_sha=2f3f57e1&per_page=100", "--jq", "[.workflow_runs[] | {id, workflow_id, status}]"], "one read of the repository's runs at the head");
+  assert.deepEqual(asked[0], ["api", "-H", "Cache-Control: no-cache", "repos/a11ign/agent-org/actions/runs?head_sha=2f3f57e1&per_page=100", "--jq", "[.workflow_runs[] | {id, workflow_id, status}]"], "one read of the repository's runs at the head");
   assert.equal(await runsInProgressAsync([JOB], "2f3f57e1", over(listOf({ id: 38391781529, workflow_id: 11, status: "completed" }, { id: 41399933489, workflow_id: 11, status: "completed" }))), false, "every run completed");
 });
 
@@ -96,8 +96,8 @@ test("A11-403: a run of another workflow at the head holds nothing, and the canc
 test("A11-403: the runs of each repository an address names are listed once, and the answer is busy when any of them is", async () => {
   const asked: string[] = [];
   const answer = async (args: string[]) => {
-    asked.push(args[1]);
-    return args[1].includes("a11ign/other") ? listOf({ id: 7, workflow_id: 3, status: "in_progress" }) : listOf({ id: 38391781529, workflow_id: 11, status: "completed" });
+    asked.push(args[3]);
+    return args[3].includes("a11ign/other") ? listOf({ id: 7, workflow_id: 3, status: "in_progress" }) : listOf({ id: 38391781529, workflow_id: 11, status: "completed" });
   };
   assert.equal(await runsInProgressAsync([JOB, OTHER_JOB_SAME_RUN, OTHER_RUN], "h", answer), true);
   assert.deepEqual(asked, ["repos/a11ign/agent-org/actions/runs?head_sha=h&per_page=100", "repos/a11ign/other/actions/runs?head_sha=h&per_page=100"]);

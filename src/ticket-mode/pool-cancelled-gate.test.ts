@@ -119,6 +119,13 @@ test("A11-403: a read of the run list that failed is not a quiet head: the board
   assert.equal(reruns().length, 1);
 });
 
+test("A11-403: a code host whose run read rejects is not a quiet head either: nothing is rerun and the watch goes on", async () => {
+  const { host, pool, reruns } = world();
+  host.runsInProgress = async () => { throw new Error("gh: stand-in"); };
+  await assert.doesNotReject(async () => { await pool.watchFeedback(); });
+  assert.deepEqual(reruns(), []);
+});
+
 test("A11-403: the board reruns one run for each watch, however many cancelled runs it lists, because two reruns in one concurrency group cancel each other", async () => {
   const { pool, reruns, host } = world({ feedback: incident({ cancelledRequired: [{ name: "gate", detailsUrl: CANCELLED_RUN }, { name: "gate", detailsUrl: OTHER_CANCELLED_RUN }] }) });
   await pool.watchFeedback();

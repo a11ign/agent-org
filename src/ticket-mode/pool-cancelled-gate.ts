@@ -61,26 +61,32 @@ function triesAt(ctx: PoolContext, key: string, { url, head }: Readonly<{ url: s
 const checksOf = (read: PullFeedback): string[] => [...new Set((read.cancelledRequired ?? []).map(({ name }) => name))];
 
 /** Logs one `cancelled-rerun` event, in the board's own log and in the run's. */
-function say(ctx: PoolContext, key: string, rerun: CancelledRerun): void {
+function recordRerun(ctx: PoolContext, key: string, rerun: CancelledRerun): void {
   log(`${key}: ${cancelledRerunWords(rerun)}`);
   update(ctx, (queue) => logEvent(queue, key, ctx.now(), { kind: "cancelled-rerun", ...rerun }));
 }
 
 /**
- * Whether the code host says a run of the cancelled runs' workflow has not completed at `head`. A host that cannot tell is read as a quiet head, as the board reran before it could ask; a read that failed (null) is not a quiet head, and the next watch asks again.
+ * Whether the code host says a run of the cancelled runs' workflow has not completed at `head`. A host that cannot tell is read as a quiet head, as the board reran before it could ask; a read that failed (null) or rejected is not a quiet head, and the next watch asks again.
  */
 async function headIsBusy(ctx: PoolContext, runs: readonly string[], head: string): Promise<boolean> {
-  if (ctx.codeHost.runsInProgress === undefined) return false;
-  return (await ctx.codeHost.runsInProgress(runs, head)) !== false;
+  const { runsInProgress } = ctx.codeHost;
+  if (runsInProgress === undefined) return false;
+  try {
+    return (await runsInProgress.call(ctx.codeHost, runs, head)) !== false;
+  } catch {
+    return true;
+  }
 }
 
 /** Reruns the first of the cancelled `runs` and logs it. The host takes one run per call because two reruns of one workflow cancel each other. */
 async function rerunOne(ctx: PoolContext, key: string, { url, read }: OpenPull, plan: Readonly<{ runs: readonly string[]; head: string }>): Promise<void> {
   const { runs, head } = plan;
-  const refused = await ctx.codeHost.rerunRuns?.([runs[0]]);
-  if (refused === undefined) return;
+  const { rerunRuns } = ctx.codeHost;
+  if (rerunRuns === undefined) return;
+  const refused = await rerunRuns.call(ctx.codeHost, [runs[0]]);
   const why = refused === null ? undefined : (shortReason(refused) ?? "no reason given");
-  say(ctx, key, { url, head, checks: checksOf(read), ...(why === undefined ? {} : { refused: why }) });
+  recordRerun(ctx, key, { url, head, checks: checksOf(read), ...(why === undefined ? {} : { refused: why }) });
 }
 
 /**
@@ -94,7 +100,7 @@ async function actOn(ctx: PoolContext, key: string, pull: OpenPull, plan: Readon
   const spent = tries.taken >= MAX_RERUNS;
   if (tries.stopped || (!spent && tries.refused >= MAX_REFUSALS)) return;
   if (await headIsBusy(ctx, runs, head)) return;
-  if (spent) say(ctx, key, { url, head, checks: checksOf(read), stopped: true });
+  if (spent) recordRerun(ctx, key, { url, head, checks: checksOf(read), stopped: true });
   else await rerunOne(ctx, key, pull, plan);
 }
 

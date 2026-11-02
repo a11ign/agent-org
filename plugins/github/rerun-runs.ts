@@ -30,8 +30,8 @@ export async function rerunRunsAsync(detailsUrls: readonly string[], gh: AsyncGh
 /** How many runs of one head one read of the run list holds: a head with more is not read past this, and a cancelled run it does not list reads as "cannot tell". */
 const RUNS_PER_PAGE = 100;
 
-/** The `gh` arguments that list the runs at `head` of `repo`, each as its id, workflow and status. */
-const headRunsArgs = (repo: string, head: string): string[] => ["api", `repos/${repo}/actions/runs?head_sha=${encodeURIComponent(head)}&per_page=${RUNS_PER_PAGE}`, "--jq", "[.workflow_runs[] | {id, workflow_id, status}]"];
+/** The `gh` arguments that list the runs at `head` of `repo`, each as its id, workflow and status, read fresh: a list served from a cache could still say a rerun has completed. */
+const headRunsArgs = (repo: string, head: string): string[] => ["api", "-H", "Cache-Control: no-cache", `repos/${repo}/actions/runs?head_sha=${encodeURIComponent(head)}&per_page=${RUNS_PER_PAGE}`, "--jq", "[.workflow_runs[] | {id, workflow_id, status}]"];
 
 /** A run of the list `headRunsArgs` reads. */
 type ListedRun = Readonly<{ id: number; workflow_id: number; status: string }>;
