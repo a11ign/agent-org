@@ -13,7 +13,7 @@ import { dismiss as dismissRun, remove as removeQueued, retry as retryQueued } f
 import { retryRefusal } from "./queue/queue-retry-refusal.ts";
 import { refusal } from "./local-http.ts";
 import { logEvent } from "./queue/run-log.ts";
-import { checkGhWrapperAtStart, createBoard, runNodeProgram, dependencyUpdatesOf, FEEDBACK_MS, holdsKey, idleBlockersOf, REVIEW_START_MS, startFeedbackSweeps, type BoardDeps } from "./server.ts";
+import { checkGhWrapperAtStart, STOPPED_BEFORE_QUEUEING, createBoard, runNodeProgram, dependencyUpdatesOf, FEEDBACK_MS, holdsKey, idleBlockersOf, REVIEW_START_MS, startFeedbackSweeps, type BoardDeps } from "./server.ts";
 import type { Outcome } from "./queue/queue-entries-and-outcomes.ts";
 import { DEPENDENCY_PULL_AUTHOR } from "../plugins/contracts/code-host.ts";
 import type { Ticket, TicketSource } from "./source.ts";
@@ -1069,21 +1069,33 @@ test("A11-420: a run's tickets are queued in the order given, on the choice it w
   await b.api("POST", "/api/choice", { planModel: "opus", planEffort: "max" });
   const known = [{ ...ticket("NBF-1"), uploads: ["NBF-1-0001-plan-x.md"] }, ticket("NBF-2")];
   for (const listed of known) b.known.tickets.set(listed.key, listed);
-  assert.deepEqual(await b.queueWritten(["NBF-2", "NBF-1"], { model: "sonnet", effort: "high", plan: true }), { queued: 2 });
+  assert.deepEqual(await b.queueWritten(["NBF-2", "NBF-1"], { model: "sonnet", effort: "high", plan: true }, () => true), { queued: 2 });
   assert.deepEqual(b.store.get().entries.map((e) => [e.ticket.key, e.model, e.effort, e.plan ?? null]),
     [["NBF-2", "sonnet", "high", { model: "opus", effort: "max" }], ["NBF-1", "sonnet", "high", null]], "the order the run made them, each without a plan planned first");
 });
 
+test("A11-420: a request stopped while its tickets are read queues none: the stop is asked after the tracker's reads, just before the add", async () => {
+  const asked: string[] = [];
+  const tracker = createFakeTracker([ticket("NBF-1"), ticket("NBF-2")]);
+  const reading = { ...tracker, read: async (key: string) => { asked.push(`read ${key}`); return tracker.read(key); } };
+  const b = board(4747, {}, {}, reading);
+  const stopped = await b.queueWritten(["NBF-1", "NBF-2"], { model: "sonnet", effort: "high", plan: false }, () => { asked.push("still wanted?"); return false; });
+  assert.deepEqual(stopped, { refused: STOPPED_BEFORE_QUEUEING });
+  assert.deepEqual(asked, ["read NBF-1", "read NBF-2", "still wanted?"], "asked once both tickets are read, before anything is added");
+  assert.deepEqual(b.store.get().entries, [], "nothing is queued");
+  assert.deepEqual(await b.queueWritten(["NBF-1", "NBF-2"], { model: "sonnet", effort: "high", plan: false }, () => true), { queued: 2 }, "POSITIVE CONTROL: a run still running queues them");
+});
+
 test("A11-420: a run's queueing is refused with the queue's own sentence when another instance holds a ticket or one is a parent, and nothing is queued", async () => {
   const taken = board(4747, {}, {}, trackerClaimedBy(["NBF-1"], [inProgress("NBF-1"), ticket("NBF-2")]));
-  assert.deepEqual(await taken.queueWritten(["NBF-2", "NBF-1"], { model: "sonnet", effort: "high", plan: true }),
+  assert.deepEqual(await taken.queueWritten(["NBF-2", "NBF-1"], { model: "sonnet", effort: "high", plan: true }, () => true),
     { refused: "NBF-1 is In Progress in the tracker and desk.99999999 claimed it, so another instance holds it" }, "refuseTaken's sentence, as /api/queue answers it");
   assert.deepEqual(taken.store.get().entries, [], "not even the ticket that is free");
   const parent = board(4747, {}, {}, createFakeTracker([{ ...ticket("A11-24"), children: ["A11-25"] }, ticket("A11-30")]));
-  const refused = await parent.queueWritten(["A11-30", "A11-24"], { model: "sonnet", effort: "high", plan: false });
+  const refused = await parent.queueWritten(["A11-30", "A11-24"], { model: "sonnet", effort: "high", plan: false }, () => true);
   assert.match("refused" in refused ? refused.refused : "", /^A11-24 has 1 open sub-issue \(A11-25\): a parent is not queued/, "enqueue's refusal, as its sentence");
   assert.deepEqual(parent.store.get().entries, []);
-  await assert.rejects(parent.queueWritten(["NBF-404"], { model: "sonnet", effort: "high", plan: false }), /no ticket NBF-404/, "a ticket that cannot be read throws, as the route's read does");
+  await assert.rejects(parent.queueWritten(["NBF-404"], { model: "sonnet", effort: "high", plan: false }, () => true), /no ticket NBF-404/, "a ticket that cannot be read throws, as the route's read does");
 });
 
 test("/api/config gives the ticket writer's host default, which is null on a machine that names no writer", async () => {

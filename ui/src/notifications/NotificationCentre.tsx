@@ -141,9 +141,9 @@ function Panel({ ref, items, busy, acting, refusal, onClear, onClearAll, onHideR
   );
 }
 
-/** What the notifications read of the live queue (A11-420): the keys it holds, and whether the board plans. */
+/** What the notifications read of the live queue (A11-420): the keys it holds, none before it is read, and whether the board plans. */
 function queueReadingOf(queue: QueueView | null, config: ConfigView | null): QueueReading {
-  return { keys: new Set((queue?.entries ?? []).map((entry) => entry.ticket.key)), planner: config?.planner === true };
+  return { keys: queue === null ? null : new Set(queue.entries.map((entry) => entry.ticket.key)), planner: config?.planner === true };
 }
 
 const isEscape = (event: KeyboardEvent): boolean => event.key === "Escape" && !event.defaultPrevented;

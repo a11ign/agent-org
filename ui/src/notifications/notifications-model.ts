@@ -52,33 +52,44 @@ export const FILTERS: readonly Readonly<{ id: NotificationFilter; label: string 
 /** The amber note's words when a run recorded no reason, as a request stopped by an older board did. */
 const NOT_QUEUED = "Written, but not queued. They are in the backlog.";
 
-/** What the board reads to tell a request's queueing (A11-420): the keys the live queue holds, and whether the board plans, which says "plan first". */
-export type QueueReading = Readonly<{ keys: ReadonlySet<string>; planner: boolean }>;
+/** What the board reads to tell a request's queueing (A11-420): the keys the live queue holds, or null before the queue is read, and whether the board plans, which says "plan first". */
+export type QueueReading = Readonly<{ keys: ReadonlySet<string> | null; planner: boolean }>;
 
 /** No queue read yet, on a board that does not plan. */
-export const NO_QUEUE: QueueReading = { keys: new Set(), planner: false };
+export const NO_QUEUE: QueueReading = { keys: null, planner: false };
+
+/** Why tickets a run queued are not all on the queue now (A11-420): a person took them off, or they were worked and cleared. */
+const noLongerQueued = (keys: readonly string[]): string =>
+  `Queued when the request finished, but ${keys.join(", ")} ${keys.length === 1 ? "is" : "are"} no longer on the queue.`;
 
 /**
- * How a finished request's queueing went (A11-420), or null for one that kept its tickets in the backlog or filed none. Queued when the run recorded it queued them, or once the live
- * queue holds every one of them (the note's button, or a person on the Tickets page, queued them since). Otherwise the run's recorded reason, with the keys the queue does not hold yet.
+ * How a finished request's queueing went (A11-420), from the live queue: queued once it holds every one of the request's tickets, however they got there (the run, the note's button,
+ * or a person on the Tickets page). Otherwise the amber note, with the keys the queue does not hold: the run's recorded reason, or, for a run that recorded it queued them, that they are
+ * no longer on the queue. Null for a request that kept its tickets in the backlog or filed none, and while the queue has not been read, so nothing is said that the queue may contradict.
  */
 export function queueingOf(run: Pick<Run, "queueAfter" | "afterWriting" | "tickets">, { keys: inQueue, planner }: QueueReading): Queueing | null {
   const after = run.queueAfter;
-  if (after === undefined || run.tickets.length === 0) return null;
+  if (after === undefined || run.tickets.length === 0 || inQueue === null) return null;
   const waiting = run.tickets.map(({ key }) => key).filter((key) => !inQueue.has(key));
-  const recorded = run.afterWriting;
-  if (waiting.length === 0 || (recorded !== undefined && "queued" in recorded)) {
+  if (waiting.length === 0) {
     const count = run.tickets.length;
     return { queued: true, text: `${count} ${count === 1 ? "ticket" : "tickets"} queued with ${queueChoiceLabel({ ...after, plan: after.plan && planner })}.` };
   }
-  return { queued: false, reason: recorded?.notQueued ?? NOT_QUEUED, keys: waiting, choice: after };
+  return { queued: false, reason: notQueuedReason(run.afterWriting, waiting), keys: waiting, choice: after };
+}
+
+/** The amber note's reason for `waiting`, the keys the queue does not hold: the run's own, that they are no longer on the queue when it queued them, or the plain words when it recorded none. */
+function notQueuedReason(recorded: Run["afterWriting"], waiting: readonly string[]): string {
+  if (recorded === undefined) return NOT_QUEUED;
+  if ("queued" in recorded) return noLongerQueued(waiting);
+  return recorded.notQueued;
 }
 
 /** A finished request as a notification, not yet marked new: done is succeeded, anything else that finished is failed (a request stopped on the board finishes with a failure). */
 export function writerNotificationOf(run: Run, queue: QueueReading = NO_QUEUE): Notification {
   return {
     id: run.id, kind: "writer", outcome: run.status === "failed" ? "failed" : "succeeded", at: run.finishedAt ?? null, headline: headLineOf(run), text: run.request,
-    failure: run.status === "failed" ? (run.failure ?? null) : null, tickets: run.tickets, queuedKeys: new Set(run.tickets.map(({ key }) => key).filter((key) => queue.keys.has(key))),
+    failure: run.status === "failed" ? (run.failure ?? null) : null, tickets: run.tickets, queuedKeys: new Set(run.tickets.map(({ key }) => key).filter((key) => queue.keys?.has(key) === true)),
     queueing: queueingOf(run, queue), fresh: false,
   };
 }

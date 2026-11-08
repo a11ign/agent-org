@@ -70,6 +70,14 @@ describe("the Done notification of a request whose tickets were not queued", () 
     expect(textOf(item().querySelector(".notification-queued"))).toBe("2 tickets queued with sonnet · high · plan first.");
   });
 
+  it("of a run that recorded it queued them, while the live queue no longer holds one: the amber note says so and offers Queue them for it, and no queued line shows", async () => {
+    await panelWith({ tickets: TWO, queueAfter: QUEUE_AFTER, afterWriting: { queued: 2 } }, queueHolding("A11-143"));
+    await waitFor(() => expect(textOf(note()?.querySelector(".notification-not-queued-text"))).toBe("Queued when the request finished, but A11-144 is no longer on the queue."));
+    expect(chips()).toEqual([["A11-143", "Queued"], ["A11-144", ""]]);
+    expect(item().querySelector(".notification-queued")).toBeNull();
+    expect(textOf(queueThem())).toBe("Queue them");
+  });
+
   it("says the queue's refusal in the note, and keeps the button", async () => {
     const refusal = { status: 409, error: "A11-144 is In Progress in the tracker and desk.99999999 claimed it, so another instance holds it" };
     await panelWith({ tickets: TWO, queueAfter: QUEUE_AFTER, afterWriting: { notQueued: SENTENCE } }, queueHolding(), { post: (path) => (path === "/api/queue" ? refusal : { runs: [] }) });

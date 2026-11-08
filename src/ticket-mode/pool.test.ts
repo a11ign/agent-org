@@ -4563,7 +4563,7 @@ const QUEUE_AFTER: QueueAfter = { model: "sonnet", effort: "high", plan: true };
 /** The board's `queueWritten`, as the pool calls it: each call kept, answering `answer` (or throwing it, when it is an Error). */
 function queueingBoard(answer: QueuedWritten | Error = { queued: 2 }) {
   const calls: [readonly string[], QueueAfter][] = [];
-  const queueWritten = async (keys: readonly string[], after: QueueAfter): Promise<QueuedWritten> => {
+  const queueWritten = async (keys: readonly string[], after: QueueAfter, _stillWanted: () => boolean): Promise<QueuedWritten> => {
     calls.push([keys, after]);
     if (answer instanceof Error) throw answer;
     return answer;
@@ -4615,6 +4615,26 @@ test("A11-420: a run whose queueing is refused, or throws, still ends done with 
   await filesThenEnds(threw, recordOf(["NBF-1"]), { kind: "created", created: ["NBF-1"] }, "done");
   assert.deepEqual([writerStatus(threw.run()), threw.run().afterWriting],
     ["done", { notQueued: "Written, but not queued: could not add them to the queue: fetch failed. They are in the backlog." }]);
+});
+
+test("A11-420: a run stopped while its tickets are being read for the queue queues none: the board is told it is no longer wanted, and the stop's record stands", async () => {
+  let release = () => undefined as void;
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  const wanted: boolean[] = [];
+  // The board's callback as the server's is: the tracker is read (held here by `gate`), then the run is asked whether it is still wanted, just before the add.
+  const queueWritten = async (_keys: readonly string[], _after: QueueAfter, stillWanted: () => boolean): Promise<QueuedWritten> => {
+    await gate;
+    wanted.push(stillWanted());
+    return stillWanted() ? { queued: 1 } : { refused: "stopped" };
+  };
+  const fixture = writing({ id: "q9", queueAfter: QUEUE_AFTER }, WRITER, trackerOf({ "NBF-1": {} }), undefined, queueWritten);
+  await filesThenEnds(fixture, recordOf(["NBF-1"]), { kind: "created", created: ["NBF-1"] }, "done");
+  assert.equal(fixture.run().phase, "running", "the run waits on its queueing");
+  fixture.pool.stopWriterRun("q9");
+  release();
+  await writerSettled();
+  assert.deepEqual(wanted, [false], "asked after the stop, it is no longer wanted");
+  assert.deepEqual([fixture.run().failure, fixture.run().afterWriting], ["stopped on the board", { notQueued: "Written, but not queued: the request was stopped on the board. They are in the backlog." }]);
 });
 
 test("A11-420: a run stamped queueAfter whose outcome cannot be read fails, keeps what it filed unqueued, and records why", async () => {

@@ -125,9 +125,10 @@ export type PoolDeps = Readonly<{
   readMs?: number;
   /**
    * Queues the tickets a new-ticket run filed, on the choice its request was stamped with (A11-420): the server's own `refuseTaken` and `queueTickets`, as `POST /api/queue` runs them.
-   * Answers how many were queued, or the sentence a refusal gave; it may throw. Absent: a run that asked for its tickets to be queued queues none, and says so.
+   * Answers how many were queued, or the sentence a refusal gave; it may throw. `stillWanted` is asked just before the add, after the tracker's reads: when it answers false (the run was
+   * stopped meanwhile), nothing is queued. Absent: a run that asked for its tickets to be queued queues none, and says so.
    */
-  queueWritten?: (keys: readonly string[], after: QueueAfter) => Promise<QueuedWritten>;
+  queueWritten?: (keys: readonly string[], after: QueueAfter, stillWanted: () => boolean) => Promise<QueuedWritten>;
   /** The ledger of the board's calls to Linear and GitHub, which a crashed run's recovery reads to tell the network is back (A11-399): this thread's `callOutcomes` when absent. A test gives its own. */
   calls?: CallLedger;
 }>;

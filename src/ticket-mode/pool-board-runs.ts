@@ -36,7 +36,7 @@ export async function finishWriter(ctx: PoolContext, run: WriterRun, place: RunP
     const made = await ticketsMade(ctx, place, outcome.created);
     const reason = outcome.kind === "needs-human" ? outcome.reason.slice(0, QUESTION_CHARS) : undefined;
     const failure = [reason, ...made.problems].filter((part): part is string => part !== undefined).join("; ");
-    // Queued before the run is closed, so the run's record says how it went; a run stopped meanwhile keeps whatever was queued, which the page reads from the live queue.
+    // Queued before the run is closed, so the run's record says how it went. A run stopped while its tickets are read queues none (`queueAfterWriting`).
     const afterWriting = await queueAfterWriting(ctx, run, made.tickets, failure);
     if (!writerAgentRunning(ctx, run.id)) return;
     closeWriter(ctx, run);
@@ -51,7 +51,8 @@ export async function finishWriter(ctx: PoolContext, run: WriterRun, place: RunP
 /**
  * Queue the tickets a run filed, when its request asked for that (A11-420), all or nothing: a run that did not end cleanly, or filed a ticket the board could not read back, queues
  * none, and the record says why. The queue's refusal, or its throw, is recorded the same way, since the tickets are filed whatever happens here: the run still ends done. Undefined
- * for a run whose request did not ask, which keeps its tickets in the backlog. `tickets` are in the order the run made them.
+ * for a run whose request did not ask, which keeps its tickets in the backlog, and for one stopped already, whose stop recorded it. `tickets` are in the order the run made them. A
+ * stop that arrives while the tracker is read is asked again just before the add, so a stopped run queues none.
  */
 async function queueAfterWriting(ctx: PoolContext, run: WriterRun, tickets: readonly WriterTicket[], failure: string): Promise<AfterWriting | undefined> {
   const after = run.queueAfter;
@@ -62,8 +63,10 @@ async function queueAfterWriting(ctx: PoolContext, run: WriterRun, tickets: read
   if (tickets.length === 0) return { queued: 0 };
   const { queueWritten } = ctx.deps;
   if (queueWritten === undefined) return notQueued("this board cannot queue a request's tickets");
+  const stillRunning = (): boolean => writerAgentRunning(ctx, run.id);
+  if (!stillRunning()) return undefined;
   try {
-    const result = await queueWritten(tickets.map(({ key }) => key), after);
+    const result = await queueWritten(tickets.map(({ key }) => key), after, stillRunning);
     return "refused" in result ? notQueued(result.refused) : { queued: result.queued };
   } catch (err) {
     return notQueued(`could not add them to the queue: ${messageOf(err).split("\n")[0]}`);

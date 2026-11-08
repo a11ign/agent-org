@@ -312,13 +312,18 @@ async function checkedForQueue(board: Pick<Board, "settings" | "source" | "store
   return refuseTaken(board, tickets);
 }
 
+/** What a stopped request's queueing answers (A11-420): it queues nothing. */
+export const STOPPED_BEFORE_QUEUEING = "the request was stopped on the board before its tickets were queued";
+
 /**
  * A new-ticket run's tickets queued as the run ends (A11-420): checked as `POST /api/queue` checks them, and added by `queueTickets` on the choice the request was stamped with. A
- * refusal, `refuseTaken`'s or the one `enqueue` throws (`refuseParents` and the rest), is answered as its sentence. A ticket that cannot be read throws.
+ * refusal, `refuseTaken`'s or the one `enqueue` throws (`refuseParents` and the rest), is answered as its sentence. A ticket that cannot be read throws. `stillWanted` is asked once the
+ * tracker has been read, just before the add, which nothing can come between: a request stopped while its tickets were being read queues none.
  */
-async function queueWrittenOf(board: Board, keys: readonly string[], { model, effort, plan }: QueueAfter): Promise<QueuedWritten> {
+async function queueWrittenOf(board: Board, keys: readonly string[], { model, effort, plan }: QueueAfter, stillWanted: () => boolean): Promise<QueuedWritten> {
   const taken = await checkedForQueue(board, keys);
   if (taken.refusal !== null) return { refused: taken.refusal.error };
+  if (!stillWanted()) return { refused: STOPPED_BEFORE_QUEUEING };
   try {
     board.queueTickets(taken.tickets, { model, effort }, { plan });
   } catch (err) {
@@ -635,7 +640,7 @@ export function createBoard(deps: BoardDeps) {
   let queue: Queue = loadQueue(deps.queuePath, settings.max);
   const store = { get: () => queue, set: (next: Queue) => { queue = next; saveQueue(deps.queuePath, next); deps.queueChanged?.(next); } };
   // A new-ticket run queues its tickets through the board's own checks (A11-420), which exist once the board does: the pool calls this only as a run ends.
-  const queueWritten = (keys: readonly string[], after: QueueAfter): Promise<QueuedWritten> => queueWrittenOf(board, keys, after);
+  const queueWritten = (keys: readonly string[], after: QueueAfter, stillWanted: () => boolean): Promise<QueuedWritten> => queueWrittenOf(board, keys, after, stillWanted);
   const pool = deps.pool ?? createPool(store, { queueWritten, ...deps.poolDeps, settings, source, codeHost, hook: { node: process.execPath, bin: BIN } });
   const known = { tickets: new Map<string, Ticket>(), claims: new Map<string, string>() };
   let claimantName: string | undefined;
