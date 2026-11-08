@@ -1,5 +1,0 @@
----
-"agent-org": minor
----
-
-The org-health tick counts a flag the code ships OFF that no declaration sets (agent-org#1135, class `hand-reroute`): `flag-without-a-switch` reads every `export const <NAME>_FLAG = "<group>.<name>"` in `src/` against `.agent-org/project.json`, `decisions.json`, `seats.json` and the host declaration (`host.json`), written nested (`{ "rows": { "autoUnpark": false } }`) or flat (`{ "rows.autoUnpark": false }`), and orders `product-manager` (and `ceo`) once a day with each unset key and the merge and pull request that added it. A flag set to `false` is decided and not counted; absent is the violation. The three `machinery:flag` flags (`queue.reenqueueEjected`, `queue.chainWaitWake`, `rows.closedUnderOpenHalf`) are switched elsewhere and are not counted. A declaration that cannot be read (or a wrong `$AGENT_ORG_HOST`) makes the reading UNKNOWN on stderr and never a list. Only the work gate asks, so nothing else that runs a tick reads the project's declarations; no host changes behaviour beyond one new order per day while a flag stays unset.
