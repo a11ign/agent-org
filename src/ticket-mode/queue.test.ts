@@ -1050,6 +1050,17 @@ test("a stopped run keeps the tickets it made, and a finished run dismisses once
   assert.deepEqual(queue.writers, []);
 });
 
+test("A11-420: a run stamped queueAfter keeps its stamp, records how its queueing went as it ends, and a stopped one records that it was not queued", () => {
+  const after = { model: "sonnet", effort: "high", plan: true };
+  const running = markWriterRunning(markWriterStarting(queueWriter(emptyQueue(1), { ...request, queueAfter: after }, 1), "w1", 2), "w1", "ws", "p");
+  assert.deepEqual(writerOf(running, "w1")?.queueAfter, after);
+  const ended = writerOf(writerEnded(running, "w1", { tickets: [filed("NBF-4")], afterWriting: { queued: 1 } }, 3), "w1");
+  assert.deepEqual([ended?.queueAfter, ended?.afterWriting], [after, { queued: 1 }]);
+  assert.deepEqual(writerOf(stopWriter(running, "w1", 4), "w1")?.afterWriting, { notQueued: "Written, but not queued: the request was stopped on the board. They are in the backlog." });
+  const plain = markWriterRunning(markWriterStarting(queueWriter(emptyQueue(1), request, 1), "w1", 2), "w1", "ws", "p");
+  assert.equal(writerOf(stopWriter(plain, "w1", 4), "w1")?.afterWriting, undefined, "a run that keeps its tickets in the backlog records nothing");
+});
+
 test("dismissFinishedWriters removes every finished new-ticket request in one step and leaves runs under way and the board's check runs", () => {
   let queue = emptyQueue(3);
   for (const id of ["w1", "w2", "w3"]) queue = queueWriter(queue, { ...request, id }, 1);

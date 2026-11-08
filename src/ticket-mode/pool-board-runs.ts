@@ -2,6 +2,7 @@
 // module: the runs the board starts for itself -- how a new-ticket run and a publish run finish
 
 import { type PublishRun, type WriterRun, type WriterTicket } from "./queue/queue-entries-and-outcomes.ts";
+import { notQueued, type AfterWriting } from "./queue/queue-after-writing.ts";
 import { type RunPlace } from "./pool-paths.ts";
 import { CREATED_FILE, DECISIONS_FILE, parseWriterOutcome, readCreatedKeys } from "./writer.ts";
 import { sectionsNeeded, settledDescription } from "./open-decisions.ts";
@@ -22,7 +23,7 @@ import { ASKED_FILE, OUTCOME_FILE, STOP_ACTIVE_FILE, STOP_ACTIVE_MS, WAITING_FIL
 /**
  * The run's outcome, read once its agent is idle (A11-135). The run filed its own tickets, so the outcome names the keys it made: each is checked against
  * the record the hook kept, read back from the tracker, and shown, and the run ends with them. A quick run's `needs-human` ends it failed, with its reason,
- * and keeps the tickets it made. A grill run's `needs-human` is its question, which it waits on (`askPerson`).
+ * and keeps the tickets it made. A grill run's `needs-human` is its question, which it waits on (`askPerson`). A run whose request asked for it queues its tickets as it ends (A11-420).
  */
 export async function finishWriter(ctx: PoolContext, run: WriterRun, place: RunPlace, text: string): Promise<void> {
   const { finishing, now } = ctx;
@@ -35,13 +36,37 @@ export async function finishWriter(ctx: PoolContext, run: WriterRun, place: RunP
     const made = await ticketsMade(ctx, place, outcome.created);
     const reason = outcome.kind === "needs-human" ? outcome.reason.slice(0, QUESTION_CHARS) : undefined;
     const failure = [reason, ...made.problems].filter((part): part is string => part !== undefined).join("; ");
+    // Queued before the run is closed, so the run's record says how it went; a run stopped meanwhile keeps whatever was queued, which the page reads from the live queue.
+    const afterWriting = await queueAfterWriting(ctx, run, made.tickets, failure);
     if (!writerAgentRunning(ctx, run.id)) return;
     closeWriter(ctx, run);
-    update(ctx, (queue) => writerEnded(queue, run.id, { tickets: made.tickets, failure: failure === "" ? undefined : failure }, now()));
+    update(ctx, (queue) => writerEnded(queue, run.id, { tickets: made.tickets, failure: failure === "" ? undefined : failure, afterWriting }, now()));
   } catch (err) {
     endWriter(ctx, run, messageOf(err).split("\n")[0]);
   } finally {
     finishing.delete(run.id);
+  }
+}
+
+/**
+ * Queue the tickets a run filed, when its request asked for that (A11-420), all or nothing: a run that did not end cleanly, or filed a ticket the board could not read back, queues
+ * none, and the record says why. The queue's refusal, or its throw, is recorded the same way, since the tickets are filed whatever happens here: the run still ends done. Undefined
+ * for a run whose request did not ask, which keeps its tickets in the backlog. `tickets` are in the order the run made them.
+ */
+async function queueAfterWriting(ctx: PoolContext, run: WriterRun, tickets: readonly WriterTicket[], failure: string): Promise<AfterWriting | undefined> {
+  const after = run.queueAfter;
+  if (after === undefined) return undefined;
+  if (failure !== "") return notQueued(`the run ended with a problem (${failure})`);
+  const unread = tickets.find(({ url }) => url === null);
+  if (unread !== undefined) return notQueued(`${unread.key} could not be read back from the tracker`);
+  if (tickets.length === 0) return { queued: 0 };
+  const { queueWritten } = ctx.deps;
+  if (queueWritten === undefined) return notQueued("this board cannot queue a request's tickets");
+  try {
+    const result = await queueWritten(tickets.map(({ key }) => key), after);
+    return "refused" in result ? notQueued(result.refused) : { queued: result.queued };
+  } catch (err) {
+    return notQueued(`could not add them to the queue: ${messageOf(err).split("\n")[0]}`);
   }
 }
 
@@ -178,13 +203,14 @@ export function filedOf(ctx: PoolContext, run: WriterRun): Readonly<{ tickets: W
   return { tickets: keys.map((key) => ({ key, url: null, inPick: null })), problem: null };
 }
 
-/** Close a new-ticket run's workspace and record why it failed. The tickets it filed before it failed stay, and are shown. */
+/** Close a new-ticket run's workspace and record why it failed. The tickets it filed before it failed stay, and are shown, unqueued (A11-420). */
 export function endWriter(ctx: PoolContext, run: WriterRun, failure: string): void {
   const { now } = ctx;
   if (!writerAgentRunning(ctx, run.id)) return;
   const filed = filedOf(ctx, run);
   closeWriter(ctx, run);
-  update(ctx, (queue) => writerEnded(queue, run.id, { tickets: filed.tickets, failure: joined(failure, filed.problem) }, now()));
+  const afterWriting = run.queueAfter === undefined ? undefined : notQueued(`the run failed (${failure})`);
+  update(ctx, (queue) => writerEnded(queue, run.id, { tickets: filed.tickets, failure: joined(failure, filed.problem), afterWriting }, now()));
 }
 
 /** Close the publish run's workspace and record how it ended: each of its runs Published, or why it failed. */

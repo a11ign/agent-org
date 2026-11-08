@@ -218,13 +218,33 @@
   color: var(--color-text);
   font-family: var(--font-mono);
 }
-.nt-spacer {
-  flex: 1 1 0;
+/* The pills beside Cancel: the Writer's, and the Queue's while "Queue them" is chosen (A11-420). */
+.nt-pills {
+  flex: 1 1 var(--measure-pills-basis);
+  min-width: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-6) var(--space-8);
 }
+/* Cancel and Write ticket keep to the right when the pills take a row of their own, as they did beside the spacer before the pills had a row (A11-420). */
 .ghost.nt-cancel {
+  margin-left: auto;
   padding: var(--space-5) var(--space-12);
   font-size: var(--font-size-body);
 }
 .primary.nt-write:disabled {
   opacity: var(--opacity-sending);
+}
+
+.nt-after-toggle button:disabled {
+  opacity: var(--opacity-sending);
+}
+
+/* On a touch screen, "After writing"'s two choices and the Queue pill are each a whole target (A11-420). */
+@media (pointer: coarse) {
+  .nt-after-toggle button,
+  .nt-queue-pill {
+    min-width: var(--hit-target);
+    min-height: var(--hit-target);
+  }
 }

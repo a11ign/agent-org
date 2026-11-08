@@ -28,6 +28,8 @@ import { talk } from "./queue/talk.ts";
 import { recordPullHeads } from "./queue/queue-pull-heads.ts";
 import { READ_RETRY_MS } from "./queue/start-reads.ts";
 import { BACKGROUND_GONE_MS, enqueue, liveRunCount, replace, retry, talkRound, writerStatus, type Outcome, type Queue, type WriterForm } from "./queue/queue-entries-and-outcomes.ts";
+import type { PoolDeps, QueuedWritten } from "./pool-context.ts";
+import type { QueueAfter } from "./queue/queue-after-writing.ts";
 // eslint-disable-next-line clean-code/no-duplication -- import list: the rule matches statement shape, and imports are not duplicated logic
 import { emptyQueue, queueWriter, writerOf } from "./queue.ts";
 import { writerDir, writerFolder } from "./ticket-paths.ts";
@@ -101,9 +103,9 @@ function herdr(status: Map<string, string>, screen: { text: string } = { text: "
 
 /** `parents` gives a ticket its parent's key. A ticket without one is shaped as a run queued before tickets carried a parent. */
 function setup(max = 2, keys = ["NBF-1", "NBF-2", "NBF-3"], tickets: Record<string, unknown> = {},
-  { source: tracker = source, parents = {}, planFirst = [], batch = false, pluginRecord, gh, codeHost, reviewerPort, preflight, now = () => 100, clones, wait }:
+  { source: tracker = source, parents = {}, planFirst = [], batch = false, pluginRecord, gh, codeHost, reviewerPort, preflight, now = () => 100, clones, wait, queueWritten }:
     { source?: TicketSource; parents?: Record<string, string>; planFirst?: string[]; batch?: boolean; pluginRecord?: string; gh?: World; codeHost?: ReturnType<typeof createFakeCodeHost>;
-      reviewerPort?: ReviewerPort; preflight?: PreflightExec; now?: () => number; clones?: Record<string, string>; wait?: (ms: number) => Promise<void> } = {}) {
+      reviewerPort?: ReviewerPort; preflight?: PreflightExec; now?: () => number; clones?: Record<string, string>; wait?: (ms: number) => Promise<void>; queueWritten?: PoolDeps["queueWritten"] } = {}) {
   const root = tmpDir("ticket-pool-");
   const settings = parseTicketSettings({ clones: clones ?? { "nbl-ui-netbox": "/repos/nbl-ui-netbox", "nbl-ui-platform-libs": "/repos/libs" }, stateDir: join(root, "state"), tickets });
   const queued = keys.map((key) => (key in parents ? { ...ticket(key), parent: parents[key] } : ticket(key)));
@@ -116,7 +118,7 @@ function setup(max = 2, keys = ["NBF-1", "NBF-2", "NBF-3"], tickets: Record<stri
   const deps = { settings, source: tracker, hook: { node: "/node", bin: "/tool/src/bin.ts" }, herdr: h.run, hostFile: "/work/.agent-org/host.json", now, load: () => ({ load: 1, cores: 14 }), transcriptsRoot: join(root, "transcripts"), wait: async () => {},
     pluginRecord: pluginRecord ?? join(root, "no-plugin-record.json"), codeHost: gh?.codeHost ?? codeHost ?? createFakeCodeHost(), ...(reviewerPort ? { reviewer: reviewerOver(reviewerPort) } : {}),
     // The publisher plugin, as the fake: what the host file names as its connectors, model and effort (A11-161).
-    ...(settings.publish === null ? {} : { publisher: createFakePublisher(settings.publish.connectors, { model: settings.publish.model, effort: settings.publish.effort }) }), ...(preflight ? { preflight } : {}), ...(wait ? { wait } : {}) };
+    ...(settings.publish === null ? {} : { publisher: createFakePublisher(settings.publish.connectors, { model: settings.publish.model, effort: settings.publish.effort }) }), ...(preflight ? { preflight } : {}), ...(wait ? { wait } : {}), ...(queueWritten ? { queueWritten } : {}) };
   const pool = createSettledPool(store, deps);
   const entry = (key: string) => queue.entries.find((e) => e.ticket.key === key)!;
   /** A pool started over the same queue and state directory, as the board's pool is after a restart. */
@@ -4455,11 +4457,12 @@ test("a review the reviewer posted at its head and a person dismissed is posted,
  */
 
 const WRITER = { writer: { run: "Run the a11ign:create-ticket skill for this request: {request}, in {dir}." } };
-const WRITER_REQUEST: { id: string; request: string; mode: "quick" | "grill"; placement: "auto" | "manual"; form: WriterForm; team?: string; model?: string; effort?: string; ticket?: string; startedFrom?: string } = { id: "w1", request: "Show the requests a person made", mode: "quick", placement: "manual", form: { repo: "nbl-ui-netbox" } };
+const WRITER_REQUEST: { id: string; request: string; mode: "quick" | "grill"; placement: "auto" | "manual"; form: WriterForm; team?: string; model?: string; effort?: string; ticket?: string; startedFrom?: string;
+  queueAfter?: QueueAfter } = { id: "w1", request: "Show the requests a person made", mode: "quick", placement: "manual", form: { repo: "nbl-ui-netbox" } };
 
 /** A pool with `request` queued as a new-ticket run, and the queue unpaused: its run's folder and herdr name are the test's to read. */
-function writing(request: Partial<typeof WRITER_REQUEST> = {}, tickets: Record<string, unknown> = WRITER, tracker: TicketSource = source, now?: () => number) {
-  const ctx = setup(2, [], tickets, { source: tracker, now });
+function writing(request: Partial<typeof WRITER_REQUEST> = {}, tickets: Record<string, unknown> = WRITER, tracker: TicketSource = source, now?: () => number, queueWritten?: PoolDeps["queueWritten"]) {
+  const ctx = setup(2, [], tickets, { source: tracker, now, queueWritten });
   ctx.store.set(queueWriter(ctx.store.get(), { ...WRITER_REQUEST, ...request }, 0));
   const name = herdrName(`writer-${request.id ?? WRITER_REQUEST.id}`);
   return { ...ctx, name, dir: writerDir(ctx.settings, request.id ?? WRITER_REQUEST.id), run: () => writerOf(ctx.store.get(), request.id ?? WRITER_REQUEST.id)! };
@@ -4549,6 +4552,78 @@ test("a run whose record cannot be read shows no ticket and fails, and a run who
   await agentIs(none, none.name, "idle");
   await writerSettled();
   assert.match(none.run().failure ?? "", /its created outcome names no ticket/);
+});
+
+/*
+ * Queue after writing (A11-420): a run whose request asked for it queues its tickets as it ends cleanly, through the board's callback, all or nothing, and records how it went.
+ */
+
+const QUEUE_AFTER: QueueAfter = { model: "sonnet", effort: "high", plan: true };
+
+/** The board's `queueWritten`, as the pool calls it: each call kept, answering `answer` (or throwing it, when it is an Error). */
+function queueingBoard(answer: QueuedWritten | Error = { queued: 2 }) {
+  const calls: [readonly string[], QueueAfter][] = [];
+  const queueWritten = async (keys: readonly string[], after: QueueAfter): Promise<QueuedWritten> => {
+    calls.push([keys, after]);
+    if (answer instanceof Error) throw answer;
+    return answer;
+  };
+  return { calls, queueWritten };
+}
+
+test("A11-420: a run stamped queueAfter that ends created, with every ticket read back, queues them all in the order it made them, and records how many", async () => {
+  const board = queueingBoard();
+  const fixture = writing({ id: "q1", queueAfter: QUEUE_AFTER }, WRITER, trackerOf({ "NBF-2": {}, "NBF-1": {} }), undefined, board.queueWritten);
+  await filesThenEnds(fixture, recordOf(["NBF-2", "NBF-1"]), { kind: "created", created: ["NBF-1", "NBF-2"] }, "done");
+  assert.deepEqual(board.calls, [[["NBF-2", "NBF-1"], QUEUE_AFTER]], "the order the record holds, on the stamped choice");
+  assert.deepEqual([writerStatus(fixture.run()), fixture.run().failure, fixture.run().afterWriting], ["done", undefined, { queued: 2 }]);
+});
+
+test("A11-420: a run with no queueAfter, as every run queued before this change, queues nothing and records nothing", async () => {
+  const board = queueingBoard();
+  const fixture = writing({ id: "q2" }, WRITER, trackerOf({ "NBF-1": {} }), undefined, board.queueWritten);
+  await filesThenEnds(fixture, recordOf(["NBF-1"]), { kind: "created", created: ["NBF-1"] }, "done");
+  assert.deepEqual([board.calls, writerStatus(fixture.run()), fixture.run().afterWriting], [[], "done", undefined]);
+});
+
+test("A11-420: a run stamped queueAfter that ends needs-human, names a ticket it did not make, or files one that cannot be read back queues none, and records why", async () => {
+  const board = queueingBoard();
+  const stopped = writing({ id: "q3", queueAfter: QUEUE_AFTER }, WRITER, trackerOf({ "NBF-3": {} }), undefined, board.queueWritten);
+  await filesThenEnds(stopped, recordOf(["NBF-3"]), { kind: "needs-human", reason: "the attachment was refused", created: ["NBF-3"] }, "idle");
+  assert.deepEqual(stopped.run().afterWriting, { notQueued: "Written, but not queued: the run ended with a problem (the attachment was refused). They are in the backlog." });
+
+  const unnamed = writing({ id: "q4", queueAfter: QUEUE_AFTER }, WRITER, trackerOf({ "NBF-1": {} }), undefined, board.queueWritten);
+  await filesThenEnds(unnamed, recordOf(["NBF-1"]), { kind: "created", created: ["NBF-1", "NBF-9"] }, "done");
+  assert.deepEqual(unnamed.run().afterWriting, { notQueued: "Written, but not queued: the run ended with a problem (it names NBF-9, a ticket it did not create). They are in the backlog." });
+
+  const unreadable: TicketSource = { ...source, read: async (key) => { if (key === "NBF-2") throw new Error("fetch failed"); return ticketOf(key); } };
+  const unread = writing({ id: "q5", queueAfter: QUEUE_AFTER }, WRITER, unreadable, undefined, board.queueWritten);
+  await filesThenEnds(unread, recordOf(["NBF-1", "NBF-2"]), { kind: "created", created: ["NBF-1", "NBF-2"] }, "done");
+  assert.deepEqual([writerStatus(unread.run()), unread.run().afterWriting], ["done", { notQueued: "Written, but not queued: NBF-2 could not be read back from the tracker. They are in the backlog." }],
+    "the run is done, since the ticket is filed, and none of its tickets is queued");
+  assert.deepEqual(board.calls, [], "the board is never asked to queue any of them");
+});
+
+test("A11-420: a run whose queueing is refused, or throws, still ends done with its tickets filed, and records the queue's own sentence", async () => {
+  const sentence = "NBF-1 is In Progress in the tracker and desk.99999999 claimed it, so another instance holds it";
+  const refused = writing({ id: "q6", queueAfter: QUEUE_AFTER }, WRITER, trackerOf({ "NBF-1": {} }), undefined, queueingBoard({ refused: sentence }).queueWritten);
+  await filesThenEnds(refused, recordOf(["NBF-1"]), { kind: "created", created: ["NBF-1"] }, "done");
+  assert.deepEqual([writerStatus(refused.run()), refused.run().tickets.map(({ key }) => key), refused.run().afterWriting],
+    ["done", ["NBF-1"], { notQueued: `Written, but not queued: ${sentence}. They are in the backlog.` }]);
+
+  const threw = writing({ id: "q7", queueAfter: QUEUE_AFTER }, WRITER, trackerOf({ "NBF-1": {} }), undefined, queueingBoard(new Error("fetch failed\nat line 2")).queueWritten);
+  await filesThenEnds(threw, recordOf(["NBF-1"]), { kind: "created", created: ["NBF-1"] }, "done");
+  assert.deepEqual([writerStatus(threw.run()), threw.run().afterWriting],
+    ["done", { notQueued: "Written, but not queued: could not add them to the queue: fetch failed. They are in the backlog." }]);
+});
+
+test("A11-420: a run stamped queueAfter whose outcome cannot be read fails, keeps what it filed unqueued, and records why", async () => {
+  const board = queueingBoard();
+  const fixture = writing({ id: "q8", queueAfter: QUEUE_AFTER }, WRITER, trackerOf({ "NBF-1": {} }), undefined, board.queueWritten);
+  await filesThenEnds(fixture, recordOf(["NBF-1"]), { kind: "made-up" }, "done");
+  assert.equal(writerStatus(fixture.run()), "failed");
+  assert.match("notQueued" in (fixture.run().afterWriting ?? {}) ? (fixture.run().afterWriting as { notQueued: string }).notQueued : "", /^Written, but not queued: the run failed \(.+\)\. They are in the backlog\.$/);
+  assert.deepEqual(board.calls, []);
 });
 
 test("a quick run that stops on a needs-human outcome fails with its reason, and keeps the ticket it filed before it stopped", async () => {

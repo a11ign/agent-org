@@ -35,10 +35,14 @@ import type { WriteRetry } from "./result-write-retry.ts";
 import { type FillState, newFillState } from "./health-figures.ts";
 import type { HealthFigures } from "./health-figures.ts";
 import type { RunChoice } from "./queue/queue-entries-and-outcomes.ts";
+import type { QueueAfter } from "./queue/queue-after-writing.ts";
 import { type FlakeLog, flakesPath, flakesViewOf, recordFlakes } from "./flakes.ts";
 import type { StartReadsState } from "./pool-start-reads.ts";
 import { READ_TIMEOUT_MS } from "./queue/start-reads.ts";
 import { callOutcomes, type CallLedger } from "./call-outcomes.ts";
+
+/** What {@link PoolDeps.queueWritten} answers (A11-420): how many tickets it queued, or the sentence its refusal gave. */
+export type QueuedWritten = Readonly<{ queued: number } | { refused: string }>;
 
 /** Where a planning run's plan attach stands after a failure worth trying again: the tries that failed, and the time (the pool's clock) the next may start. */
 export type AttachRetry = Readonly<{ failures: number; nextAt: number }>;
@@ -119,6 +123,11 @@ export type PoolDeps = Readonly<{
   runChoice?: () => RunChoice;
   /** The longest one read of the tracker, a remote or a plan, or the host's preflight, is waited for (A11-359, A11-364); `READ_TIMEOUT_MS` (20 s) when absent. A test gives a short one. */
   readMs?: number;
+  /**
+   * Queues the tickets a new-ticket run filed, on the choice its request was stamped with (A11-420): the server's own `refuseTaken` and `queueTickets`, as `POST /api/queue` runs them.
+   * Answers how many were queued, or the sentence a refusal gave; it may throw. Absent: a run that asked for its tickets to be queued queues none, and says so.
+   */
+  queueWritten?: (keys: readonly string[], after: QueueAfter) => Promise<QueuedWritten>;
   /** The ledger of the board's calls to Linear and GitHub, which a crashed run's recovery reads to tell the network is back (A11-399): this thread's `callOutcomes` when absent. A test gives its own. */
   calls?: CallLedger;
 }>;

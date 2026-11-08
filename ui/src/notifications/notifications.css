@@ -262,6 +262,53 @@ a.notification-ticket:hover {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+/* A request's queueing (A11-420): the Queued chip of each ticket the queue holds, what they were queued on, or the amber note with "Queue them". */
+.notification-ticket-queued {
+  flex: 0 0 auto;
+  padding: 0 var(--space-8);
+  border: 1px solid var(--color-border-hover);
+  border-radius: var(--radius-10);
+  color: var(--color-text-nav);
+  font-size: var(--font-size-label);
+  font-weight: var(--font-weight-medium);
+}
+.notification-queued {
+  color: var(--color-text-count);
+  font-size: var(--font-size-small);
+}
+.notification-not-queued {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-6) var(--space-12);
+  padding: var(--space-8) var(--space-12);
+  border: 1px solid var(--color-warn-border);
+  border-radius: var(--radius-6);
+  background: var(--color-warn-queue-bg);
+  color: var(--color-warn-queue-text);
+}
+.notification-not-queued-text {
+  flex: 1 1 var(--measure-queue-note);
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.notification-queue-them {
+  padding: var(--space-3) var(--space-12);
+  border: 1px solid var(--color-warn-border-strong);
+  border-radius: var(--radius-6);
+  background: transparent;
+  color: var(--color-warn-queue-text);
+  font-size: var(--font-size-small);
+}
+.notification-queue-them:disabled {
+  opacity: var(--opacity-sending);
+}
+@media (pointer: coarse) {
+  .notification-queue-them {
+    min-width: var(--hit-target);
+    min-height: var(--hit-target);
+  }
+}
 
 .notifications-empty {
   display: flex;
