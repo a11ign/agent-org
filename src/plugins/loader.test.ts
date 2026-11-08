@@ -46,7 +46,7 @@ test("the loader imports only the bundled plugins a host enables, by file URL, a
   assert.deepEqual(urls, [urlOf("my-tracker")], "my-publisher is not enabled, so its code is not read");
   const [[settings, given]] = created as [[unknown, PluginDeps]];
   assert.deepEqual(settings, {});
-  assert.deepEqual({ ...given, fetch: DEPS.fetch }, DEPS, "the deps, with the tracker's fetch counted (depsFor)");
+  assert.deepEqual({ ...given, fetch: DEPS.fetch, retryFetch: undefined }, { ...DEPS, retryFetch: undefined }, "the deps, with the tracker's fetch counted and a retryFetch added (depsFor)");
   assert.deepEqual(result.loaded.map(({ plugin, implementation }) => [plugin.name, implementation]), [["my-tracker", "the tracker"]]);
   assert.deepEqual(result.refusals, []);
 });
@@ -131,4 +131,15 @@ test("A11-363: the tracker plugin is given a fetch and a freshFetch that count e
   await tracker.fetch("https://tracker.example/graphql");
   await tracker.freshFetch!("https://tracker.example/graphql");
   assert.deepEqual(ledger.figures().linear, { calls: 2, failures: 2, failuresPer100: 100 });
+  await tracker.retryFetch!("https://tracker.example/graphql");
+  assert.deepEqual(ledger.figures().linear, { calls: 2, failures: 2, failuresPer100: 100 }, "A11-345: the attempt that retries a failed call is not a call of its own");
+  assert.equal((await tracker.retryFetch!("https://tracker.example/graphql")).status, 503, "and it answers as the fetch does");
+});
+
+test("A11-345: a tracker with no freshFetch has its retries sent through its fetch, uncounted", async () => {
+  const ledger = createCallLedger(() => 1_000);
+  let sent = 0;
+  const fetch = (async () => { sent += 1; return new Response("", { status: 503 }); }) as typeof globalThis.fetch;
+  await depsFor("tracker", { fetch } as unknown as PluginDeps, ledger).retryFetch!("https://tracker.example/graphql");
+  assert.deepEqual([sent, ledger.figures().linear.calls], [1, 0]);
 });

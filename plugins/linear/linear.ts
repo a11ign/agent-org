@@ -193,9 +193,9 @@ export function scopedQuery(scope: string): { text: string; variables: Record<st
 
 /**
  * The seams every call to Linear goes through: the key, which goes only to Linear, the `fetch` that sends it (the board gives one that opens a connection for each call, so none can be stale: A11-359), the
- * `sleep` between a failed attempt and the next, the time one attempt may take, and where each attempt is counted.
+ * `fetch` that sends a retry of a call whose attempt failed (the board gives one that is not counted as a call of its own: A11-345), the `sleep` between a failed attempt and the next, the time one attempt may take, and where each attempt is counted.
  */
-type Client = Readonly<{ key: string; request: Fetch; sleep: (ms: number) => Promise<void>; attemptMs: number; calls: CallLog; log: (line: string) => void }>;
+type Client = Readonly<{ key: string; request: Fetch; retryRequest: Fetch; sleep: (ms: number) => Promise<void>; attemptMs: number; calls: CallLog; log: (line: string) => void }>;
 
 /** An error that carries the HTTP `status` the server answered with, as data, so the board tries a 5xx again without reading the message (tracker contract 1.7). */
 const answered = (message: string, status: number): Error => Object.assign(new Error(message), { status });
@@ -242,14 +242,15 @@ async function attempt(client: Client, url: string, init: RequestInit): Promise<
  * Send one call to Linear, on a connection that is made for it. A call that fails to reach Linear, runs past {@link ATTEMPT_MS}, or is answered with a 429 or a 5xx is tried again on a new connection, after a wait that
  * grows ({@link RETRY_WAITS_MS}), up to three times; the last answer, or the last failure, is the caller's. A refusal (a 4xx, an error in a 200) is never tried again. A mutation is tried again too: the board's
  * mutations are each made safe to repeat by the caller that makes them (a state set twice is the same state; a comment that was applied before its answer was lost may be posted twice, which is the lesser harm
- * against a result or an After-merge comment that is never posted). Every attempt is counted in the call log, and a failed one is logged with the rate (A11-359).
+ * against a result or an After-merge comment that is never posted). Every attempt is counted in the call log, and a failed one is logged with the rate (A11-359). The first attempt goes through `fetch` and each retry through `retryFetch`, so the board counts the call once, as failed if its
+ * first attempt failed, however many times it is tried (A11-345): a host that loses its network for half a minute fails one call four times, and that is one failed call.
  */
 async function send(client: Client, url: string, init: RequestInit): Promise<Response> {
   for (let tried = 0; ; tried += 1) {
     const last = tried >= RETRY_WAITS_MS.length;
     let failure: unknown;
     try {
-      const response = await attempt(client, url, init);
+      const response = await attempt(tried === 0 ? client : { ...client, request: client.retryRequest }, url, init);
       if (!retryableStatus(response.status) || last) {
         client.calls.record(retryableStatus(response.status));
         return response;
@@ -697,12 +698,13 @@ async function searchOf(client: Client, text: string): Promise<Ticket[]> {
 }
 
 /**
- * The Linear source. `fetch` is the transport every call goes through: the board gives one that opens a connection for each call (`src/fresh-fetch.ts`). `stateDir` is where the rate of failed calls is written for doctor,
+ * The Linear source. `fetch` is the transport every call goes through: the board gives one that opens a connection for each call (`src/fresh-fetch.ts`). `retryFetch` sends the attempts after a failed one, and is `fetch`
+ * where none is given. `stateDir` is where the rate of failed calls is written for doctor,
  * and `log` is where a failed call is said (A11-359). `sleep`, `attemptMs` and `now` are seams for a test.
  */
-export function linearSource({ key, fetch: request = fetch, pick = "assigned", stateDir = "", log = () => undefined, sleep = (ms) => new Promise((done) => { setTimeout(done, ms); }), attemptMs = ATTEMPT_MS, now = Date.now }:
-  { key: string; fetch?: Fetch; pick?: PickScope; stateDir?: string; log?: (line: string) => void; sleep?: (ms: number) => Promise<void>; attemptMs?: number; now?: () => number }): TicketSource {
-  const client: Client = { key, request, sleep, attemptMs, log, calls: callLog({ stateDir, now }) };
+export function linearSource({ key, fetch: request = fetch, retryFetch: retryRequest = request, pick = "assigned", stateDir = "", log = () => undefined, sleep = (ms) => new Promise((done) => { setTimeout(done, ms); }), attemptMs = ATTEMPT_MS, now = Date.now }:
+  { key: string; fetch?: Fetch; retryFetch?: Fetch; pick?: PickScope; stateDir?: string; log?: (line: string) => void; sleep?: (ms: number) => Promise<void>; attemptMs?: number; now?: () => number }): TicketSource {
+  const client: Client = { key, request, retryRequest, sleep, attemptMs, log, calls: callLog({ stateDir, now }) };
   return {
     keywords: KEYWORDS,
 

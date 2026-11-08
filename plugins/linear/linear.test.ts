@@ -5,6 +5,9 @@ import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpDir } from "../../src/lib/tmp-fixture.ts";
 import type { Ticket } from "../../src/plugins/contracts/tracker.ts";
+import { depsFor } from "../../src/plugins/loader.ts";
+import { fakePluginDeps } from "../../src/plugins/fakes/deps.ts";
+import { createCallLedger } from "../../src/ticket-mode/call-outcomes.ts";
 import { LINEAR_API, RETRY_WAITS_MS, completionOf, downloadName, linearSource, pickQuery, scopedQuery, pullState, uploadLinks } from "./linear.ts";
 
 const node = (identifier: string, extra: Record<string, unknown> = {}) => ({
@@ -897,6 +900,46 @@ test("A11-359: every attempt is counted, a failed one is logged with the rate, a
   const written = JSON.parse(readFileSync(join(dir, "linear-calls.json"), "utf8")) as { calls: number; failures: number };
   assert.deepEqual([written.calls, written.failures], [2, 2], "a failure is written at once, so the file holds the two that failed and not the call that then succeeded");
 });
+
+test("A11-345: the first attempt goes through `fetch` and each retry through `retryFetch`", async () => {
+  const first = dropping(1, staleSocket(), FOUND);
+  const retried = dropping(0, null, FOUND);
+  await linearSource({ key: "k", fetch: first.fetch, retryFetch: retried.fetch, sleep: sleeping().sleep }).read("NBF-1");
+  assert.deepEqual([first.calls.length, retried.calls.length], [1, 1]);
+  const alone = dropping(1, staleSocket(), FOUND);
+  await linearSource({ key: "k", fetch: alone.fetch, sleep: sleeping().sleep }).read("NBF-1");
+  assert.equal(alone.calls.length, 2, "with no retryFetch the retry goes through fetch, as before");
+});
+
+test("A11-345: a call whose four attempts all fail while the host has no network is one failed call in the board's tracker figure, not four", async () => {
+  const ledger = createCallLedger(() => 1_000);
+  const down = (async () => { throw new TypeError("fetch failed", { cause: Object.assign(new Error("connect ETIMEDOUT"), { code: "ETIMEDOUT" }) }); }) as typeof globalThis.fetch;
+  const up = (async () => new Response(JSON.stringify(FOUND), { status: 200 })) as typeof globalThis.fetch;
+  for (let call = 0; call < 170; call += 1) await countedSource(up, ledger).read("NBF-1");
+  await assert.rejects(countedSource(down, ledger).read("NBF-1"), /fetch failed/);
+  assert.deepEqual(ledger.figures().linear, { calls: 171, failures: 1, failuresPer100: 0.6 }, "170 answered and one failed: under the 1% the reliability watch holds");
+});
+
+test("A11-345: a call that fails once and is answered on its retry is one failed call: the failure a retry covers still shows", async () => {
+  const ledger = createCallLedger(() => 1_000);
+  const flaky = dropping(1, staleSocket(), FOUND).fetch;
+  await countedSource(flaky, ledger).read("NBF-1");
+  assert.deepEqual(ledger.figures().linear, { calls: 1, failures: 1, failuresPer100: 100 });
+});
+
+test("A11-345: a call answered with a 503 and then a 200 is one failed call too", async () => {
+  const ledger = createCallLedger(() => 1_000);
+  let answered = 0;
+  const unwell = (async () => new Response(JSON.stringify(FOUND), { status: (answered += 1) === 1 ? 503 : 200 })) as typeof globalThis.fetch;
+  await countedSource(unwell, ledger).read("NBF-1");
+  assert.deepEqual(ledger.figures().linear, { calls: 1, failures: 1, failuresPer100: 100 });
+});
+
+/** The Linear source the board builds for `request`: the deps the loader gives a tracker, which count `fetch` into `ledger` and leave `retryFetch` uncounted. */
+function countedSource(request: typeof globalThis.fetch, ledger: ReturnType<typeof createCallLedger>) {
+  const deps = depsFor("tracker", fakePluginDeps({ fetch: request, freshFetch: request }), ledger);
+  return linearSource({ key: "k", fetch: deps.freshFetch, retryFetch: deps.retryFetch, sleep: sleeping().sleep });
+}
 
 test("A11-359: a plan's download is tried again as a query is, so a plan read in fill does not fail on one dead connection", async () => {
   const dir = tmpDir("linear-download-");
