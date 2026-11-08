@@ -285,6 +285,11 @@ export type PluginDeps = Readonly<{
   fetch: typeof fetch;
   /** A `fetch` that opens a connection for each call and closes it after, so no call reuses a socket the far end closed while it sat idle (A11-359). The board's deps give one; a plugin that makes calls the board's loop waits on uses it in place of `fetch` where it is there. */
   freshFetch?: typeof fetch;
+  /**
+   * The `fetch` for an attempt that retries a call whose first attempt failed (A11-345). The board's tracker figure counts calls, so it counts what goes through `fetch` and `freshFetch` and leaves this one out: a call tried
+   * four times while the host's network is down is one failed call, not four. It is `freshFetch` (or `fetch`) without the count, though the board still notes whether the attempt got through. A tracker that retries sends its retries through it where it is there.
+   */
+  retryFetch?: typeof fetch;
   /** True in the board's own process only (A11-359): a tracker plugin keeps the rate of its failed calls in the state folder for doctor, which a short-lived process (`pr:open` in a worker's pane) must not overwrite with its own few calls. */
   recordCalls?: boolean;
   /**
