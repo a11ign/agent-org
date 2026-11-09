@@ -56,6 +56,11 @@ function accountConfig(prefix: string) {
   return { root, cfg };
 }
 
+/** The environment every run of the wrapper here has: the account's own config, no read cache, and its ledger and pacing directory under `root`. */
+function wrapperEnv(root: string, cfg: string, stub: string): Record<string, string> {
+  return { PATH: process.env.PATH ?? "", A11Y_GH_REAL: stub, GH_CONFIG_DIR: cfg, HERDR_WORKSPACE_ID: "w9", A11Y_GH_READ_CACHE: "off", A11Y_GH_LEDGER: join(cfg, "gh-calls.tsv"), A11Y_GH_PACE_DIR: join(root, "pace") };
+}
+
 /**
  * A host whose stub `gh-real` answers the wrapper's probe (`-i`) with `headers` and refuses every other call with `reply`. Its env is the
  * account's own: a config that names no role, so the pacing directory is `account`.
@@ -65,7 +70,7 @@ function refusingHost({ reply, headers }: { reply: string; headers: string; }) {
   writeFileSync(join(root, "headers"), headers);
   const stub = join(root, "gh-real");
   writeFileSync(stub, ["#!/bin/sh", `if [ "$2" = -i ]; then cat "${root}/headers"; exit 0; fi`, `printf '%s\\n' '${reply}' >&2`, "exit 1", ""].join("\n"), { mode: 0o755 });
-  const env = { PATH: process.env.PATH ?? "", A11Y_GH_REAL: stub, GH_CONFIG_DIR: cfg, HERDR_WORKSPACE_ID: "w9", A11Y_GH_READ_CACHE: "off", A11Y_GH_LEDGER: join(cfg, "gh-calls.tsv"), A11Y_GH_PACE_DIR: join(root, "pace") };
+  const env = wrapperEnv(root, cfg, stub);
   const run = () => spawnSync("sh", [WRAPPER, "issue", "comment", "1", "--body", "x"], { encoding: "utf8", env, input: "", cwd: root });
   return { run, queue: join(cfg, QUEUE_DIR) };
 }
@@ -112,7 +117,7 @@ async function pacedRun(env: Record<string, string>) {
   const stub = join(root, "gh-real");
   // S when a call starts, E when it ends: the file's order is the order the calls ran in
   writeFileSync(stub, ["#!/bin/sh", `printf 'S\\n' >> "${log}"`, "sleep 0.2", `printf 'E\\n' >> "${log}"`, ""].join("\n"), { mode: 0o755 });
-  const base = { PATH: process.env.PATH ?? "", A11Y_GH_REAL: stub, GH_CONFIG_DIR: cfg, HERDR_WORKSPACE_ID: "w9", A11Y_GH_READ_CACHE: "off", A11Y_GH_LEDGER: join(cfg, "gh-calls.tsv"), A11Y_GH_PACE_DIR: join(root, "pace"), ...env };
+  const base = { ...wrapperEnv(root, cfg, stub), ...env };
   const one = () => new Promise<number | null>((resolve) => {
     const child = spawn("sh", [WRAPPER, "issue", "view", "1"], { env: base, cwd: root, stdio: ["ignore", "ignore", "ignore"] });
     child.on("close", (code) => resolve(code));
@@ -208,7 +213,7 @@ function recordedStart(dateBin: string): string {
   const { root, cfg } = accountConfig("gh-pace-clock-");
   const stub = join(root, "gh-real");
   writeFileSync(stub, "#!/bin/sh\nexit 0\n", { mode: 0o755 });
-  const env = { PATH: `${dateBin}:${process.env.PATH ?? ""}`, A11Y_GH_REAL: stub, GH_CONFIG_DIR: cfg, HERDR_WORKSPACE_ID: "w9", A11Y_GH_READ_CACHE: "off", A11Y_GH_LEDGER: join(cfg, "gh-calls.tsv"), A11Y_GH_PACE_DIR: join(root, "pace") };
+  const env = { ...wrapperEnv(root, cfg, stub), PATH: `${dateBin}:${process.env.PATH ?? ""}` };
   const run = spawnSync("sh", [WRAPPER, "issue", "view", "1"], { encoding: "utf8", env, cwd: root, input: "" });
   assert.equal(run.status, 0, `the call ran, read ${run.status}: ${run.stderr}`);
   return readFileSync(join(root, "pace", "account", "starts"), "utf8").trim();
