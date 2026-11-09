@@ -1016,7 +1016,7 @@ pace_start() {
   flock 8
   while :; do
     p_now=$(pace_ms)
-    p_win=$(awk -v lo="$((p_now - pace_window))" '$1 > lo' "$pace_dir/starts" 2>/dev/null | awk 'NF')
+    p_win=$(awk -v lo="$((p_now - pace_window))" -v hi="$p_now" '$1 > lo && $1 <= hi' "$pace_dir/starts" 2>/dev/null | awk 'NF')
     p_n=$(printf '%s\n' "$p_win" | awk 'NF' | wc -l)
     [ "$p_n" -lt "$pace_max" ] && break
     # the call may start once the (n - max + 1)th start in the window leaves it
