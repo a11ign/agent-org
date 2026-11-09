@@ -8,8 +8,8 @@
  *   (b) 40 calls from three producers at once never have more than `A11Y_GH_PACE_INFLIGHT` (2) in flight, nor more than `A11Y_GH_PACE_PER_MINUTE`
  *       (4) starts in one window (1 s here, `A11Y_GH_PACE_WINDOW_MS`, 60 s by default). The control is the same calls with the bound lifted, and it overlaps.
  *       The starts are read from the wrapper's own record of its admissions, not from the stub's clock: a stub starts a little after its admission,
- *       by a lag that a loaded host makes longer than the window. The record is in epoch milliseconds on every `date` the wrapper may meet (A11-424: a
- *       uutils `date`, Ubuntu 26.04's, prints `%3N` as bare nanoseconds without their leading zeros, so the bound was read in mixed units);
+ *       by a lag that a loaded host makes longer than the window. The record is in monotonic milliseconds where `/proc/uptime` is available, with an epoch
+ *       milliseconds fallback whose `%N` handling works with uutils `date` (A11-424);
  *   (c) a read refused for a secondary limit is not asked again that tick, and the next tick asks: that is the code host's `readUnlessRefused` (#1523), so its case is the plugin's (`plugins/github/rows/rows-by-label-refusal.test.ts`);
  *   (d) a queued call the gate RETRIES and sees refused again is filed as the refused pool reads now (`retryDue`, through `attemptCall`): secondary
  *       with calls left, primary at zero, and the pool is read once for an hourly phrase only;
@@ -106,6 +106,19 @@ const PER_WINDOW = 4;
 const IN_FLIGHT = 2;
 /** How far a recorded admission may sit from this test's own clock and still be the same clock, in milliseconds. */
 const CLOCK_SLACK_MS = 10 * 60 * 1000;
+const HAS_PROC_UPTIME = (() => {
+  try {
+    readFileSync("/proc/uptime", "utf8");
+    return true;
+  } catch {
+    return false;
+  }
+})();
+
+function currentPaceClockMs(): number {
+  if (!HAS_PROC_UPTIME) return Date.now();
+  return Math.round(Number(readFileSync("/proc/uptime", "utf8").split(/\s+/)[0]) * 1000);
+}
 
 /**
  * One pacing run: three chains of calls, each chain one producer's calls in turn, all started at once. Returns the stub's log in order (S when a
@@ -181,15 +194,14 @@ test("(b) 40 calls from three producers at once never exceed the in-flight bound
   assert.ok(peak <= IN_FLIGHT, `in flight never exceeded ${IN_FLIGHT}, read a peak of ${peak}`);
   assert.equal(peak, IN_FLIGHT, "the bound is reached, so the calls were paced and not merely sequential");
   assert.equal(admitted.length, CALLS, `the wrapper recorded every admission, read ${admitted.length}`);
-  // The bound below is only a bound if the record is in milliseconds. A record in another unit passes it for nothing (nanoseconds, a window of
-  // 1000 of them) or fails it at random (a `date` that drops leading zeros, A11-424), so the record is checked to be this clock's milliseconds first.
-  const stray = admitted.filter((ms) => Math.abs(Date.now() - ms) > CLOCK_SLACK_MS);
-  assert.deepEqual(stray, [], "every admission the wrapper recorded is an epoch time in milliseconds, within minutes of now");
+  // The bound below is only a bound if the record is in milliseconds, so first check that every admission uses this host's active clock.
+  const stray = admitted.filter((ms) => Math.abs(currentPaceClockMs() - ms) > CLOCK_SLACK_MS);
+  assert.deepEqual(stray, [], "every admission the wrapper recorded is in this host's clock, in milliseconds");
   const most = mostStartsInWindow(admitted);
   assert.ok(most <= PER_WINDOW, `admissions in one ${WINDOW_MS} ms window never exceeded ${PER_WINDOW}, read ${most}`);
 });
 
-// ---- (b) the wrapper's clock is milliseconds on every `date` it may meet (A11-424) ------------------------------------------
+// ---- (b) the wrapper's clock fallback is milliseconds on every `date` it may meet (A11-424) --------------------------------
 
 /**
  * A `date` that answers a fixed moment, 2026-11-09T10:00:00.005Z (the 5 ms is the point: a leading zero), the way each kind of `date` prints it. `uutils` is
@@ -232,16 +244,17 @@ for (const [name, kind, recorded] of [
   ["(b) POSITIVE CONTROL: a GNU `date` records the same start", "gnu", "1794218400005"],
   ["(b) a `date` with no `%N` records the whole second, in milliseconds", "bsd", "1794218400000"],
 ] as const) {
-  test(name, () => {
+  test(name, { skip: HAS_PROC_UPTIME }, () => {
     assert.equal(startsAfterOneCall(fixedDate(kind)), recorded);
   });
 }
 
-test("(b) a `starts` file written in nanoseconds before A11-424 neither counts against the bound nor holds the call", () => {
+test("(b) starts from another clock or written in nanoseconds neither count against the bound nor hold the call", () => {
   // two old records, as the host's files hold them: 19 digits, and 18 where the nanoseconds' leading zero was dropped. With one start allowed in the window, a record that
   // counted would make the call wait for it to leave the window, and a 19-digit one never does.
   const after = startsAfterOneCall(realDateBin(), "1794206379498096823\n179420637949809682\n", { A11Y_GH_PACE_PER_MINUTE: "1", A11Y_GH_PACE_WINDOW_MS: String(WINDOW_MS) });
-  assert.match(after, /^\d{13}$/, `only this call's start, in milliseconds, is left in the file, read ${JSON.stringify(after)}`);
+  assert.match(after, /^\d+$/, `only this call's start is left in the file, read ${JSON.stringify(after)}`);
+  assert.ok(Math.abs(currentPaceClockMs() - Number(after)) <= CLOCK_SLACK_MS, `the remaining start uses this host's clock, read ${after}`);
 });
 
 test("(b) POSITIVE CONTROL: the same calls with the bound lifted overlap beyond the in-flight bound", async () => {

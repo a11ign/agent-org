@@ -975,16 +975,18 @@ pool_probe() { # stderr-file
 # (the gate, the tick, the workers, the managers), takes one of `A11Y_GH_PACE_INFLIGHT` in-flight slots and one start in a rolling minute under
 # `A11Y_GH_PACE_PER_MINUTE`, both kept in `A11Y_GH_PACE_DIR/<role>` (`account` for a config that names no role). The locks are `flock`, so a killed
 # process frees its slot. A pacing step that cannot run lets the call through unpaced, as it always did, rather than failing it.
-# (A11-424) The clock is read as `%s%N` and cut to milliseconds here, never as `%s%3N`: uutils `date` (Ubuntu 26.04's, this host's) ignores the `3`, and
-# prints the nanoseconds WITHOUT their leading zeros, so a start in the first 100 ms of a second came out 10 to 1000 times too small, and ten of them from ten
-# different seconds sat in one window. `%N` is nine digits, zero-padded, on both GNU and uutils `date`; any other shape is not trusted.
-pace_ms() { # epoch milliseconds (whole seconds where `date` has no `%N`)
-  p_ns=$(date +%s%N 2>/dev/null)
-  case "$p_ns" in
-    ''|*[!0-9]*) ;;
-    *) if [ "${#p_ns}" -eq 19 ]; then printf %s "${p_ns%??????}"; return 0; fi ;;
+pace_ms() { # monotonic milliseconds where `/proc/uptime` is available
+  p_ms=$(awk '{ printf "%.0f", $1 * 1000 }' /proc/uptime 2>/dev/null)
+  case "$p_ms" in
+    ''|*[!0-9]*)
+      p_ns=$(date +%s%N 2>/dev/null)
+      case "$p_ns" in
+        ''|*[!0-9]*) p_ms=$(date +%s)000 ;;
+        *) if [ "${#p_ns}" -eq 19 ]; then p_ms=${p_ns%??????}; else p_ms=$(date +%s)000; fi ;;
+      esac
+      ;;
   esac
-  printf %s "$(date +%s)000"
+  printf %s "$p_ms"
 }
 
 # Sets `pace_dir` for this call's installation, or leaves it empty (no pacing) when the directory cannot be made.
@@ -1017,14 +1019,12 @@ pace_start() {
   pace_window=${A11Y_GH_PACE_WINDOW_MS:-60000}
   case "$pace_window" in ""|*[!0-9]*|0) pace_window=60000 ;; esac
   case "$pace_max" in ''|*[!0-9]*|0) pace_max=120 ;; esac
+  [ -r /proc/uptime ] && pace_window=$((pace_window + 10))
   if (exec 8>>"$pace_dir/starts.lock") 2>/dev/null; then exec 8>>"$pace_dir/starts.lock"; else return 0; fi
   flock 8
   while :; do
     p_now=$(pace_ms)
-    # A start is in the window when it is after `lo`, and a start more than a window AHEAD of now is not a start of this clock at all: a `starts` file written
-    # before A11-424 holds nanosecond counts (16 to 19 digits) that no millisecond `lo` ever passes, and each would stay in the file for good, count against
-    # the bound, and make `p_wait` years long while the lock is held.
-    p_win=$(awk -v lo="$((p_now - pace_window))" -v hi="$((p_now + pace_window))" '$1 > lo && $1 <= hi' "$pace_dir/starts" 2>/dev/null | awk 'NF')
+    p_win=$(awk -v lo="$((p_now - pace_window))" -v hi="$p_now" '$1 > lo && $1 <= hi' "$pace_dir/starts" 2>/dev/null | awk 'NF')
     p_n=$(printf '%s\n' "$p_win" | awk 'NF' | wc -l)
     [ "$p_n" -lt "$pace_max" ] && break
     # the call may start once the (n - max + 1)th start in the window leaves it
