@@ -248,3 +248,58 @@
     min-height: var(--hit-target);
   }
 }
+
+/* Tablet, 1024px and below (A11-427): a centred modal 32px from the screen's edges, whose body scrolls between its head and its footer. */
+@media (max-width: 1024px) {
+  .nt-overlay {
+    align-items: center;
+    padding: var(--space-32);
+    overflow: hidden;
+  }
+  .nt-dialog {
+    width: 100%;
+    max-width: none;
+    max-height: 100%;
+  }
+  .nt-body {
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow-y: auto;
+  }
+  .ghost.nt-close {
+    align-items: center;
+    justify-content: center;
+    min-width: var(--hit-target);
+    min-height: var(--hit-target);
+    margin: calc(-1 * var(--space-10));
+  }
+}
+
+/* Phone, 640px and below: a full-screen sheet; the body scrolls, the footer stays at the bottom over the safe area, Cancel and Write ticket share its width, and the cards stack. */
+@media (max-width: 640px) {
+  .nt-overlay {
+    padding: 0;
+  }
+  .nt-dialog {
+    height: 100%;
+    border: 0;
+    border-radius: 0;
+  }
+  .nt-modes {
+    grid-template-columns: 1fr;
+  }
+  .nt-foot {
+    padding-bottom: calc(var(--space-12) + var(--safe-bottom));
+  }
+  .nt-pills {
+    flex-basis: 100%;
+  }
+  /* A basis of half the row each, less half the gap between them, so their own padding and border do not make one wider. */
+  .ghost.nt-cancel,
+  .primary.nt-write {
+    flex: 1 1 calc(50% - var(--space-6));
+    justify-content: center;
+    min-height: var(--hit-target);
+    margin-left: 0;
+  }
+}
