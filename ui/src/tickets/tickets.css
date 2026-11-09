@@ -210,6 +210,40 @@
   color: var(--color-danger-body);
 }
 
+/* The indigo banner over a ticket opened from the "Search tickets" palette (A11-387). */
+.from-search-banner {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-6) var(--space-14);
+  padding: var(--space-10) var(--space-14);
+  border: 1px solid var(--color-published-border);
+  border-radius: var(--radius-8);
+  background: var(--color-published-bg);
+  color: var(--color-from-search-text);
+}
+.from-search-text {
+  flex: 1 1 var(--measure-banner-basis);
+}
+.from-search-text strong {
+  color: var(--color-from-search-strong);
+  font-weight: var(--font-weight-semibold);
+}
+.from-search-back {
+  padding: var(--space-3) var(--space-12);
+  border: 1px solid var(--color-from-search-border-strong);
+  border-radius: var(--radius-6);
+  background: transparent;
+  color: var(--color-from-search-strong);
+  font-size: var(--font-size-small);
+}
+@media (pointer: coarse) {
+  .from-search-back {
+    min-width: var(--hit-target);
+    min-height: var(--hit-target);
+  }
+}
+
 /* The board's banner once the instance answers again. */
 .reconnected-banner {
   padding: var(--space-8) var(--space-14);

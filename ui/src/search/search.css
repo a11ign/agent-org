@@ -1,0 +1,366 @@
+/* The "Search tickets" palette (A11-387), as the six Global search boards draw it: the sidebar's button, and the dialog over the page. Every value is a token. */
+
+/* The sidebar's button, at the end of its top group. */
+.search-button {
+  display: flex;
+  align-items: center;
+  gap: var(--space-8);
+  width: 100%;
+  padding: var(--space-5) var(--space-8);
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius-6);
+  background: var(--color-surface);
+  color: var(--color-text-muted);
+  font-size: var(--font-size-body);
+  text-align: left;
+}
+.search-button-label {
+  flex: 1 1 auto;
+}
+.search-button-key,
+.search-foot kbd {
+  padding: 0 var(--space-5);
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius-4);
+  color: var(--color-text-muted);
+  font: var(--font-size-label) / var(--line-height-label) var(--font-mono);
+}
+.search-glyph {
+  flex: 0 0 auto;
+}
+
+/* The dialog, over the dimmed page. */
+.search-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: var(--z-search);
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding: var(--dialog-top) var(--dialog-side) var(--dialog-side);
+  background: var(--color-search-overlay);
+}
+.search-palette {
+  display: flex;
+  flex-direction: column;
+  width: var(--search-width);
+  max-width: 100%;
+  max-height: var(--search-max-height);
+  overflow: hidden;
+  border: 1px solid var(--color-border-hover);
+  border-radius: var(--radius-12);
+  background: var(--color-raised);
+  box-shadow: var(--shadow-search);
+  color: var(--color-text);
+}
+.search-palette:focus {
+  outline: none;
+}
+.search-box {
+  display: flex;
+  align-items: center;
+  gap: var(--space-10);
+  padding: var(--space-12) var(--space-16);
+  border-bottom: 1px solid var(--color-border);
+  color: var(--color-text-muted);
+}
+.search-box:focus-within {
+  box-shadow: inset 0 calc(-1 * var(--focus-ring-width)) 0 var(--focus-ring-color);
+}
+.search-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--color-text);
+  font-size: var(--font-size-title);
+  line-height: var(--space-24);
+}
+/* The box's underline is the input's focus ring. */
+.search-input:focus-visible {
+  outline: none;
+}
+.search-close {
+  flex: 0 0 auto;
+  padding: var(--space-2) var(--space-8);
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius-6);
+  background: transparent;
+  color: var(--color-text-muted);
+  font: var(--font-size-label) / var(--line-height-label) var(--font-mono);
+}
+.search-close-word {
+  display: none;
+}
+.search-scope {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-4) var(--space-12);
+  padding: var(--space-8) var(--space-16);
+  border-bottom: 1px solid var(--color-border);
+  color: var(--color-text-muted);
+  font-size: var(--font-size-small);
+}
+.search-spacer {
+  flex: 1 1 0;
+}
+.search-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+}
+.search-heading {
+  padding: var(--space-10) var(--space-16) var(--space-4);
+  color: var(--color-text-muted);
+  font-size: var(--font-size-label);
+  font-weight: var(--font-weight-medium);
+  letter-spacing: var(--tracking-label);
+  text-transform: uppercase;
+}
+.search-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+/* A match. */
+.search-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-6) var(--space-12);
+  padding: var(--space-10) var(--space-16);
+  border-bottom: 1px solid var(--color-card-divider);
+}
+.search-row:hover {
+  background: var(--color-hover);
+}
+.search-row[aria-selected="true"] {
+  background: var(--color-staged);
+}
+.search-dot {
+  flex: 0 0 auto;
+  width: var(--dot-size-run);
+  height: var(--dot-size-run);
+  border-radius: 50%;
+  background: currentColor;
+}
+.search-row-main {
+  display: flex;
+  flex: 1 1 var(--search-row-basis);
+  flex-direction: column;
+  gap: var(--space-2);
+  min-width: 0;
+}
+.search-row-line {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-10);
+  min-width: 0;
+}
+.search-key {
+  flex: 0 0 auto;
+  color: var(--color-accent-lighter);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-small);
+}
+.search-title {
+  flex: 1 1 0;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.search-meta {
+  color: var(--color-text-muted);
+  font-size: var(--font-size-small);
+  overflow-wrap: anywhere;
+}
+.search-hit {
+  border-radius: var(--radius-3);
+  background: var(--color-search-hit);
+  color: var(--color-on-accent);
+}
+.search-status {
+  font-size: var(--font-size-small);
+  font-weight: var(--font-weight-medium);
+  white-space: nowrap;
+}
+/* The actions show on the active row and the row under the pointer; on a screen with no hover, on every row. */
+.search-actions {
+  display: none;
+  align-items: center;
+  gap: var(--space-6);
+}
+.search-row[aria-selected="true"] .search-actions,
+.search-row:hover .search-actions {
+  display: flex;
+}
+@media (hover: none) {
+  .search-actions {
+    display: flex;
+  }
+}
+.search-action {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--space-3) var(--space-12);
+  border: 1px solid var(--color-border-hover);
+  border-radius: var(--radius-6);
+  background: transparent;
+  color: var(--color-text);
+  font-size: var(--font-size-small);
+  font-weight: var(--font-weight-medium);
+  white-space: nowrap;
+}
+
+/* The status colours, as the Runs page draws them. */
+.search-palette .tone-warn {
+  color: var(--color-warn-text);
+}
+.search-palette .tone-planning {
+  color: var(--color-planning);
+}
+.search-palette .tone-success {
+  color: var(--color-success-dot);
+}
+.search-palette .tone-danger {
+  color: var(--color-danger-dot);
+}
+.search-palette .tone-published {
+  color: var(--color-published);
+}
+.search-palette .tone-quiet {
+  color: var(--color-text-nav);
+}
+.search-palette .tone-muted {
+  color: var(--color-text-muted);
+}
+
+/* While it asks: skeleton rows (`.sk` shimmers, and stops for reduced motion). */
+.search-skeleton-row {
+  gap: var(--space-12);
+  padding: var(--space-14) var(--space-16);
+}
+.search-skeleton-lines {
+  display: flex;
+  flex: 1 1 0;
+  flex-direction: column;
+  gap: var(--space-8);
+}
+.sk-search-dot {
+  width: var(--space-8);
+  height: var(--space-8);
+  border-radius: 50%;
+}
+.sk-search-title {
+  height: var(--skeleton-text-height);
+}
+.sk-search-70 {
+  width: 70%;
+}
+.sk-search-55 {
+  width: 55%;
+}
+.sk-search-82 {
+  width: 82%;
+}
+.sk-search-60 {
+  width: 60%;
+}
+.sk-search-meta {
+  width: var(--skeleton-search-meta-width);
+  height: var(--skeleton-heading-height);
+}
+.sk-search-status {
+  width: var(--skeleton-search-status-width);
+  height: var(--skeleton-text-height);
+}
+
+/* The tracker refused: its sentence and Retry. */
+.search-refusal {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-6) var(--space-14);
+  margin: var(--space-16);
+  padding: var(--space-10) var(--space-14);
+  border: 1px solid var(--color-danger-border);
+  border-radius: var(--radius-8);
+  background: var(--color-danger-bg);
+  color: var(--color-danger-body);
+}
+.search-refusal-text {
+  flex: 1 1 var(--search-refusal-basis);
+}
+.search-refusal strong {
+  color: var(--color-danger-heading);
+  font-weight: var(--font-weight-semibold);
+}
+.search-retry {
+  padding: var(--space-4) var(--space-12);
+  border: 1px solid var(--color-danger-border-strong);
+  border-radius: var(--radius-6);
+  background: transparent;
+  color: var(--color-danger-heading);
+  font-size: var(--font-size-small);
+}
+
+/* Recently opened, when what this browser kept of it cannot be read. */
+.search-recent-unreadable {
+  padding: var(--space-10) var(--space-16) 0;
+  color: var(--color-warn-text);
+  font-size: var(--font-size-small);
+}
+
+/* No match, and nothing opened yet. */
+.search-note {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-6);
+  padding: var(--space-40) var(--space-24);
+  text-align: center;
+}
+.search-note-title {
+  font-weight: var(--font-weight-semibold);
+}
+.search-note-text {
+  max-width: var(--search-note-measure);
+  color: var(--color-text-muted);
+  text-wrap: pretty;
+}
+
+.search-foot {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-6) var(--space-16);
+  padding: var(--space-8) var(--space-16);
+  border-top: 1px solid var(--color-border);
+  color: var(--color-text-muted);
+  font-size: var(--font-size-small);
+}
+.search-foot kbd {
+  padding: 0 var(--space-4);
+  font: inherit;
+}
+
+/* A touch screen: every control is a 44px target, Esc reads Close, and the footer of keys is left out. */
+@media (pointer: coarse) {
+  .search-button,
+  .search-close,
+  .search-action,
+  .search-retry {
+    min-width: var(--hit-target);
+    min-height: var(--hit-target);
+  }
+  .search-close-key,
+  .search-foot {
+    display: none;
+  }
+  .search-close-word {
+    display: inline;
+    font: var(--font-size-body) var(--font-sans);
+  }
+}

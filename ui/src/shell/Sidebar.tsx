@@ -1,6 +1,7 @@
 import type { ReactNode } from "react";
 import { connectionLabel } from "../../../src/ticket-mode/board-view.ts";
 import { NotificationCentre } from "../notifications/NotificationCentre.tsx";
+import { TicketSearch } from "../search/TicketSearch.tsx";
 import { Mark, RunsIcon, SettingsIcon, TicketsIcon } from "./icons.tsx";
 import { isSettingsPage, runsHref, settingsHref, ticketsHref, type Page } from "./routes.ts";
 import { loopLine } from "./loop-line.ts";
@@ -86,7 +87,7 @@ function MainNav({ page }: Readonly<{ page: Page }>) {
 }
 
 /**
- * The sidebar of every main page: the mark, the instance switcher and the connection pill, Tickets and Runs, the page's own middle section (`children`), and Settings at the
+ * The sidebar of every main page: the mark, the instance switcher and the connection pill, the Search tickets button where the tracker can search (A11-387), Tickets and Runs, the page's own middle section (`children`), and Settings at the
  * bottom. This is the boards' DOM order, which is the keyboard's focus order.
  */
 export function Sidebar({ page, children }: Readonly<{ page: Page; children?: ReactNode }>) {
@@ -103,6 +104,7 @@ export function Sidebar({ page, children }: Readonly<{ page: Page; children?: Re
         <InstanceSwitcher />
         <ConnectionPill />
         {connectionsReady ? <LoopLine /> : null}
+        <TicketSearch page={page} />
       </div>
       <MainNav page={page} />
       {children}

@@ -11,7 +11,8 @@ if (typeof document !== "undefined") {
   });
 }
 
-const FOCUSABLE = "button:not(:disabled), input:not(:disabled), a[href], select:not(:disabled), textarea:not(:disabled), [tabindex]:not([tabindex='-1'])";
+/** What Tab can reach: a control taken out of the Tab order (`tabindex="-1"`) is never the first or last stop the trap wraps between. */
+const FOCUSABLE = ["button:not(:disabled)", "input:not(:disabled)", "a[href]", "select:not(:disabled)", "textarea:not(:disabled)", "[tabindex]"].map((selector) => `${selector}:not([tabindex='-1'])`).join(", ");
 
 /** Takes the focus into the dialog while it is open, keeps Tab inside it, closes on Escape, and gives the focus back to the control that opened it. */
 export function useModalFocus<Dialog extends HTMLElement = HTMLDivElement>(close: () => void) {
