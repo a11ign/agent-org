@@ -49,7 +49,8 @@ async function openOn(update: object, width: number, path = "/tickets"): Promise
   const page = await context.newPage();
   await page.clock.install({ time: new Date(2026, 9, 24, 14, 0) });
   await page.goto(`${site.origin}${path}`);
-  await page.locator(".nav-count").filter({ hasText: "37" }).waitFor();
+  // The sidebar's count is in the page at every width; the top bar leaves it out at 1024px and below (A11-427).
+  await page.locator(".nav-count").filter({ hasText: "37" }).waitFor({ state: "attached" });
   return { page, context, link };
 }
 

@@ -31,7 +31,8 @@ export type RailProps = Readonly<{ filter: RunStatus | null; onChoose: (status: 
 
 /**
  * The sidebar's Run status rail: "All runs", then every status under its head with how many runs have it, whether workers are paused or not. It is the board's skeleton while the queue is read, and is not
- * drawn while the queue holds no run or has never answered. The choice is the page's: the list shows the runs of the status chosen.
+ * drawn while the queue holds no run or has never answered. The choice is the page's: the list shows the runs of the status chosen. At 1024px and below it is the sticky strip of pills under the top bar
+ * (A11-427), where a status no run has is left out; the canvas draws no rail there, and losing the filter on a small screen was judged worse than that deviation.
  */
 export function StatusRail({ filter, onChoose }: RailProps) {
   const { queue } = useShell();
@@ -39,7 +40,7 @@ export function StatusRail({ filter, onChoose }: RailProps) {
   if (queue.data.entries.length === 0) return null;
   const rail = railOf(queue.data);
   return (
-    <nav aria-label="Run status" className="sidebar-section">
+    <nav aria-label="Run status" className="sidebar-section strip">
       <RailButton label="All runs" count={rail.all} pressed={filter === null} onPress={() => onChoose(null)} />
       {rail.heads.map((head) => (
         <Fragment key={head.label}>

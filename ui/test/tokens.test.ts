@@ -22,8 +22,12 @@ const name = (path: string): string => relative(UI_ROOT, path);
 /** The colour literals in `text`: a hex colour, or a call of rgb, rgba, hsl or hsla. */
 const COLOUR = /#[0-9a-fA-F]{3,8}\b|\b(?:rgba?|hsla?)\(/g;
 
+/** The two breakpoints (A11-427): tablet at 1024px and below, phone at 640px and below. A media query cannot read a custom property, so these are the only lengths a stylesheet writes beside the tokens. */
+const MEDIA_RULE = /@media \(max-width: (?:1024|640)px\)/g;
+/** Every width a media rule names. */
+const MEDIA_WIDTH = /@media[^{]*\((?:max|min)-width:\s*([^)]+)\)/g;
+
 /** The `/* ... *\/` comments are prose: a value named in one is not a value used. */
-const MEDIA_RULE = /@media \(max-width: 820px\)/g;
 
 const withoutComments = (text: string): string => text.replace(/\/\*[\s\S]*?\*\//g, "");
 
@@ -38,16 +42,18 @@ describe("the design tokens are the one file that holds values", () => {
     expect(found).toEqual([]);
   });
 
-  it("has no pixel length in a stylesheet outside tokens.css, but a 1px hairline and the one 820px media query", () => {
+  it("has no pixel length in a stylesheet outside tokens.css, but a 1px hairline and the two breakpoints' media rules", () => {
     const found = STYLESHEETS.flatMap((path) =>
       [...withoutComments(read(path)).replace(MEDIA_RULE, "").matchAll(/(?<![\w.-])(\d*\.?\d+)px\b/g)].filter((match) => match[1] !== "1").map((match) => `${name(path)}: ${match[0]}`),
     );
     expect(found).toEqual([]);
   });
 
-  it("writes the 820px collapse once", () => {
-    const count = STYLESHEETS.reduce((total, path) => total + (withoutComments(read(path)).match(/820px/g) ?? []).length, 0);
-    expect(count).toBe(1);
+  it("breaks at 1024px and 640px only: the 820px collapse is gone", () => {
+    const widths = new Set(STYLESHEETS.flatMap((path) => [...withoutComments(read(path)).matchAll(MEDIA_WIDTH)].map((match) => match[1].trim())));
+    expect([...widths].sort()).toEqual(["1024px", "640px"]);
+    const collapse = STYLESHEETS.filter((path) => withoutComments(read(path)).includes("820px")).map(name);
+    expect(collapse).toEqual([]);
   });
 
   it("has no pixel length in a component or a page", () => {

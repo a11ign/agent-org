@@ -92,7 +92,7 @@ async function expectSettled(page: Page, { h1, title }: { h1: string; title: str
 
 const sidebarOf = (page: Page): Locator => page.getByRole("complementary", { name: "Atomaut" });
 /** The text of every link the sidebar marks as the current page, number badges dropped. */
-const currentItems = (page: Page): Promise<string[]> => sidebarOf(page).locator("[aria-current=page]").evaluateAll((elements) => elements.map((element) => (element.textContent ?? "").replace(/\d+$/, "")));
+const currentItems = (page: Page): Promise<string[]> => sidebarOf(page).locator("[aria-current=page]").evaluateAll((elements) => elements.filter((element) => element.checkVisibility()).map((element) => (element.textContent ?? "").replace(/\d+$/, "")));
 
 describe("every route renders inside the shell", () => {
   it.each(ROUTES)("$path: the sidebar, the page's heading, its title, and the active items marked", async ({ path, h1, title, current }) => {
@@ -202,7 +202,7 @@ describe("the sidebar over a stand-in instance", () => {
   });
 });
 
-describe("the collapse at 820px", () => {
+describe("the breakpoint at 1024px (A11-427), which replaces the collapse at 820px", () => {
   const boxes = async (page: Page) => {
     // The sidebar is drawn again when the connections arrive, so it is measured once they have.
     await page.waitForFunction(() => document.querySelector("select")?.disabled === false);
@@ -211,18 +211,18 @@ describe("the collapse at 820px", () => {
     return { aside, main };
   };
 
-  it("is 248px wide at 821px, with the page beside it", async () => {
-    const { page, context } = await open("/tickets", { stand: STAND }, 821);
+  it("is 248px wide at 1025px, with the page beside it", async () => {
+    const { page, context } = await open("/tickets", { stand: STAND }, 1025);
     const { aside, main } = await boxes(page);
     expect(aside?.width).toBe(248);
     expect(main?.y).toBe(aside?.y);
     await context.close();
   });
 
-  it("is the full width at 820px, with the page beneath it", async () => {
-    const { page, context } = await open("/tickets", { stand: STAND }, 820);
+  it("is the 57px top bar the full width at 1024px, with the page beneath it", async () => {
+    const { page, context } = await open("/tickets", { stand: STAND }, 1024);
     const { aside, main } = await boxes(page);
-    expect(aside?.width).toBe(820);
+    expect([aside?.width, aside?.height]).toEqual([1024, 57]);
     expect(main?.y ?? 0).toBeGreaterThanOrEqual((aside?.y ?? 0) + (aside?.height ?? 0));
     await context.close();
   });
@@ -235,7 +235,7 @@ describe("no horizontal overflow, and the screenshots", () => {
     expect(written.every((file) => file.startsWith(SCREENSHOT_DIR))).toBe(true);
   });
 
-  it("fits with a long project name and a long goal in the sidebar at 390px", async () => {
+  it("fits with a long project name and a long goal at 390px, in the chips and the scope sheet", async () => {
     const long = "a-project-with-a-very-long-name-that-has-no-break-in-it-at-all-and-keeps-going";
     const stand: Stand = { instances: { here: { config: config(), tickets: [ticket({ key: "A11-1", project: long, goals: [long]})] } } };
     const { fit } = await look(browser, { route: "/tickets", url: `${site.origin}/tickets` }, SCREENS[1], (context) => serveInstance(context, { stand }).then(() => undefined));
@@ -286,7 +286,8 @@ describe("keyboard focus", () => {
     await page.keyboard.press("Tab");
     for (const target of ["select", "a", "button"]) {
       const ring = await page.evaluate((tag) => {
-        const element = document.querySelector<HTMLElement>(`aside ${tag}`) as HTMLElement;
+        // The sidebar's own first control of the kind: the top bar's mark and tabs are not drawn at this width (A11-427).
+        const element = [...document.querySelectorAll<HTMLElement>(`aside ${tag}`)].find((candidate) => candidate.checkVisibility()) as HTMLElement;
         element.focus({ focusVisible: true } as FocusOptions);
         const { outlineStyle, outlineWidth, outlineColor, outlineOffset } = getComputedStyle(element);
         return { outlineStyle, outlineWidth, outlineColor, outlineOffset };
