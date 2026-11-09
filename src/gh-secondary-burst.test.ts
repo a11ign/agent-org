@@ -8,7 +8,8 @@
  *   (b) 40 calls from three producers at once never have more than `A11Y_GH_PACE_INFLIGHT` (2) in flight, nor more than `A11Y_GH_PACE_PER_MINUTE`
  *       (4) starts in one window (1 s here, `A11Y_GH_PACE_WINDOW_MS`, 60 s by default). The control is the same calls with the bound lifted, and it overlaps.
  *       The starts are read from the wrapper's own record of its admissions, not from the stub's clock: a stub starts a little after its admission,
- *       by a lag that a loaded host makes longer than the window;
+ *       by a lag that a loaded host makes longer than the window. The record is in epoch milliseconds on every `date` the wrapper may meet (A11-424: a
+ *       uutils `date`, Ubuntu 26.04's, prints `%3N` as bare nanoseconds without their leading zeros, so the bound was read in mixed units);
  *   (c) a read refused for a secondary limit is not asked again that tick, and the next tick asks: that is the code host's `readUnlessRefused` (#1523), so its case is the plugin's (`plugins/github/rows/rows-by-label-refusal.test.ts`);
  *   (d) a queued call the gate RETRIES and sees refused again is filed as the refused pool reads now (`retryDue`, through `attemptCall`): secondary
  *       with calls left, primary at zero, and the pool is read once for an hourly phrase only;
@@ -98,6 +99,8 @@ const CALLS = 40;
 const WINDOW_MS = 1000;
 const PER_WINDOW = 4;
 const IN_FLIGHT = 2;
+/** How far a recorded admission may sit from this test's own clock and still be the same clock, in milliseconds. */
+const CLOCK_SLACK_MS = 10 * 60 * 1000;
 
 /**
  * One pacing run: three chains of calls, each chain one producer's calls in turn, all started at once. Returns the stub's log in order (S when a
@@ -173,9 +176,53 @@ test("(b) 40 calls from three producers at once never exceed the in-flight bound
   assert.ok(peak <= IN_FLIGHT, `in flight never exceeded ${IN_FLIGHT}, read a peak of ${peak}`);
   assert.equal(peak, IN_FLIGHT, "the bound is reached, so the calls were paced and not merely sequential");
   assert.equal(admitted.length, CALLS, `the wrapper recorded every admission, read ${admitted.length}`);
+  // The bound below is only a bound if the record is in milliseconds. A record in another unit passes it for nothing (nanoseconds, a window of
+  // 1000 of them) or fails it at random (a `date` that drops leading zeros, A11-424), so the record is checked to be this clock's milliseconds first.
+  const stray = admitted.filter((ms) => Math.abs(Date.now() - ms) > CLOCK_SLACK_MS);
+  assert.deepEqual(stray, [], "every admission the wrapper recorded is an epoch time in milliseconds, within minutes of now");
   const most = mostStartsInWindow(admitted);
   assert.ok(most <= PER_WINDOW, `admissions in one ${WINDOW_MS} ms window never exceeded ${PER_WINDOW}, read ${most}`);
 });
+
+// ---- (b) the wrapper's clock is milliseconds on every `date` it may meet (A11-424) ------------------------------------------
+
+/**
+ * A `date` that answers a fixed moment, 2026-11-09T10:00:00.005Z (the 5 ms is the point: a leading zero), the way each kind of `date` prints it. `uutils` is
+ * Ubuntu 26.04's own, as CI's `ubuntu-latest` has had since 2026-11-08: its `%3N` ignores the `3` and drops the nanoseconds' leading zeros. `bsd` has no `%N`
+ * and prints the letter. Any other format is the real `date`.
+ */
+function fixedDate(kind: "gnu" | "uutils" | "bsd"): string {
+  const bin = tmpDir("gh-pace-date-");
+  const real = spawnSync("sh", ["-c", "command -v date"], { encoding: "utf8" }).stdout.trim();
+  const answers = {
+    gnu: { n: "1794218400005000000", ms: "1794218400005" },
+    uutils: { n: "1794218400005000000", ms: "17942184005000000" },
+    bsd: { n: "1794218400N", ms: "1794218400N" },
+  }[kind];
+  writeFileSync(join(bin, "date"), ["#!/bin/sh", `case "$1" in`, `  +%s%N) echo '${answers.n}' ;;`, `  +%s%3N) echo '${answers.ms}' ;;`, "  +%s) echo 1794218400 ;;", `  *) exec "${real}" "$@" ;;`, "esac", ""].join("\n"), { mode: 0o755 });
+  return bin;
+}
+
+/** The start the wrapper records for one call run under `date`, read off its own `starts` file. */
+function recordedStart(dateBin: string): string {
+  const { root, cfg } = accountConfig("gh-pace-clock-");
+  const stub = join(root, "gh-real");
+  writeFileSync(stub, "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+  const env = { PATH: `${dateBin}:${process.env.PATH ?? ""}`, A11Y_GH_REAL: stub, GH_CONFIG_DIR: cfg, HERDR_WORKSPACE_ID: "w9", A11Y_GH_READ_CACHE: "off", A11Y_GH_LEDGER: join(cfg, "gh-calls.tsv"), A11Y_GH_PACE_DIR: join(root, "pace") };
+  const run = spawnSync("sh", [WRAPPER, "issue", "view", "1"], { encoding: "utf8", env, cwd: root, input: "" });
+  assert.equal(run.status, 0, `the call ran, read ${run.status}: ${run.stderr}`);
+  return readFileSync(join(root, "pace", "account", "starts"), "utf8").trim();
+}
+
+for (const [name, kind, recorded] of [
+  ["(b) a uutils `date`, whose `%3N` drops the leading zeros, still records the start in milliseconds (A11-424)", "uutils", "1794218400005"],
+  ["(b) POSITIVE CONTROL: a GNU `date` records the same start", "gnu", "1794218400005"],
+  ["(b) a `date` with no `%N` records the whole second, in milliseconds", "bsd", "1794218400000"],
+] as const) {
+  test(name, () => {
+    assert.equal(recordedStart(fixedDate(kind)), recorded);
+  });
+}
 
 test("(b) POSITIVE CONTROL: the same calls with the bound lifted overlap beyond the in-flight bound", async () => {
   const { events } = await pacedRun({ A11Y_GH_PACE_INFLIGHT: "20", A11Y_GH_PACE_PER_MINUTE: "1000", A11Y_GH_PACE_WINDOW_MS: String(WINDOW_MS) });
