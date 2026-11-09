@@ -97,10 +97,14 @@ function NotificationItem({ item, now, busy, onClear }: ItemProps) {
 
 type PanelProps = Readonly<{
   ref: Ref<HTMLDivElement>; items: readonly Notification[]; busy: boolean; acting: ReadonlySet<string>; refusal: string | null; onClear: (id: string) => void; onClearAll: () => void; onHideRefusal: () => void;
+  onClose: () => void;
 }>;
 
-/** The panel: its title and Clear all, the filters with their counts, and the list, or what to say when there is nothing to list. */
-function Panel({ ref, items, busy, acting, refusal, onClear, onClearAll, onHideRefusal }: PanelProps) {
+/**
+ * The panel: its title and Clear all, the filters with their counts, and the list, or what to say when there is nothing to list. On a phone, where it fills the screen over the bell, it has a Close
+ * button of its own (A11-427); it is not drawn at a wider screen, where the bell beside the panel closes it.
+ */
+function Panel({ ref, items, busy, acting, refusal, onClear, onClearAll, onHideRefusal, onClose }: PanelProps) {
   const [filter, setFilter] = useState<NotificationFilter>("all");
   const now = useNow();
   const counts = countsOf(items);
@@ -112,6 +116,7 @@ function Panel({ ref, items, busy, acting, refusal, onClear, onClearAll, onHideR
         <span className="notifications-title">Notifications</span>
         <div className="notification-spacer" />
         <button type="button" className="notifications-clear-all" disabled={items.length === 0 || busy || acting.has(ALL_FINISHED)} onClick={onClearAll}>Clear all</button>
+        <button type="button" className="notifications-close" aria-label="Close notifications" onClick={onClose}><CloseIcon /></button>
       </div>
       <div className="notifications-filters">
         <div role="group" aria-label="Filter notifications" className="notifications-tabs">
@@ -178,13 +183,17 @@ export function NotificationCentre() {
     return () => document.removeEventListener("keydown", close);
   }, [open]);
 
+  const close = () => {
+    setOpen(false);
+    bell.current?.focus();
+  };
   return (
     <>
       <button ref={bell} type="button" className="bell" aria-label={bellLabelOf(items.length)} aria-haspopup="dialog" aria-expanded={open} title="Notifications" onClick={() => setOpen(!open)}>
         <BellIcon />
         {items.length === 0 ? null : <span className="bell-badge" aria-hidden="true">{items.length}</span>}
       </button>
-      {open ? <Panel ref={panel} items={items} busy={paused} acting={writers.acting} refusal={writers.refusal} onClear={writers.dismiss} onClearAll={writers.dismissFinished} onHideRefusal={writers.dismissRefusal} /> : null}
+      {open ? <Panel ref={panel} items={items} busy={paused} acting={writers.acting} refusal={writers.refusal} onClear={writers.dismiss} onClearAll={writers.dismissFinished} onHideRefusal={writers.dismissRefusal} onClose={close} /> : null}
     </>
   );
 }

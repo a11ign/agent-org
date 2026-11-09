@@ -339,3 +339,61 @@ a.notification-ticket:hover {
   color: var(--color-danger-body);
   font-size: var(--font-size-small);
 }
+
+/* The phone's Close button: the panel fills the screen there, over the bell. */
+.notifications-close {
+  display: none;
+}
+
+/* Tablet, 1024px and below (A11-427): the panel opens under the top bar, 420px wide and aligned right, and scrolls when it is taller than the screen. */
+@media (max-width: 1024px) {
+  .notifications {
+    position: fixed;
+    top: var(--notifications-top-tablet);
+    right: var(--space-12);
+    left: auto;
+    max-height: calc(100% - var(--notifications-top-tablet) - var(--space-16));
+    overflow: auto;
+  }
+  .notifications-list {
+    max-height: none;
+  }
+}
+
+/* Phone, 640px and below: the notification centre fills the screen, and its clear buttons and the rows that link to a ticket are 44px. */
+@media (max-width: 640px) {
+  .notifications {
+    inset: 0;
+    width: 100%;
+    max-width: none;
+    height: 100%;
+    max-height: none;
+    border: 0;
+    border-radius: 0;
+  }
+  .notifications-list {
+    flex: 1 1 auto;
+  }
+  .notification-clear {
+    flex-basis: var(--hit-target);
+    width: var(--hit-target);
+    height: var(--hit-target);
+    margin: calc(-1 * var(--space-10)) calc(-1 * var(--space-14)) calc(-1 * var(--space-10)) 0;
+  }
+  a.notification-ticket {
+    min-height: var(--hit-target);
+  }
+  .notifications-close {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: var(--hit-target);
+    height: var(--hit-target);
+    margin: calc(-1 * var(--space-10)) calc(-1 * var(--space-10)) calc(-1 * var(--space-10)) 0;
+    padding: 0;
+    border: 0;
+    border-radius: var(--radius-8);
+    background: transparent;
+    color: var(--color-text-nav);
+  }
+}

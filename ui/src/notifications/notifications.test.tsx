@@ -46,10 +46,11 @@ describe("the bell", () => {
     expect(bell().getAttribute("aria-expanded")).toBe("false");
   });
 
-  it("is first in the sidebar's focus order", async () => {
+  it("is first in the sidebar's focus order, after the top bar's mark and tabs, which are drawn only at 1024px and below (A11-427)", async () => {
     await pageIn("tickets");
     const sidebar = screen.getByRole("complementary", { name: "Atomaut" });
-    expect(sidebar.querySelector("button, a, select")).toBe(bell());
+    expect(sidebar.querySelector(".sidebar-head :is(button, a, select)")).toBe(bell());
+    expect([...sidebar.querySelectorAll("button, a, select")].find((element) => element.closest(".topbar-brand, .tabs") === null)).toBe(bell());
   });
 });
 
@@ -338,7 +339,17 @@ describe("the keyboard", () => {
   it("names every button in the panel", async () => {
     await panelOver([finished(), failedRun({ id: "w2" })]);
     const names = inPanel().getAllByRole("button").map((button) => button.getAttribute("aria-label") ?? textOf(button).trim());
-    expect(names.length).toBe(6);
+    // Clear all, Close (drawn on a phone only, A11-427), the three filters, and each item's clear.
+    expect(names.length).toBe(7);
     expect(names.every((name) => name !== "")).toBe(true);
+  });
+});
+
+describe("the phone's Close button (A11-427)", () => {
+  it("closes the panel, which fills a phone's screen over the bell, and gives the focus back to the bell", async () => {
+    await panelOver([finished()]);
+    fireEvent.click(inPanel().getByRole("button", { name: "Close notifications" }));
+    expect(screen.queryByRole("dialog", { name: "Notifications" })).toBeNull();
+    expect(document.activeElement).toBe(bell());
   });
 });

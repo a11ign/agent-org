@@ -77,13 +77,12 @@ describe("the panel, in Chromium", () => {
     await context.close();
   });
 
-  it("fits a window 390px wide: no wider than the window less 24px, and the page does not scroll sideways", async () => {
+  it("fills a window 390px wide (A11-427), and the page does not scroll sideways", async () => {
     const { page, context } = await open(LISTED, "/tickets", PHONE.width);
     await bell(page).click();
     await panel(page).waitFor();
     const box = await panel(page).boundingBox();
-    expect(box?.width).toBeLessThanOrEqual(PHONE.width - 24);
-    expect((box?.x ?? 0) + (box?.width ?? 0)).toBeLessThanOrEqual(PHONE.width);
+    expect([box?.x, box?.y, box?.width, box?.height]).toEqual([0, 0, PHONE.width, PHONE.height]);
     const { scrollWidth, clientWidth } = await fit(page);
     expect(overflowProblem({ route: "/tickets with the panel open", width: PHONE.width, scrollWidth, clientWidth })).toBeNull();
     await context.close();

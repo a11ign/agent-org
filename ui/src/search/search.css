@@ -357,3 +357,31 @@
     font: var(--font-size-body) var(--font-sans);
   }
 }
+
+/* Tablet, 1024px and below (A11-427): the palette is opened from the top bar's search icon, and its Esc hint reads Close. */
+@media (max-width: 1024px) {
+  .search-close {
+    padding: 0 var(--space-12);
+  }
+  .search-close-key {
+    display: none;
+  }
+  .search-close-word {
+    display: inline;
+    font: var(--font-size-body) var(--font-sans);
+  }
+}
+
+/* Phone, 640px and below: the palette fills the screen. */
+@media (max-width: 640px) {
+  .search-overlay {
+    padding: 0;
+  }
+  .search-palette {
+    width: 100%;
+    height: 100%;
+    max-height: none;
+    border: 0;
+    border-radius: 0;
+  }
+}
