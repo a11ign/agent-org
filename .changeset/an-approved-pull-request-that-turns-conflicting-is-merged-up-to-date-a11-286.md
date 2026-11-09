@@ -1,5 +1,0 @@
----
-"agent-org": minor
----
-
-Every open pull request the board opened for a ticket is watched, in any phase of its run (A11-286). A pull request of a ticket queued for its next plan step, queued again, running, or whose run ended asking a person was in no finished run's record, so it could go conflicting unseen (a11ign/agent-org#1921); the board now finds a ticket's pull requests from its run log and reads them on the feedback cadence, and its `pulls` map lists them all. A pull request that conflicts with its base or is behind it is first brought up to date by the code host's `updateBranch`, once for each head, and the card says "conflicts with main: merging main in"; only a conflict the host reports as real starts a conflict round, which names the files, the base and the merge command and runs ahead of the next step, which waits until the round has pushed and is then queued again. A run that holds a workspace, a stacked run and a pull request in the merge queue are not pushed to. The code host contract is 1.24: `PullFeedback.behind`, optional.
