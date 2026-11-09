@@ -208,13 +208,21 @@ function fixedDate(kind: "gnu" | "uutils" | "bsd"): string {
   return bin;
 }
 
-/** The start the wrapper records for one call run under `date`, read off its own `starts` file. */
-function recordedStart(dateBin: string): string {
+/** A directory with no `date` in it, to put first on PATH when the real `date` is the one under test. */
+const realDateBin = () => tmpDir("gh-pace-nodate-");
+
+/**
+ * The `starts` file after one call run under `date`, with the file as it was before the call (`seed`, lines of starts) and the pacing bound in `extra`. The call
+ * is cut at 20 s: a wrapper that sleeps for the wrong reason is a failed call, not a hung test.
+ */
+function startsAfterOneCall(dateBin: string, seed = "", extra: Record<string, string> = {}): string {
   const { root, cfg } = accountConfig("gh-pace-clock-");
   const stub = join(root, "gh-real");
   writeFileSync(stub, "#!/bin/sh\nexit 0\n", { mode: 0o755 });
-  const env = { ...wrapperEnv(root, cfg, stub), PATH: `${dateBin}:${process.env.PATH ?? ""}` };
-  const run = spawnSync("sh", [WRAPPER, "issue", "view", "1"], { encoding: "utf8", env, cwd: root, input: "" });
+  mkdirSync(join(root, "pace", "account"), { recursive: true });
+  if (seed !== "") writeFileSync(join(root, "pace", "account", "starts"), seed);
+  const env = { ...wrapperEnv(root, cfg, stub), PATH: `${dateBin}:${process.env.PATH ?? ""}`, ...extra };
+  const run = spawnSync("sh", [WRAPPER, "issue", "view", "1"], { encoding: "utf8", env, cwd: root, input: "", timeout: 20_000 });
   assert.equal(run.status, 0, `the call ran, read ${run.status}: ${run.stderr}`);
   return readFileSync(join(root, "pace", "account", "starts"), "utf8").trim();
 }
@@ -225,9 +233,16 @@ for (const [name, kind, recorded] of [
   ["(b) a `date` with no `%N` records the whole second, in milliseconds", "bsd", "1794218400000"],
 ] as const) {
   test(name, () => {
-    assert.equal(recordedStart(fixedDate(kind)), recorded);
+    assert.equal(startsAfterOneCall(fixedDate(kind)), recorded);
   });
 }
+
+test("(b) a `starts` file written in nanoseconds before A11-424 neither counts against the bound nor holds the call", () => {
+  // two old records, as the host's files hold them: 19 digits, and 18 where the nanoseconds' leading zero was dropped. With one start allowed in the window, a record that
+  // counted would make the call wait for it to leave the window, and a 19-digit one never does.
+  const after = startsAfterOneCall(realDateBin(), "1794206379498096823\n179420637949809682\n", { A11Y_GH_PACE_PER_MINUTE: "1", A11Y_GH_PACE_WINDOW_MS: String(WINDOW_MS) });
+  assert.match(after, /^\d{13}$/, `only this call's start, in milliseconds, is left in the file, read ${JSON.stringify(after)}`);
+});
 
 test("(b) POSITIVE CONTROL: the same calls with the bound lifted overlap beyond the in-flight bound", async () => {
   const { events } = await pacedRun({ A11Y_GH_PACE_INFLIGHT: "20", A11Y_GH_PACE_PER_MINUTE: "1000", A11Y_GH_PACE_WINDOW_MS: String(WINDOW_MS) });
