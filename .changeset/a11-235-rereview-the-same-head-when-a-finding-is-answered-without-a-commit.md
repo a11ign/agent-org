@@ -1,5 +1,0 @@
----
-"agent-org": minor
----
-
-A finding the reviewer blocked on, answered without a new commit, is now re-reviewed on the same head. The board remembers the pull request description the reviewer started with, and re-reviews a blocked head when the description has changed since, or when the worker's account (or a person the org declares) replied after both the block and the last look. The reviewer is told the description's changed lines and the replies, and still reviews the whole diff. Before this, a finding fixed by editing the description left the pull request blocked until a person pushed an empty commit; and a reply from the workers' GitHub App never reached the reviewer, because `gh api user` spells the account `a11ign-workers[bot]` and GraphQL spells it `a11ign-workers`. A re-review waits for the end of the run's round and counts as one of the run's `MAX_FEEDBACK_ROUNDS` rounds, so a dispute ends with the run handed to a person and not in a loop. The reviewer contract is 1.5: `ReviewBrief.rereview.body` is optional, and a reviewer of 1.4 ignores it.
