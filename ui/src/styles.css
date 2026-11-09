@@ -101,3 +101,36 @@ textarea:focus-visible {
     animation: none;
   }
 }
+
+/*
+ * Touch, at 1024px and below (A11-427): every button takes a hit area 44px tall about its centre, whatever it draws, from a box of its own that is not drawn; a select is 44px tall. A rule of a
+ * component that positions its button, or gives it a box of its own, wins over these, which weigh nothing (`:where`).
+ */
+@media (max-width: 1024px) {
+  :where(button) {
+    position: relative;
+  }
+  :where(button)::after {
+    content: "";
+    position: absolute;
+    left: 0;
+    right: 0;
+    top: 50%;
+    height: var(--hit-target);
+    transform: translateY(-50%);
+  }
+  :where(select) {
+    min-height: var(--hit-target);
+  }
+}
+
+/* Phone, 640px and below: a text field is 16px, so the phone does not zoom into it, whatever size its page gives it, and at least 44px tall unless its page says otherwise. */
+@media (max-width: 640px) {
+  :root input:not([type="checkbox"], [type="radio"]),
+  :root textarea {
+    font-size: var(--font-size-16);
+  }
+  :where(input:not([type="checkbox"], [type="radio"])) {
+    min-height: var(--hit-target);
+  }
+}
