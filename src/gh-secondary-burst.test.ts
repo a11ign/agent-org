@@ -8,7 +8,8 @@
  *   (b) 40 calls from three producers at once never have more than `A11Y_GH_PACE_INFLIGHT` (2) in flight, nor more than `A11Y_GH_PACE_PER_MINUTE`
  *       (4) starts in one window (1 s here, `A11Y_GH_PACE_WINDOW_MS`, 60 s by default). The control is the same calls with the bound lifted, and it overlaps.
  *       The starts are read from the wrapper's own record of its admissions, not from the stub's clock: a stub starts a little after its admission,
- *       by a lag that a loaded host makes longer than the window;
+ *       by a lag that a loaded host makes longer than the window. The record is in epoch milliseconds on every `date` the wrapper may meet (A11-424: a
+ *       uutils `date`, Ubuntu 26.04's, prints `%3N` as bare nanoseconds without their leading zeros, so the bound was read in mixed units);
  *   (c) a read refused for a secondary limit is not asked again that tick, and the next tick asks: that is the code host's `readUnlessRefused` (#1523), so its case is the plugin's (`plugins/github/rows/rows-by-label-refusal.test.ts`);
  *   (d) a queued call the gate RETRIES and sees refused again is filed as the refused pool reads now (`retryDue`, through `attemptCall`): secondary
  *       with calls left, primary at zero, and the pool is read once for an hourly phrase only;
@@ -55,6 +56,11 @@ function accountConfig(prefix: string) {
   return { root, cfg };
 }
 
+/** The environment every run of the wrapper here has: the account's own config, no read cache, and its ledger and pacing directory under `root`. */
+function wrapperEnv(root: string, cfg: string, stub: string): Record<string, string> {
+  return { PATH: process.env.PATH ?? "", A11Y_GH_REAL: stub, GH_CONFIG_DIR: cfg, HERDR_WORKSPACE_ID: "w9", A11Y_GH_READ_CACHE: "off", A11Y_GH_LEDGER: join(cfg, "gh-calls.tsv"), A11Y_GH_PACE_DIR: join(root, "pace") };
+}
+
 /**
  * A host whose stub `gh-real` answers the wrapper's probe (`-i`) with `headers` and refuses every other call with `reply`. Its env is the
  * account's own: a config that names no role, so the pacing directory is `account`.
@@ -64,7 +70,7 @@ function refusingHost({ reply, headers }: { reply: string; headers: string; }) {
   writeFileSync(join(root, "headers"), headers);
   const stub = join(root, "gh-real");
   writeFileSync(stub, ["#!/bin/sh", `if [ "$2" = -i ]; then cat "${root}/headers"; exit 0; fi`, `printf '%s\\n' '${reply}' >&2`, "exit 1", ""].join("\n"), { mode: 0o755 });
-  const env = { PATH: process.env.PATH ?? "", A11Y_GH_REAL: stub, GH_CONFIG_DIR: cfg, HERDR_WORKSPACE_ID: "w9", A11Y_GH_READ_CACHE: "off", A11Y_GH_LEDGER: join(cfg, "gh-calls.tsv"), A11Y_GH_PACE_DIR: join(root, "pace") };
+  const env = wrapperEnv(root, cfg, stub);
   const run = () => spawnSync("sh", [WRAPPER, "issue", "comment", "1", "--body", "x"], { encoding: "utf8", env, input: "", cwd: root });
   return { run, queue: join(cfg, QUEUE_DIR) };
 }
@@ -98,6 +104,8 @@ const CALLS = 40;
 const WINDOW_MS = 1000;
 const PER_WINDOW = 4;
 const IN_FLIGHT = 2;
+/** How far a recorded admission may sit from this test's own clock and still be the same clock, in milliseconds. */
+const CLOCK_SLACK_MS = 10 * 60 * 1000;
 
 /**
  * One pacing run: three chains of calls, each chain one producer's calls in turn, all started at once. Returns the stub's log in order (S when a
@@ -109,7 +117,7 @@ async function pacedRun(env: Record<string, string>) {
   const stub = join(root, "gh-real");
   // S when a call starts, E when it ends: the file's order is the order the calls ran in
   writeFileSync(stub, ["#!/bin/sh", `printf 'S\\n' >> "${log}"`, "sleep 0.2", `printf 'E\\n' >> "${log}"`, ""].join("\n"), { mode: 0o755 });
-  const base = { PATH: process.env.PATH ?? "", A11Y_GH_REAL: stub, GH_CONFIG_DIR: cfg, HERDR_WORKSPACE_ID: "w9", A11Y_GH_READ_CACHE: "off", A11Y_GH_LEDGER: join(cfg, "gh-calls.tsv"), A11Y_GH_PACE_DIR: join(root, "pace"), ...env };
+  const base = { ...wrapperEnv(root, cfg, stub), ...env };
   const one = () => new Promise<number | null>((resolve) => {
     const child = spawn("sh", [WRAPPER, "issue", "view", "1"], { env: base, cwd: root, stdio: ["ignore", "ignore", "ignore"] });
     child.on("close", (code) => resolve(code));
@@ -173,8 +181,67 @@ test("(b) 40 calls from three producers at once never exceed the in-flight bound
   assert.ok(peak <= IN_FLIGHT, `in flight never exceeded ${IN_FLIGHT}, read a peak of ${peak}`);
   assert.equal(peak, IN_FLIGHT, "the bound is reached, so the calls were paced and not merely sequential");
   assert.equal(admitted.length, CALLS, `the wrapper recorded every admission, read ${admitted.length}`);
+  // The bound below is only a bound if the record is in milliseconds. A record in another unit passes it for nothing (nanoseconds, a window of
+  // 1000 of them) or fails it at random (a `date` that drops leading zeros, A11-424), so the record is checked to be this clock's milliseconds first.
+  const stray = admitted.filter((ms) => Math.abs(Date.now() - ms) > CLOCK_SLACK_MS);
+  assert.deepEqual(stray, [], "every admission the wrapper recorded is an epoch time in milliseconds, within minutes of now");
   const most = mostStartsInWindow(admitted);
   assert.ok(most <= PER_WINDOW, `admissions in one ${WINDOW_MS} ms window never exceeded ${PER_WINDOW}, read ${most}`);
+});
+
+// ---- (b) the wrapper's clock is milliseconds on every `date` it may meet (A11-424) ------------------------------------------
+
+/**
+ * A `date` that answers a fixed moment, 2026-11-09T10:00:00.005Z (the 5 ms is the point: a leading zero), the way each kind of `date` prints it. `uutils` is
+ * Ubuntu 26.04's own, as CI's `ubuntu-latest` has had since 2026-11-08: its `%3N` ignores the `3` and drops the nanoseconds' leading zeros. `bsd` has no `%N`
+ * and prints the letter. Any other format is the real `date`.
+ */
+function fixedDate(kind: "gnu" | "uutils" | "bsd"): string {
+  const bin = tmpDir("gh-pace-date-");
+  const real = spawnSync("sh", ["-c", "command -v date"], { encoding: "utf8" }).stdout.trim();
+  const answers = {
+    gnu: { n: "1794218400005000000", ms: "1794218400005" },
+    uutils: { n: "1794218400005000000", ms: "17942184005000000" },
+    bsd: { n: "1794218400N", ms: "1794218400N" },
+  }[kind];
+  writeFileSync(join(bin, "date"), ["#!/bin/sh", `case "$1" in`, `  +%s%N) echo '${answers.n}' ;;`, `  +%s%3N) echo '${answers.ms}' ;;`, "  +%s) echo 1794218400 ;;", `  *) exec "${real}" "$@" ;;`, "esac", ""].join("\n"), { mode: 0o755 });
+  return bin;
+}
+
+/** A directory with no `date` in it, to put first on PATH when the real `date` is the one under test. */
+const realDateBin = () => tmpDir("gh-pace-nodate-");
+
+/**
+ * The `starts` file after one call run under `date`, with the file as it was before the call (`seed`, lines of starts) and the pacing bound in `extra`. The call
+ * is cut at 20 s: a wrapper that sleeps for the wrong reason is a failed call, not a hung test.
+ */
+function startsAfterOneCall(dateBin: string, seed = "", extra: Record<string, string> = {}): string {
+  const { root, cfg } = accountConfig("gh-pace-clock-");
+  const stub = join(root, "gh-real");
+  writeFileSync(stub, "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+  mkdirSync(join(root, "pace", "account"), { recursive: true });
+  if (seed !== "") writeFileSync(join(root, "pace", "account", "starts"), seed);
+  const env = { ...wrapperEnv(root, cfg, stub), PATH: `${dateBin}:${process.env.PATH ?? ""}`, ...extra };
+  const run = spawnSync("sh", [WRAPPER, "issue", "view", "1"], { encoding: "utf8", env, cwd: root, input: "", timeout: 20_000 });
+  assert.equal(run.status, 0, `the call ran, read ${run.status}: ${run.stderr}`);
+  return readFileSync(join(root, "pace", "account", "starts"), "utf8").trim();
+}
+
+for (const [name, kind, recorded] of [
+  ["(b) a uutils `date`, whose `%3N` drops the leading zeros, still records the start in milliseconds (A11-424)", "uutils", "1794218400005"],
+  ["(b) POSITIVE CONTROL: a GNU `date` records the same start", "gnu", "1794218400005"],
+  ["(b) a `date` with no `%N` records the whole second, in milliseconds", "bsd", "1794218400000"],
+] as const) {
+  test(name, () => {
+    assert.equal(startsAfterOneCall(fixedDate(kind)), recorded);
+  });
+}
+
+test("(b) a `starts` file written in nanoseconds before A11-424 neither counts against the bound nor holds the call", () => {
+  // two old records, as the host's files hold them: 19 digits, and 18 where the nanoseconds' leading zero was dropped. With one start allowed in the window, a record that
+  // counted would make the call wait for it to leave the window, and a 19-digit one never does.
+  const after = startsAfterOneCall(realDateBin(), "1794206379498096823\n179420637949809682\n", { A11Y_GH_PACE_PER_MINUTE: "1", A11Y_GH_PACE_WINDOW_MS: String(WINDOW_MS) });
+  assert.match(after, /^\d{13}$/, `only this call's start, in milliseconds, is left in the file, read ${JSON.stringify(after)}`);
 });
 
 test("(b) POSITIVE CONTROL: the same calls with the bound lifted overlap beyond the in-flight bound", async () => {
