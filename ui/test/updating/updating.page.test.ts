@@ -133,6 +133,20 @@ describe("the four Updating screens, in Chromium", () => {
     await opened.context.close();
   });
 
+  it("keeps the top bar and the tab bar on a phone while updating, and its way back is a 44px link (A11-427)", async () => {
+    const opened = await openOn(NORMAL, 390);
+    await goDown(opened);
+    const shown = (selector: string) => opened.page.locator(selector).evaluate((element) => element.checkVisibility());
+    expect(await shown("aside[aria-label=Atomaut]")).toBe(true);
+    expect(await shown(".tabs")).toBe(true);
+    expect(await opened.page.locator(".pill").textContent()).toBe("Updating");
+    await comeBack(opened);
+    const back = await opened.page.getByRole("link", { name: "Back to Tickets" }).boundingBox();
+    expect(back?.height).toBe(44);
+    expect(await opened.page.locator(".updating-card button").evaluateAll((buttons) => buttons.map((button) => button.getBoundingClientRect().height).filter((height) => height < 44))).toEqual([]);
+    await opened.context.close();
+  });
+
   it("reloads the page onto the new version five seconds after Back", async () => {
     const opened = await openOn(NORMAL, 1440);
     await goDown(opened);
