@@ -1,4 +1,5 @@
 import type { ReactNode } from "react";
+import type { FromSearch } from "../search/use-from-search.ts";
 import { runsHref } from "../shell/routes.ts";
 
 /** The board's status banner, in the warning colours: a sentence, and a link or nothing beside it. It is a `status`, so a screen reader hears it when it appears. */
@@ -27,4 +28,14 @@ export type Held = Readonly<{ name: string; reason: string }>;
 export function HeldBanner({ held }: Readonly<{ held: Held | null | undefined }>) {
   if (held === null || held === undefined) return null;
   return <StatusBanner>No run starts while {held.name} fails: {held.reason}</StatusBanner>;
+}
+
+/** The indigo banner over a ticket opened from the "Search tickets" palette (A11-387): which ticket, where it is and whose, and the way back to the view the person came from. */
+export function FromSearchBanner({ view }: Readonly<{ view: NonNullable<FromSearch> }>) {
+  return (
+    <div role="status" className="from-search-banner">
+      <div className="from-search-text">Showing <strong>{view.key}</strong> from search. {view.sentence}</div>
+      <button type="button" className="from-search-back" onClick={view.back}>Back to my tickets</button>
+    </div>
+  );
 }

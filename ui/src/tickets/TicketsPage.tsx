@@ -2,7 +2,8 @@ import { useState } from "react";
 import { ReconnectingNote } from "../lifecycle/ReconnectingNote.tsx";
 import { NewTicket } from "../new-ticket/NewTicket.tsx";
 import { useShell, type ShellValue } from "../shell/ShellProvider.tsx";
-import { HeldBanner, PausedBanner, StatusBanner } from "./Banners.tsx";
+import { FromSearchBanner, HeldBanner, PausedBanner, StatusBanner } from "./Banners.tsx";
+import { useFromSearch } from "../search/use-from-search.ts";
 import { EmptyPanelView } from "./EmptyPanelView.tsx";
 import { FailureBanner } from "./FailureBanner.tsx";
 import { FilterRow } from "./FilterRow.tsx";
@@ -36,7 +37,9 @@ function usePage(shell: ShellValue) {
   const options = shell.config === null ? NO_OPTIONS : queueOptionsOf(shell.config, selected, batch);
   const { queue, learn } = useQueueNow();
   const actions = useTicketActions({ selection, batch, options, learn });
-  return { filters, list, search, folding, selection, batch, options, actions, queue };
+  // A ticket opened from the "Search tickets" palette arrives here ticked, with the banner that says so (A11-387).
+  const fromSearch = useFromSearch(shell, selection, batch);
+  return { filters, list, search, folding, selection, batch, options, actions, queue, fromSearch };
 }
 
 type Page = ReturnType<typeof usePage>;
@@ -97,6 +100,7 @@ function Body({ page, shell, onNewTicket }: Readonly<{ page: Page; shell: ShellV
     <>
       {restarting}
       <FilterRow filters={page.filters} list={page.list} />
+      {page.fromSearch === null ? null : <FromSearchBanner view={page.fromSearch} />}
       <HeldBanner held={shell.queue.data?.held} />
       {shell.queue.data?.paused === true ? <PausedBanner /> : null}
       {page.actions.notice === null ? null : <StatusBanner>{page.actions.notice}</StatusBanner>}

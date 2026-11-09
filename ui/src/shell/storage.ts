@@ -18,3 +18,23 @@ export const recalled = (storage: Storage | null, name: string): string | null =
 
 /** Remember `value` as the one choice under `name`. */
 export const remembered = (storage: Storage | null, name: string, value: string): void => remember(storage, name, new Set([value]));
+
+/** A JSON value kept under `name`, or null when there is none, it cannot be read, or the storage is refused. */
+export function recalledJson(storage: Storage | null, name: string): unknown {
+  try {
+    const saved = storage?.getItem(name) ?? null;
+    return saved === null ? null : (JSON.parse(saved) as unknown);
+  } catch {
+    return null;
+  }
+}
+
+/** Keep `value` as JSON under `name`, or forget it when it is null. A storage that refuses only forgets. */
+export function rememberedJson(storage: Storage | null, name: string, value: unknown): void {
+  try {
+    if (value === null) storage?.removeItem(name);
+    else storage?.setItem(name, JSON.stringify(value));
+  } catch {
+    // storage refused: the page works without it
+  }
+}
