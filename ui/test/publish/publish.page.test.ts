@@ -100,19 +100,6 @@ describe("Publish, driven in Chromium", () => {
     await detail.context.close();
   });
 
-  it("stands the Publish selected bar over the tab bar at 390px (A11-427)", async () => {
-    const list = await open(selectOf(), RUNS, 390);
-    await list.page.locator(".run-row").first().waitFor();
-    for (const key of TICKABLE.slice(0, 2)) await list.page.getByRole("checkbox", { name: `Select ${key} to publish` }).check();
-    const bar = await list.page.locator(".publish-bar").boundingBox();
-    const tabs = await list.page.locator(".tabs").boundingBox();
-    expect(await list.page.locator(".publish-bar").evaluate((element) => getComputedStyle(element).position)).toBe("fixed");
-    expect((bar?.y ?? 0) + (bar?.height ?? 0)).toBeLessThanOrEqual(tabs?.y ?? 0);
-    const height = list.page.viewportSize()?.height ?? 0;
-    expect(height - ((bar?.y ?? 0) + (bar?.height ?? 0))).toBe(76);
-    await list.context.close();
-  });
-
   it("gives the tick a 44px hit area and the Publish button 44px, in the boards' colours", async () => {
     const list = await open(selectOf(), RUNS);
     await list.page.locator(".run-row").first().waitFor();
@@ -150,5 +137,20 @@ describe("Publish, driven in Chromium", () => {
     const alert = failed.page.getByRole("alert");
     expect(await alert.textContent()).toContain(`Not published.Publishing 1 run failed: ${PUBLISHER_REASON}`);
     await failed.context.close();
+  });
+});
+
+describe("Publish on a phone, in Chromium", () => {
+  it("stands the Publish selected bar over the tab bar at 390px (A11-427)", async () => {
+    const list = await open(selectOf(), RUNS, 390);
+    await list.page.locator(".run-row").first().waitFor();
+    for (const key of TICKABLE.slice(0, 2)) await list.page.getByRole("checkbox", { name: `Select ${key} to publish` }).check();
+    const bar = await list.page.locator(".publish-bar").boundingBox();
+    const tabs = await list.page.locator(".tabs").boundingBox();
+    expect(await list.page.locator(".publish-bar").evaluate((element) => getComputedStyle(element).position)).toBe("fixed");
+    expect((bar?.y ?? 0) + (bar?.height ?? 0)).toBeLessThanOrEqual(tabs?.y ?? 0);
+    const height = list.page.viewportSize()?.height ?? 0;
+    expect(height - ((bar?.y ?? 0) + (bar?.height ?? 0))).toBe(76);
+    await list.context.close();
   });
 });
