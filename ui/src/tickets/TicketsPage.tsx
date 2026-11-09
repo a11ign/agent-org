@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { ReconnectingNote } from "../lifecycle/ReconnectingNote.tsx";
 import { NewTicket } from "../new-ticket/NewTicket.tsx";
+import { ScopeChips } from "../shell/ScopeChips.tsx";
 import { useShell, type ShellValue } from "../shell/ShellProvider.tsx";
 import { FromSearchBanner, HeldBanner, PausedBanner, StatusBanner } from "./Banners.tsx";
 import { useFromSearch } from "../search/use-from-search.ts";
@@ -131,6 +132,7 @@ function TicketsContent() {
   return (
     <>
       {header}
+      <ScopeChips />
       {/* Outside the unreachable frame, which swaps its element when the connection drops or returns: a request held in what it wraps would be lost with it. */}
       {writing && config !== null ? <NewTicket config={config} paused={unreachable === null ? null : (connection?.name ?? "")} open={newTicketOpen} onClose={() => setNewTicketOpen(false)} /> : null}
       <TicketsUnreachable>
