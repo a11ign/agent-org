@@ -1,5 +1,0 @@
----
-"agent-org": patch
----
-
-`chairman-listen` and `chairman-watch` in tool form now start (a11ign/a11ign#3485). Both took the project root from `process.cwd()`, and a unit in tool form runs from the TOOL's checkout, which holds no `.agent-org/`, so each exited 2 on `<tool>/.agent-org/project.json` and `RestartPreventExitStatus=2` left it stopped; `work-tick` was immune because it resolves its project through `$AGENT_ORG_HOST`. `messaging:listen` and `messaging:watch` now take their root from `HOME_CHECKOUT` (`resolveHomeCheckout`): `$AGENT_ORG_HOST` wins where a unit declares it, and an installed project's `pnpm run messaging:*` still answers the directory it was run in. `messaging-units-start.test.ts` renders each shipped unit with the real `toolForm` and STARTS its `ExecStart` as a child, from its `WorkingDirectory` with its own environment, against a scratch project and HOME (no network, no real `~/.config`); its mutant is the pre-fix tool, which must exit 2. The other messaging commands (`check`, `pair`, `reply`, `record`, `correct`, `ask-ceo`, `watch-list`) still read `process.cwd()`: a person or `pnpm` runs them from the project.
