@@ -524,3 +524,13 @@ button.plugin-head:hover {
   height: var(--skeleton-runs-pill-height);
   border-radius: var(--radius-pill);
 }
+
+/* Phone, 640px and below (A11-427): the confirm of an uninstall, a switch or a dangerous key is a full-width bottom sheet, as Settings' review is. */
+@media (max-width: 640px) {
+  .dialog-overlay.dialog-overlay-confirm {
+    padding: 0;
+  }
+  .dialog.dialog-confirm {
+    width: 100%;
+  }
+}

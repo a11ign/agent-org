@@ -554,3 +554,16 @@
   color: var(--color-text-muted);
   overflow-wrap: anywhere;
 }
+
+/* Phone, 640px and below (A11-427): the run's buttons are 44px tall, and the properties are the full width beneath the run's sections. */
+@media (max-width: 640px) {
+  .ghost.run-button {
+    min-height: var(--hit-target);
+  }
+  .detail-main,
+  .props {
+    flex: 1 1 100%;
+    max-width: none;
+    min-width: 0;
+  }
+}

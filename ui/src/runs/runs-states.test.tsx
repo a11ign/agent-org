@@ -244,7 +244,7 @@ describe("a filter", () => {
       const nav = screen.getByRole("navigation", { name: "Run status" });
       const sidebar = screen.getByRole("complementary", { name: "Atomaut" });
       expect(sidebar.contains(nav)).toBe(true);
-      const order = [...sidebar.querySelectorAll("nav, a")].map((element) => element.getAttribute("aria-label") ?? element.textContent);
+      const order = [...sidebar.querySelectorAll("nav, a")].filter((element) => element.closest(".topbar-brand, .tabs") === null).map((element) => element.getAttribute("aria-label") ?? element.textContent);
       expect(order.indexOf("Run status")).toBeGreaterThan(order.indexOf("Main"));
       expect(order.indexOf("Run status")).toBeLessThan(order.indexOf("Settings"));
     }

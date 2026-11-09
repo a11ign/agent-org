@@ -511,3 +511,65 @@ a.pr-pill:hover {
   opacity: var(--opacity-publish-off);
   cursor: not-allowed;
 }
+
+/* Tablet and phone, 1024px and below (A11-427): a row's action icons, its pull request links and the pool card's controls are 44px taps. */
+@media (max-width: 1024px) {
+  .icon-button {
+    align-items: center;
+    justify-content: center;
+    min-width: var(--hit-target);
+    min-height: var(--hit-target);
+  }
+  .run-actions {
+    min-width: 0;
+  }
+}
+
+/*
+ * Phone, 640px and below: the status icon sits in a 44px gutter, the title, status and meta fill the width, and the pull requests and the time share one line with the action icons at its right. The
+ * Publish selected bar stands over the tab bar.
+ */
+@media (max-width: 640px) {
+  .run-row {
+    gap: var(--space-4) 0;
+    padding: var(--space-12) var(--space-12) var(--space-8) 0;
+  }
+  .run-status {
+    flex: 0 0 var(--run-gutter-phone);
+  }
+  .run-main {
+    flex: 1 1 calc(100% - var(--run-gutter-phone));
+  }
+  .run-right {
+    flex: 1 1 100%;
+    align-items: center;
+    gap: var(--space-8);
+    margin-left: var(--run-gutter-phone);
+  }
+  .run-side {
+    flex: 1 1 auto;
+    flex-direction: row;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--space-4) var(--space-8);
+  }
+  .run-started {
+    display: none;
+  }
+  .run-actions {
+    flex: 0 0 auto;
+    margin-left: auto;
+    gap: 0;
+  }
+  .publish-bar {
+    position: fixed;
+    left: var(--space-12);
+    right: var(--space-12);
+    bottom: var(--bar-bottom-phone);
+    z-index: var(--z-tabbar);
+    margin: 0;
+  }
+  .shell-main:has(.publish-bar) {
+    padding-bottom: var(--page-bottom-phone-with-bar);
+  }
+}

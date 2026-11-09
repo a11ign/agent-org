@@ -48,7 +48,23 @@ const pill = (): HTMLElement => {
   if (found === undefined) throw new Error("no connection pill in the sidebar");
   return found;
 };
-const mainNav = () => within(screen.getByRole("navigation", { name: "Main" }));
+/** The top bar's mark and tabs (A11-427): in the document at every width, drawn only at 1024px and below, which a component check, with no stylesheet, does not see. */
+const inTopBar = (element: Element): boolean => element.closest(".tabs, .topbar-brand") !== null;
+/** The sidebar's own Main navigation, drawn above 1024px. */
+const sidebarNav = (): HTMLElement => {
+  const found = screen.getAllByRole("navigation", { name: "Main" }).find((nav) => !inTopBar(nav));
+  if (found === undefined) throw new Error("no Main navigation in the sidebar");
+  return found;
+};
+const mainNav = () => within(sidebarNav());
+/** The sidebar's own link named `name`: Tickets and Runs in its Main navigation, Settings at its foot. */
+const sidebarLink = (name: string | RegExp): HTMLElement => {
+  const found = within(sidebar()).getAllByRole("link", { name }).filter((link) => !inTopBar(link));
+  if (found.length !== 1) throw new Error(`${found.length} sidebar links named ${String(name)}`);
+  return found[0];
+};
+/** The top bar's tabs (A11-427). */
+const tabs = () => within(screen.getAllByRole("navigation", { name: "Main" }).find(inTopBar) as HTMLElement);
 
 describe("the instance switcher", () => {
   const stand: Stand = {
@@ -191,7 +207,7 @@ describe("the main navigation", () => {
   ];
 
   /** The text of every link the sidebar marks as the current page, count badges dropped. */
-  const currentItems = async (): Promise<string[]> => within(sidebar()).getAllByRole("link").filter((link) => link.getAttribute("aria-current") === "page").map((link) => textOf(link).replace(/\d+$/, ""));
+  const currentItems = async (): Promise<string[]> => within(sidebar()).getAllByRole("link").filter((link) => !inTopBar(link) && link.getAttribute("aria-current") === "page").map((link) => textOf(link).replace(/\d+$/, ""));
 
   it.each(pages)("marks the active items on %s", async (page, items) => {
     await shellOn(page);
@@ -200,26 +216,26 @@ describe("the main navigation", () => {
 
   it("links Tickets, Runs and Settings to their routes", async () => {
     await shellOn("tickets");
-    expect(screen.getByRole("link", { name: /Tickets/ }).getAttribute("href")).toBe("/tickets");
-    expect(screen.getByRole("link", { name: /Runs/ }).getAttribute("href")).toBe("/runs");
-    expect(screen.getByRole("link", { name: "Settings" }).getAttribute("href")).toBe("/settings/models");
+    expect(sidebarLink(/Tickets/).getAttribute("href")).toBe("/tickets");
+    expect(sidebarLink(/Runs/).getAttribute("href")).toBe("/runs");
+    expect(sidebarLink("Settings").getAttribute("href")).toBe("/settings/models");
   });
 
   it("shows the number of runs running beside Runs", async () => {
     await shellOn("tickets", { fallback: { queue: queueOf("running", "queued", "running", "running") } });
-    await waitFor(() => expect(textOf(screen.getByRole("link", { name: /Runs/ }))).toContain("3"));
+    await waitFor(() => expect(textOf(sidebarLink(/Runs/))).toContain("3"));
   });
 
   it("hides the Runs badge when nothing is running", async () => {
     await shellOn("runs", { fallback: { queue: queueOf("queued", "finished") } });
     await screen.findByText("The queue was read.");
-    expect(textOf(screen.getByRole("link", { name: /Runs/ }))).toBe("Runs");
+    expect(textOf(sidebarLink(/Runs/))).toBe("Runs");
   });
 
   it("leaves both counts blank while their reads are loading", () => {
     render(<ShellProvider fetchWith={standFetch({})}><ShellFrame page="tickets"><div /></ShellFrame></ShellProvider>);
-    expect(screen.getByRole("link", { name: /Tickets/ }).textContent).toBe("Tickets");
-    expect(screen.getByRole("link", { name: /Runs/ }).textContent).toBe("Runs");
+    expect(sidebarLink(/Tickets/).textContent).toBe("Tickets");
+    expect(sidebarLink(/Runs/).textContent).toBe("Runs");
   });
 });
 
@@ -321,14 +337,42 @@ describe("the sidebar's order", () => {
   it("runs the mark and its bell, the switcher, the pill, Tickets, Runs, Projects, Goals, then Settings", async () => {
     await shellOn("tickets", { fallback: { tickets: [ticket({ key: "A11-1", goals: ["Fleet"] })] } });
     await within(sidebar()).findByRole("button", { name: /Fleet/ });
-    const focusable = [...sidebar().querySelectorAll<HTMLElement>("select, a, button")].map((element) => element.tagName === "SELECT" ? "select" : element.getAttribute("aria-label") ?? element.textContent);
+    const focusable = [...sidebar().querySelectorAll<HTMLElement>("select, a, button")].filter((element) => !inTopBar(element)).map((element) => element.tagName === "SELECT" ? "select" : element.getAttribute("aria-label") ?? element.textContent);
     expect(focusable).toEqual(["Notifications, 0", "select", "Tickets1", "Runs", "a11ign1", "All goals1", "Fleet1", "Settings"]);
   });
 
   it("is an aside named Atomaut that holds the Main navigation", async () => {
     await shellOn("tickets");
-    expect(within(sidebar()).getByRole("navigation", { name: "Main" })).toBeTruthy();
+    expect(sidebar().contains(sidebarNav())).toBe(true);
     expect(screen.getByRole("main")).toBeTruthy();
+  });
+});
+
+describe("the top bar's mark and tabs (A11-427)", () => {
+  it("come first in the sidebar, so at 1024px and below the bar's focus order is the mark, the tabs, then the bell, the switcher and the search", async () => {
+    await shellOn("tickets", { fallback: { tickets: [ticket({ key: "A11-1" })] } });
+    const focusable = [...sidebar().querySelectorAll<HTMLElement>("select, a, button")].map((element) => element.tagName === "SELECT" ? "select" : element.getAttribute("aria-label") ?? element.textContent);
+    expect(focusable.slice(0, 6)).toEqual(["Atomaut, Tickets", "Tickets", "Runs", "Settings", "Notifications, 0", "select"]);
+  });
+
+  it.each([["tickets", "Tickets"], ["runs", "Runs"], ["run", "Runs"], ["workers", "Settings"], ["plugins", "Settings"]] as const)("marks the tab of %s", async (page, label) => {
+    await shellOn(page);
+    expect(tabs().getAllByRole("link").filter((link) => link.getAttribute("aria-current") === "page").map((link) => textOf(link).replace(/\d+$/, ""))).toEqual([label]);
+  });
+
+  it("links the mark to Tickets, and the tabs to Tickets, Runs and Settings", async () => {
+    await shellOn("runs");
+    expect(screen.getByRole("link", { name: "Atomaut, Tickets" }).getAttribute("href")).toBe("/tickets");
+    expect(tabs().getAllByRole("link").map((link) => link.getAttribute("href"))).toEqual(["/tickets", "/runs", "/settings/models"]);
+  });
+
+  it("puts the number of runs running on the Runs tab, and nothing while none runs", async () => {
+    const { unmount } = await shellOn("tickets", { fallback: { queue: queueOf("running", "queued", "running", "running") } });
+    await waitFor(() => expect(textOf(tabs().getByRole("link", { name: /Runs/ }))).toBe("Runs3"));
+    unmount();
+    await shellOn("runs", { fallback: { queue: queueOf("queued", "finished") } });
+    await screen.findByText("The queue was read.");
+    expect(textOf(tabs().getByRole("link", { name: /Runs/ }))).toBe("Runs");
   });
 });
 

@@ -164,3 +164,10 @@
 .drain-banner-text {
   flex: 1 1 var(--measure-banner-basis);
 }
+
+/* Phone, 640px and below (A11-427): the Updating card's way back is 44px tall. */
+@media (max-width: 640px) {
+  .updating-back-link {
+    min-height: var(--hit-target);
+  }
+}

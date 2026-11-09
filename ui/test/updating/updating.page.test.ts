@@ -49,7 +49,8 @@ async function openOn(update: object, width: number, path = "/tickets"): Promise
   const page = await context.newPage();
   await page.clock.install({ time: new Date(2026, 9, 24, 14, 0) });
   await page.goto(`${site.origin}${path}`);
-  await page.locator(".nav-count").filter({ hasText: "37" }).waitFor();
+  // The sidebar's count is in the page at every width; the top bar leaves it out at 1024px and below (A11-427).
+  await page.locator(".nav-count").filter({ hasText: "37" }).waitFor({ state: "attached" });
   return { page, context, link };
 }
 
@@ -129,6 +130,20 @@ describe("the four Updating screens, in Chromium", () => {
     await comeBack(opened);
     expect(await opened.page.locator(".pill").textContent()).toBe("Connected");
     expect(await opened.page.getByRole("link", { name: "Back to Tickets" }).getAttribute("href")).toBe("/tickets");
+    await opened.context.close();
+  });
+
+  it("keeps the top bar and the tab bar on a phone while updating, and its way back is a 44px link (A11-427)", async () => {
+    const opened = await openOn(NORMAL, 390);
+    await goDown(opened);
+    const shown = (selector: string) => opened.page.locator(selector).evaluate((element) => element.checkVisibility());
+    expect(await shown("aside[aria-label=Atomaut]")).toBe(true);
+    expect(await shown(".tabs")).toBe(true);
+    expect(await opened.page.locator(".pill").textContent()).toBe("Updating");
+    await comeBack(opened);
+    const back = await opened.page.getByRole("link", { name: "Back to Tickets" }).boundingBox();
+    expect(back?.height).toBe(44);
+    expect(await opened.page.locator(".updating-card button").evaluateAll((buttons) => buttons.map((button) => button.getBoundingClientRect().height).filter((height) => height < 44))).toEqual([]);
     await opened.context.close();
   });
 

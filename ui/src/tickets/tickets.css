@@ -506,3 +506,198 @@
     margin-left: auto;
   }
 }
+
+/* A row's checkbox and Select all take no box of their own above 1024px; below it they are 40px tap areas (A11-427). */
+.row-check {
+  display: contents;
+}
+
+/* Tablet and phone, 1024px and below (A11-427): the page's buttons, links of action and fold buttons take a 44px tap; a checkbox's label is a 40px square about it. */
+@media (max-width: 1024px) {
+  .row-check {
+    position: relative;
+    flex: 0 0 var(--check-box-phone);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: var(--check-box-phone);
+    height: var(--check-box-phone);
+    margin: 0 calc(-1 * var(--space-10)) 0 calc(-1 * var(--space-14));
+    cursor: pointer;
+  }
+  /* The box is drawn over its label's hit area, so a tap on it lands on the box itself. */
+  .row-check input {
+    position: relative;
+    z-index: 1;
+  }
+  .row-check::after {
+    content: "";
+    position: absolute;
+    left: 0;
+    right: 0;
+    top: 50%;
+    height: var(--hit-target);
+    transform: translateY(-50%);
+  }
+  .fold-button {
+    align-items: center;
+    justify-content: center;
+    min-width: var(--hit-target);
+    min-height: var(--hit-target);
+    margin: calc(-1 * var(--space-8)) calc(-1 * var(--space-8)) calc(-1 * var(--space-8)) calc(-1 * var(--space-14));
+  }
+  .status-banner-link,
+  .status-banner button {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-height: var(--hit-target);
+  }
+  .status-banner-text,
+  .from-search-text {
+    flex-basis: var(--measure-search-basis);
+  }
+  /* The Run options and the filter menus' choices take a 44px row. */
+  .menu-item,
+  .popover-check,
+  .popover-link {
+    min-height: var(--hit-target);
+  }
+  .popover-link {
+    display: inline-flex;
+    align-items: center;
+  }
+}
+
+/* Phone, 640px and below: the header is one row, the filters stack, every row is a card, and the selection bar stands over the tab bar with Run options a bottom sheet. */
+@media (max-width: 640px) {
+  .tickets-header {
+    flex-wrap: nowrap;
+    gap: var(--space-8) var(--space-10);
+  }
+  .tickets-header .page-header-title {
+    flex: 1 1 auto;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 0;
+    min-width: 0;
+  }
+  .tickets-header .page-heading {
+    font-size: var(--font-size-h1-phone);
+  }
+  .tickets-header .page-count {
+    font-size: var(--font-size-small);
+  }
+  .tickets-header .ghost,
+  .tickets-header .primary {
+    flex: 0 0 auto;
+    min-height: var(--pill-height);
+    padding: 0 var(--space-10);
+    white-space: nowrap;
+  }
+  .tickets-header .primary {
+    padding: 0 var(--space-12);
+  }
+  .header-long {
+    display: none;
+  }
+  .scope-chips {
+    margin: 0 calc(-1 * var(--page-padding-phone));
+    padding: var(--space-4) var(--page-padding-phone);
+  }
+
+  .filter-row {
+    gap: var(--space-10);
+  }
+  .search {
+    flex: 1 1 100%;
+    max-width: none;
+    padding: var(--space-2) 0;
+  }
+  .search input {
+    min-height: var(--input-height-phone);
+    padding-left: calc(var(--space-28) + var(--space-6));
+  }
+  .search-icon {
+    top: calc(var(--space-12) + var(--space-3));
+  }
+  .segments {
+    flex: 1 1 100%;
+    flex-wrap: nowrap;
+  }
+  .segment {
+    flex: 1 1 0;
+    min-height: var(--segment-height-phone);
+    padding: 0 var(--space-6);
+  }
+  .menu-anchor {
+    flex: 1 1 40%;
+  }
+  .menu-anchor > .ghost-dashed {
+    justify-content: center;
+    width: 100%;
+    min-height: var(--pill-height);
+    border-style: solid;
+    border-color: var(--color-border-strong);
+  }
+
+  .row {
+    gap: 0 var(--space-8);
+    /* 12px under the card, not the canvas's 8, so a button on its last line keeps its whole 44px tap above the next card. */
+    padding: var(--space-2) var(--space-12) var(--space-12) calc(var(--space-12) + var(--depth) * var(--space-16));
+  }
+  .row > .row-title {
+    order: 5;
+    flex: 1 1 100%;
+    display: -webkit-box;
+    -webkit-line-clamp: var(--line-clamp-title-phone);
+    -webkit-box-orient: vertical;
+    padding-bottom: var(--space-4);
+    font-size: var(--font-size-14);
+    line-height: var(--line-height-title-phone);
+    white-space: normal;
+  }
+  .row > :not(.row-check, .row-title, .priority-mark, .row-key, .no-plan, .fold-button) {
+    order: 6;
+  }
+  .row-key {
+    flex: 0 0 auto;
+  }
+  .row-project {
+    flex: 0 1 auto;
+    text-align: left;
+  }
+  .row-check {
+    margin: 0 calc(-1 * var(--space-10)) 0 calc(-1 * var(--space-14));
+  }
+
+  /* Not a container here: a container would hold the Run options sheet inside the bar, which is fixed to the screen. */
+  .queue-bar {
+    container-type: normal;
+    position: fixed;
+    left: var(--space-12);
+    right: var(--space-12);
+    bottom: var(--bar-bottom-phone);
+    z-index: var(--z-tabbar);
+  }
+  .shell-main:has(.queue-bar) {
+    padding-bottom: var(--page-bottom-phone-with-bar);
+  }
+  .run-options-anchor {
+    position: static;
+  }
+  .run-options {
+    position: fixed;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    z-index: var(--z-sheet);
+    width: auto;
+    max-width: none;
+    max-height: 80%;
+    overflow: auto;
+    margin: 0;
+    padding-bottom: calc(var(--space-14) + var(--safe-bottom));
+    border-radius: var(--radius-sheet) var(--radius-sheet) 0 0;
+  }
+}

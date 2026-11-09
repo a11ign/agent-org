@@ -21,7 +21,7 @@ describe("the Assignee group", () => {
     expect(within(group()).getByRole("button", { name: /^Anyone/ }).textContent).toBe("Anyone4");
     expect(keysShown()).toEqual(["A11-1", "A11-2", "A11-3", "A11-4"]);
     expect(textOf(document.querySelector(".page-count"))).toBe("4 open");
-    expect(textOf(screen.getByRole("link", { name: /Tickets/ }))).toContain("4");
+    expect(textOf(screen.getAllByRole("link", { name: /Tickets/ }).find((link) => link.closest(".main-nav") !== null) as HTMLElement)).toContain("4");
     fireEvent.click(within(group()).getByRole("button", { name: "Unassigned" }));
     expect(keysShown()).toEqual(["A11-3"]);
     expect(textOf(document.querySelector(".page-count"))).toBe("1 unassigned");
@@ -113,7 +113,8 @@ describe("the Priority, Plan and label menus", () => {
 
   it("has no menu for the Goal group, which the sidebar's Goals choose", async () => {
     await openPage(standOf(answers(MENU_TICKETS)));
-    expect(screen.queryByRole("button", { name: /^Goal/ })).toBeNull();
+    // The Goal chip under the header (A11-427) opens the projects and goals, not a menu of the filter row.
+    expect(screen.queryAllByRole("button", { name: /^Goal/ }).filter((button) => !button.classList.contains("scope-chip"))).toEqual([]);
   });
 });
 

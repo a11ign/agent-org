@@ -122,7 +122,7 @@ describe("Updating: a normal update", () => {
     await goDown(link);
     expect(pill().textContent).toBe("Updating");
     expect(pill().className).toContain("pill-updating");
-    expect(within(screen.getByRole("navigation", { name: "Main" })).getByRole("link", { name: /Runs/ }).textContent).toContain("2");
+    expect(within(screen.getAllByRole("navigation", { name: "Main" }).find((nav) => nav.classList.contains("main-nav")) as HTMLElement).getByRole("link", { name: /Runs/ }).textContent).toContain("2");
     expect(screen.getByLabelText("Instance")).toBeTruthy();
   });
 
