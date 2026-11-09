@@ -977,7 +977,15 @@ pool_probe() { # stderr-file
 # process frees its slot. A pacing step that cannot run lets the call through unpaced, as it always did, rather than failing it.
 pace_ms() { # monotonic milliseconds where `/proc/uptime` is available
   p_ms=$(awk '{ printf "%.0f", $1 * 1000 }' /proc/uptime 2>/dev/null)
-  case "$p_ms" in ''|*[!0-9]*) p_ms=$(date +%s%3N 2>/dev/null); case "$p_ms" in ''|*[!0-9]*) p_ms=$(date +%s)000 ;; esac ;; esac
+  case "$p_ms" in
+    ''|*[!0-9]*)
+      p_ns=$(date +%s%N 2>/dev/null)
+      case "$p_ns" in
+        ''|*[!0-9]*) p_ms=$(date +%s)000 ;;
+        *) if [ "${#p_ns}" -eq 19 ]; then p_ms=${p_ns%??????}; else p_ms=$(date +%s)000; fi ;;
+      esac
+      ;;
+  esac
   printf %s "$p_ms"
 }
 

@@ -170,7 +170,8 @@ const TODAYS_TEXT = {
 // agent-org#1666 MOVED IT AGAIN, deliberately: the wrapper gained the author-refusal block (`app_authoring`, `author_refusal_on`, `author_token`) and the mint retry, behind `gh.refuseFallbackAuthor`. Same staleness, same remedy.
 // A11-75 MOVED IT AGAIN, deliberately: the `pr:open`-only refusal of `gh pr create` skips a ticket-mode worker (`AGENT_ORG_TICKET` set), whose own
 // ticket hook decides the create. Same staleness, re-pinned.
-const TODAYS_GH_WRAPPER = "f604ff13c3a1d113adb4d41671efb7c9660bb1085c642b193aa69bddcbfbb2a8";
+// A11-424 MOVED IT AGAIN, deliberately: the pacing clock uses monotonic uptime where available, with a portable millisecond date fallback, and drops future starts from a prior clock. Same staleness, re-pinned.
+const TODAYS_GH_WRAPPER = "1a93dd02ae06a178154b87668f5177e4285302ee3f3d7817b55955369e57fb83";
 // #2896 MOVED THIS ONE, deliberately: the recorded host's header says `pnpm run host:install` / `pnpm run host:check` where it said `npm run`.
 const TODAYS_LEADS_LIST = "dbca070c4bb7934ff1e9cdc9505f9edee638d98fcff10963b18d5d3a743770a2";
 
