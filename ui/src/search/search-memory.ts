@@ -40,14 +40,28 @@ function isHandoff(value: unknown): value is Handoff {
     && typeof value.fromScope === "string" && typeof value.fromScopeName === "string" && typeof value.expires === "number";
 }
 
-/** Keeps `handoff` for the Tickets page. */
-export const handOver = (storage: Storage | null, handoff: Handoff): void => rememberedJson(storage, HANDOFF_MEMORY, handoff);
+/** Keeps `handoff` for the Tickets page: why the browser refused it, or null once it is kept. */
+export const handOver = (storage: Storage | null, handoff: Handoff): string | null => rememberedJson(storage, HANDOFF_MEMORY, handoff);
 
-/** The handoff waiting for the Tickets page, cleared as it is read; null when there is none, it is not one, or it expired before `now`. */
-export function takeHandoff(storage: Storage | null, now: number): Handoff | null {
+/**
+ * What the Tickets page finds handed over: nothing (none kept, or one that expired), a ticket, the reason what is kept cannot be read, or that the browser refuses its storage. Refused storage
+ * is told apart from an unreadable handoff: no handoff can have been written there, and the palette said so when its write was refused.
+ */
+export type HandoffRead = Readonly<{ kind: "none" }> | Readonly<{ kind: "refused" }> | Readonly<{ kind: "handoff"; handoff: Handoff }> | Readonly<{ kind: "unreadable"; reason: string }>;
+
+/** Why a kept handoff is not one. */
+export const NOT_A_HANDOFF = "what search handed over is not a ticket this page can read";
+
+/** The handoff waiting for the Tickets page, cleared as it is read. */
+export function takeHandoff(storage: Storage | null, now: number): HandoffRead {
+  if (storage === null) return { kind: "refused" };
   const kept = recalledJson(storage, HANDOFF_MEMORY);
-  if (kept !== null) rememberedJson(storage, HANDOFF_MEMORY, null);
-  return isHandoff(kept) && kept.expires > now ? kept : null;
+  if (kept.kind === "absent") return { kind: "none" };
+  // Cleared whatever it holds, so it is acted on once; a clear the browser refuses leaves it to expire.
+  rememberedJson(storage, HANDOFF_MEMORY, null);
+  if (kept.kind === "unreadable") return kept;
+  if (!isHandoff(kept.value)) return { kind: "unreadable", reason: NOT_A_HANDOFF };
+  return kept.value.expires > now ? { kind: "handoff", handoff: kept.value } : { kind: "none" };
 }
 
 /** Whether the scope the person came from would have listed the ticket. */
@@ -59,10 +73,21 @@ const isOpenTicket = (value: unknown): value is OpenTicket =>
 const isRecent = (value: unknown): value is Omit<Match, "run"> =>
   isRecord(value) && typeof value.key === "string" && typeof value.title === "string" && (value.ticket === null || isOpenTicket(value.ticket));
 
+/** The tickets recently opened from the palette, newest first, and why the list kept could not be read (or null): any row it could read is still listed. */
+export type Recent = Readonly<{ matches: Match[]; unreadable: string | null }>;
+
+/** Why a kept Recently opened list is not one. */
+export const NOT_RECENT = "what this browser kept of Recently opened is not a list of tickets";
+
 /** The tickets recently opened from the palette, newest first, without their runs: the palette reads each one's run from the queue as it is now. */
-export function recentOf(storage: Storage | null): Match[] {
+export function recentOf(storage: Storage | null): Recent {
   const kept = recalledJson(storage, RECENT_MEMORY);
-  return (Array.isArray(kept) ? kept.filter(isRecent) : []).slice(0, RECENT_MAX).map((recent) => ({ key: recent.key, title: recent.title, ticket: recent.ticket, run: null }));
+  if (kept.kind === "absent") return { matches: [], unreadable: null };
+  if (kept.kind === "unreadable") return { matches: [], unreadable: kept.reason };
+  const rows: unknown[] = Array.isArray(kept.value) ? kept.value : [];
+  const readable = rows.filter(isRecent);
+  const matches = readable.slice(0, RECENT_MAX).map((recent) => ({ key: recent.key, title: recent.title, ticket: recent.ticket, run: null }));
+  return { matches, unreadable: Array.isArray(kept.value) && readable.length === rows.length ? null : NOT_RECENT };
 }
 
 /** The fields of a ticket a remembered row keeps. */
@@ -71,9 +96,12 @@ const snapshotOf = (ticket: OpenTicket | null): OpenTicket | null => ticket === 
   ...(ticket.statusType === undefined ? {} : { statusType: ticket.statusType }),
 };
 
-/** Puts `match` first in Recently opened, once, keeping the newest `RECENT_MAX`. */
-export function rememberOpened(storage: Storage | null, match: Match): void {
-  const others = recentOf(storage).filter(({ key }) => key !== match.key);
+/**
+ * Puts `match` first in Recently opened, once, keeping the newest `RECENT_MAX`: why the browser refused it, or null. Rows of a list that cannot be read are replaced, so the list is readable
+ * again from here on.
+ */
+export function rememberOpened(storage: Storage | null, match: Match): string | null {
+  const others = recentOf(storage).matches.filter(({ key }) => key !== match.key);
   const recent = [{ key: match.key, title: match.title, ticket: snapshotOf(match.ticket) }, ...others.map(({ key, title, ticket }) => ({ key, title, ticket }))];
-  rememberedJson(storage, RECENT_MEMORY, recent.slice(0, RECENT_MAX));
+  return rememberedJson(storage, RECENT_MEMORY, recent.slice(0, RECENT_MAX));
 }

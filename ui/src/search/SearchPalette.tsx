@@ -71,12 +71,12 @@ function SkeletonRows() {
   );
 }
 
-/** What the tracker answered when it could not search, and Retry. */
-function Refusal({ sentence, onRetry }: Readonly<{ sentence: string; onRetry: () => void }>) {
+/** What the tracker answered when it could not search, with Retry; or why a ticket could not be opened. */
+function Refusal({ title, sentence, onRetry }: Readonly<{ title: string; sentence: string; onRetry?: () => void }>) {
   return (
     <div role="alert" className="search-refusal">
-      <div className="search-refusal-text"><strong>Search did not finish.</strong> {sentence}</div>
-      <button type="button" className="search-retry" onClick={onRetry}>Retry</button>
+      <div className="search-refusal-text"><strong>{title}</strong> {sentence}</div>
+      {onRetry === undefined ? null : <button type="button" className="search-retry" onClick={onRetry}>Retry</button>}
     </div>
   );
 }
@@ -109,24 +109,30 @@ function useResults(shell: ShellValue, text: string) {
   const [attempt, setAttempt] = useState(0);
   const client = useMemo(() => ({ ...shell.client, attempt }), [shell.client, attempt]);
   const search = useWorkspaceSearch(client, text);
-  const [recent] = useState(() => recentOf(browserStorage()));
+  const [kept] = useState(() => recentOf(browserStorage()));
   const query = text.trim();
   const asking = query.length >= SEARCH_MIN_CHARS;
   const queue = shell.queue.data;
   const answered = asking && !search.searching && search.refusal === null;
-  const rows = asking ? (answered ? matchesOf({ found: search.results, queue, known: shell.allTickets, text: query }) : []) : recent.map((match) => withRun(match, queue));
-  return { search, query, asking, rows, recent: !asking, nothingFound: answered && rows.length === 0, retry: () => setAttempt((count) => count + 1) };
+  const rows = asking ? (answered ? matchesOf({ found: search.results, queue, known: shell.allTickets, text: query }) : []) : kept.matches.map((match) => withRun(match, queue));
+  return {
+    search, query, asking, rows, recent: !asking, recentUnreadable: asking ? null : kept.unreadable, nothingFound: answered && rows.length === 0, retry: () => setAttempt((count) => count + 1),
+  };
 }
 
 /** What opening a row does: the ticket is handed to the Tickets page, ticked, and a run's page is loaded. Both are remembered in Recently opened. */
 function useOpeners(shell: ShellValue, page: Page, onClose: () => void) {
   const storage = browserStorage();
+  // Why the last Open ticket could not hand its ticket over, shown in the palette, which stays open.
+  const [refusal, setRefusal] = useState<string | null>(null);
   const openTicket = (match: Match) => {
     if (match.ticket === null) return;
-    rememberOpened(storage, match);
-    handOver(storage, {
+    const refused = handOver(storage, {
       key: match.key, project: match.ticket.project, assignee: match.ticket.assignee ?? null, fromProject: shell.project, fromScope: shell.scope, fromScopeName: scopeNameOf(shell), expires: Date.now() + HANDOFF_TTL_MS,
     });
+    if (refused !== null) return setRefusal(`The ticket could not be handed to the Tickets page: ${refused}.`);
+    // Recently opened is a convenience: a browser that refuses to keep it still opens the ticket, and the palette says it cannot read the list the next time it opens.
+    rememberOpened(storage, match);
     onClose();
     // On Tickets already, the page takes it where it is; from any other page, Tickets is loaded and takes it then.
     if (page === "tickets") globalThis.dispatchEvent(new Event(HANDOFF_EVENT));
@@ -137,7 +143,7 @@ function useOpeners(shell: ShellValue, page: Page, onClose: () => void) {
     rememberOpened(storage, match);
     globalThis.location.assign(runHref(match.key));
   };
-  return { openTicket, viewRun, rememberRun: (match: Match) => rememberOpened(storage, match) };
+  return { openTicket, viewRun, rememberRun: (match: Match) => rememberOpened(storage, match), refusal };
 }
 
 /**
@@ -156,8 +162,8 @@ export function SearchPalette({ page, onClose }: Readonly<{ page: Page; onClose:
   useEffect(() => input.current?.focus(), []);
   const [text, setText] = useState("");
   const [chosen, setChosen] = useState(0);
-  const { search, query, asking, rows, recent, nothingFound, retry } = useResults(shell, text);
-  const { openTicket, viewRun, rememberRun } = useOpeners(shell, page, onClose);
+  const { search, query, asking, rows, recent, recentUnreadable, nothingFound, retry } = useResults(shell, text);
+  const { openTicket, viewRun, rememberRun, refusal } = useOpeners(shell, page, onClose);
   const active = Math.min(chosen, Math.max(rows.length - 1, 0));
   const onKey = (event: KeyboardEvent<HTMLInputElement>) => {
     const match = rows[active];
@@ -191,7 +197,9 @@ export function SearchPalette({ page, onClose }: Readonly<{ page: Page; onClose:
           <span role="status">{count}</span>
         </div>
         <div className="search-body">
-          {asking && search.refusal !== null ? <Refusal sentence={search.refusal} onRetry={retry} /> : null}
+          {refusal === null ? null : <Refusal title="Not opened." sentence={refusal} />}
+          {asking && search.refusal !== null ? <Refusal title="Search did not finish." sentence={search.refusal} onRetry={retry} /> : null}
+          {recentUnreadable === null ? null : <div role="status" className="search-recent-unreadable">Recently opened could not be read: {recentUnreadable}.</div>}
           {recent && rows.length > 0 ? <div className="search-heading">Recently opened</div> : null}
           <ul id="search-results" role="listbox" aria-label="Matching tickets" aria-busy={searching} className="search-list">
             {searching ? <SkeletonRows /> : rows.map((match, index) => (

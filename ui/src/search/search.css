@@ -306,6 +306,13 @@
   font-size: var(--font-size-small);
 }
 
+/* Recently opened, when what this browser kept of it cannot be read. */
+.search-recent-unreadable {
+  padding: var(--space-10) var(--space-16) 0;
+  color: var(--color-warn-text);
+  font-size: var(--font-size-small);
+}
+
 /* No match, and nothing opened yet. */
 .search-note {
   display: flex;

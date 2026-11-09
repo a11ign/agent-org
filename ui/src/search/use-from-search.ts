@@ -14,6 +14,9 @@ type Shown = Readonly<{ handoff: Handoff; project?: string | null; moved: boolea
 /** The banner's words and its Back to my tickets, or null while no ticket is shown from search. */
 export type FromSearch = Readonly<{ key: string; sentence: string; back: () => void }> | null;
 
+/** The banner, and why a ticket handed over from search could not be read (or null). */
+export type FromSearchState = Readonly<{ banner: FromSearch; unreadable: string | null }>;
+
 /** Where the ticket is, as the banner says it: "in agent-org", or "in no project". */
 const whereOf = (handoff: Handoff): string => (handoff.project === null ? "in no project" : `in ${handoff.project}`);
 
@@ -29,28 +32,33 @@ export function fromSearchSentence(handoff: Handoff, viewer: Person | null): str
   return `It is ${whereOf(handoff)} and ${ownerOf(handoff, viewer)}${outside}. Everyone's tickets are shown here.`;
 }
 
-/** Takes a handoff the palette left, on load and whenever the palette hands one over on this page. */
-function useHandoff(): [Handoff | null, () => void] {
+/**
+ * Takes a handoff the palette left, on load and whenever the palette hands one over on this page, and why one it left could not be read. A browser that refuses its storage holds none (the
+ * palette said so when it could not write it), and an expired one is none.
+ */
+function useHandoff(): [Handoff | null, () => void, string | null] {
   const [handoff, setHandoff] = useState<Handoff | null>(null);
+  const [unreadable, setUnreadable] = useState<string | null>(null);
   useEffect(() => {
     const take = () => {
       const taken = takeHandoff(browserStorage(), Date.now());
-      if (taken !== null) setHandoff(taken);
+      if (taken.kind === "handoff") setHandoff(taken.handoff);
+      if (taken.kind === "handoff" || taken.kind === "unreadable") setUnreadable(taken.kind === "unreadable" ? taken.reason : null);
     };
     take();
     globalThis.addEventListener(HANDOFF_EVENT, take);
     return () => globalThis.removeEventListener(HANDOFF_EVENT, take);
   }, []);
   const done = useCallback(() => setHandoff(null), []);
-  return [handoff, done];
+  return [handoff, done, unreadable];
 }
 
 /**
  * The Tickets page's side of the palette (A11-387). A ticket opened from search moves the page to the ticket's project (where the instance picks projects) and to Anyone, and ticks it alone, so
  * "Queue 1 ticket" is ready. The project is chosen first, because choosing a project resets the scope. Back to my tickets puts the project, the scope and the ticks back as they were.
  */
-export function useFromSearch(shell: ShellValue, selection: Selection, batch: BatchState): FromSearch {
-  const [pending, done] = useHandoff();
+export function useFromSearch(shell: ShellValue, selection: Selection, batch: BatchState): FromSearchState {
+  const [pending, done, unreadable] = useHandoff();
   const [shown, setShown] = useState<Shown | null>(null);
   // The shell's choosers are new on every render: the effects read the latest through this, and run only when a handoff arrives or the view changes.
   const latest = useRef({ shell, selection, batch });
@@ -82,7 +90,7 @@ export function useFromSearch(shell: ShellValue, selection: Selection, batch: Ba
     const same = project === shown.project && scope === ANYONE && selected.size === 1 && selected.has(shown.handoff.key);
     if (!same) setShown(null);
   }, [shown, project, scope, selected]);
-  if (shown === null) return null;
+  if (shown === null) return { banner: null, unreadable };
   const { handoff } = shown;
   const back = () => {
     const { shell: now, selection: ticks } = latest.current;
@@ -92,5 +100,5 @@ export function useFromSearch(shell: ShellValue, selection: Selection, batch: Ba
     ticks.pick(shown.ticksBefore);
     setShown(null);
   };
-  return { key: handoff.key, sentence: fromSearchSentence(handoff, shell.config?.viewer ?? null), back };
+  return { banner: { key: handoff.key, sentence: fromSearchSentence(handoff, shell.config?.viewer ?? null), back }, unreadable };
 }

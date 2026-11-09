@@ -1,5 +1,6 @@
 import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { queueingConfig, ticket } from "../../test/fixtures.ts";
+import { HANDOFF_MEMORY, NOT_RECENT, RECENT_MEMORY } from "./search-memory.ts";
 import type { Page } from "../shell/routes.ts";
 import {
   A11_298, A11_301, A11_312, actionsOf, input, keysListed, optionOf, options, palette, press, pressCmdK, pressCtrlK, pressShifted, readyRun, running, searchFor, searching, shellOn, type,
@@ -235,5 +236,46 @@ describe("the states", () => {
     expect(asked).toEqual(["worktree"]);
     fireEvent.click(within(alert).getByRole("button", { name: "Retry" }));
     await waitFor(() => expect(asked).toEqual(["worktree", "worktree"]), { timeout: 2000 });
+  });
+});
+
+describe("what this browser keeps", () => {
+  afterEach(() => {
+    rstest.restoreAllMocks();
+  });
+
+  it("stays open and says why when the browser refuses to keep the ticket for Tickets, leaving the page where it is", async () => {
+    const setItem = localStorage.setItem.bind(localStorage);
+    rstest.spyOn(localStorage, "setItem").mockImplementation((name: string, value: string) => {
+      if (name === HANDOFF_MEMORY) throw new Error("the quota is exceeded");
+      setItem(name, value);
+    });
+    await shellOn(searching(() => [A11_312]).instance);
+    await searchFor("worktree");
+    fireEvent.click(within(optionOf("A11-312")).getByRole("button", { name: "Open ticket" }));
+    expect(within(palette()).getByRole("alert").textContent).toBe("Not opened. The ticket could not be handed to the Tickets page: the quota is exceeded.");
+    expect(location.pathname).toBe("/runs");
+    expect(localStorage.getItem(RECENT_MEMORY)).toBeNull();
+  });
+
+  it("says Recently opened could not be read when what is kept of it is not a list of tickets, and lists none", async () => {
+    localStorage.setItem(RECENT_MEMORY, JSON.stringify({ key: "A11-312" }));
+    await shellOn(searching(() => []).instance);
+    await waitFor(() => button());
+    pressCtrlK();
+    expect(palette().querySelector(".search-recent-unreadable")?.textContent).toBe(`Recently opened could not be read: ${NOT_RECENT}.`);
+    expect(keysListed()).toEqual([]);
+  });
+
+  it("says Recently opened could not be read when the browser refuses to read it", async () => {
+    await shellOn(searching(() => []).instance);
+    await waitFor(() => button());
+    const getItem = localStorage.getItem.bind(localStorage);
+    rstest.spyOn(localStorage, "getItem").mockImplementation((name: string) => {
+      if (name === RECENT_MEMORY) throw new Error("the site's storage is blocked");
+      return getItem(name);
+    });
+    pressCtrlK();
+    expect(palette().querySelector(".search-recent-unreadable")?.textContent).toBe("Recently opened could not be read: the site's storage is blocked.");
   });
 });

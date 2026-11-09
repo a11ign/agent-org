@@ -1,7 +1,7 @@
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { OTHER, VIEWER, queueingConfig, standFetch, ticket, type InstanceAnswers } from "../../test/fixtures.ts";
 import { A11_312, palette, searchFor, searching, standOf } from "../search/search-harness.tsx";
-import { HANDOFF_MEMORY } from "../search/search-memory.ts";
+import { HANDOFF_MEMORY, NOT_A_HANDOFF } from "../search/search-memory.ts";
 import { ShellFrame } from "../shell/ShellFrame.tsx";
 import { ShellProvider } from "../shell/ShellProvider.tsx";
 import { TicketsPage } from "./TicketsPage.tsx";
@@ -168,6 +168,20 @@ describe("a ticket handed over", () => {
     await ticketsOn(flat());
     await waitFor(() => expect(keysShown()).toContain("A11-300"));
     expect(banner()).toBeNull();
+    expect(localStorage.getItem(HANDOFF_MEMORY)).toBeNull();
+  });
+
+  it.each([
+    ["is not JSON", "{not json", `what this browser kept under ${HANDOFF_MEMORY} is not JSON`],
+    ["is not a ticket", JSON.stringify({ key: 312 }), NOT_A_HANDOFF],
+  ])("says so, ticks nothing and clears it when what was handed over %s", async (_what, kept, reason) => {
+    localStorage.setItem(HANDOFF_MEMORY, kept);
+    history.replaceState(null, "", "/tickets");
+    await ticketsOn(flat());
+    await waitFor(() => expect(keysShown()).toContain("A11-300"));
+    expect(screen.getByText(`The ticket opened from search could not be read: ${reason}. Open it from search again.`).closest("[role=status]")).not.toBeNull();
+    expect(banner()).toBeNull();
+    expect(screen.queryByRole("region", { name: "Queue selected tickets" })).toBeNull();
     expect(localStorage.getItem(HANDOFF_MEMORY)).toBeNull();
   });
 });

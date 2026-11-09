@@ -100,7 +100,8 @@ function Body({ page, shell, onNewTicket }: Readonly<{ page: Page; shell: ShellV
     <>
       {restarting}
       <FilterRow filters={page.filters} list={page.list} />
-      {page.fromSearch === null ? null : <FromSearchBanner view={page.fromSearch} />}
+      {page.fromSearch.banner === null ? null : <FromSearchBanner view={page.fromSearch.banner} />}
+      {page.fromSearch.unreadable === null ? null : <StatusBanner>The ticket opened from search could not be read: {page.fromSearch.unreadable}. Open it from search again.</StatusBanner>}
       <HeldBanner held={shell.queue.data?.held} />
       {shell.queue.data?.paused === true ? <PausedBanner /> : null}
       {page.actions.notice === null ? null : <StatusBanner>{page.actions.notice}</StatusBanner>}
