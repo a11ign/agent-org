@@ -15,6 +15,7 @@ import { waitsOn } from "./board-view/pull-status-and-notes.ts";
 import { keysWithStackAbove } from "./board-view/stack-wait.ts";
 import { MAX_WRITER_RUNS, replace, type Entry, type Queue, type WriterPhase, type WriterRun, type WriterTicket } from "./queue/queue-entries-and-outcomes.ts";
 import { placementOf } from "./writer-placement.ts";
+import { notQueued, type AfterWriting } from "./queue/queue-after-writing.ts";
 import { isCheckRun } from "./after-merge/verify.ts";
 import { isCiHeld } from "./ci-spend/hold.ts";
 import { startReadHold } from "./queue/start-reads.ts";
@@ -155,7 +156,7 @@ export function writerAsRead(run: LegacyRun): WriterRun {
  * Add a new-ticket request, queued, with the model and effort it runs on. At most {@link MAX_WRITER_RUNS} are unfinished at once: a fourth is refused,
  * naming why, so a person clears one first. PURE.
  */
-export function queueWriter(queue: Queue, request: Pick<WriterRun, "id" | "request" | "mode" | "placement" | "form" | "model" | "effort"> & Partial<Pick<WriterRun, "ticket" | "startedFrom" | "team" | "checks">>, now: number): Queue {
+export function queueWriter(queue: Queue, request: Pick<WriterRun, "id" | "request" | "mode" | "placement" | "form" | "model" | "effort"> & Partial<Pick<WriterRun, "ticket" | "startedFrom" | "team" | "checks" | "queueAfter">>, now: number): Queue {
   // The board's own runs for its After-merge checks (A11-302) are not new-ticket requests: they neither count toward the cap nor are held by it.
   const open = (queue.writers ?? []).filter((run) => run.phase !== "finished" && !isCheckRun(run.mode)).length;
   if (!isCheckRun(request.mode) && open >= MAX_WRITER_RUNS) throw new Error(`${MAX_WRITER_RUNS} new-ticket requests are unfinished already: finish or stop one before you add another`);
@@ -199,10 +200,11 @@ export const writerResumed = (queue: Queue, id: string, now: number): Queue =>
 
 /**
  * The writer run ended (A11-135): it finished, with the tickets it created, shown as links, and why it failed when it did. A ticket made before a failure
- * stays made and is shown with it. PURE.
+ * stays made and is shown with it. A run that asked for its tickets to be queued records how that went (A11-420). PURE.
  */
-export function writerEnded(queue: Queue, id: string, ended: Readonly<{ tickets: readonly WriterTicket[]; failure?: string }>, now: number): Queue {
-  return replaceWriter(queue, id, (run) => ({ ...notWaiting(run), phase: "finished", finishedAt: now, tickets: ended.tickets, failure: ended.failure }));
+export function writerEnded(queue: Queue, id: string, ended: Readonly<{ tickets: readonly WriterTicket[]; failure?: string; afterWriting?: AfterWriting }>, now: number): Queue {
+  return replaceWriter(queue, id, (run) => ({ ...notWaiting(run), phase: "finished", finishedAt: now, tickets: ended.tickets, failure: ended.failure,
+    ...(ended.afterWriting === undefined ? {} : { afterWriting: ended.afterWriting }) }));
 }
 
 /** The writer run failed: it holds no slot, and the tickets it had made are kept as they are. */
@@ -210,9 +212,10 @@ export function writerFailed(queue: Queue, id: string, failure: string, now: num
   return replaceWriter(queue, id, (run) => ({ ...notWaiting(run), phase: "finished", finishedAt: now, failure }));
 }
 
-/** The person stopped the writer run. Its workspace is closed by the caller, and the tickets it already made stay. */
+/** The person stopped the writer run. Its workspace is closed by the caller, and the tickets it already made stay, unqueued (A11-420). */
 export const stopWriter = (queue: Queue, id: string, now: number, stopped: Readonly<{ tickets: readonly WriterTicket[]; problem: string | null }> = { tickets: [], problem: null }): Queue =>
-  replaceWriter(queue, id, (run) => (run.phase === "finished" ? run : { ...notWaiting(run), phase: "finished", finishedAt: now, tickets: stopped.tickets, failure: joined("stopped on the board", stopped.problem) }));
+  replaceWriter(queue, id, (run) => (run.phase === "finished" ? run : { ...notWaiting(run), phase: "finished", finishedAt: now, tickets: stopped.tickets, failure: joined("stopped on the board", stopped.problem),
+    ...(run.queueAfter === undefined ? {} : { afterWriting: notQueued("the request was stopped on the board") }) }));
 
 /** The failure text from its parts, with the empty ones left out, or undefined when none is left. PURE. */
 export const joined = (...parts: readonly (string | null)[]): string | undefined => {

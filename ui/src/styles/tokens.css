@@ -62,6 +62,9 @@
   --color-warn-border: #5a4a1a;
   --color-warn-border-strong: #6b5a22;
   --color-warn-link: #f6e3a3;
+  /* The note of a request's tickets that were written and not queued (A11-420). */
+  --color-warn-queue-bg: #1f1a0e;
+  --color-warn-queue-text: #f0d98c;
 
   --color-planning: #a78bfa;
 
@@ -130,6 +133,8 @@
   --main-padding-tall: var(--space-20) var(--space-24) var(--space-40);
   --measure-alert-text: 320px;
   --measure-header-basis: 240px;
+  --measure-pills-basis: 260px;
+  --measure-queue-note: 220px;
   --measure-banner-basis: 360px;
   --measure-search-basis: 240px;
   --measure-search-max: 360px;

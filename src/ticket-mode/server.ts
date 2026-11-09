@@ -26,6 +26,7 @@ import { mintTerminalCode, type TerminalMint } from "./terminal-pair.ts";
 import { activatePlugins, realPluginDeps } from "../plugins/active.ts";
 import { defaultCatalog } from "../plugins/registry.ts";
 import { AnswerNotDelivered, createPool, startsReviewers, type PoolDeps } from "./pool.ts";
+import type { QueuedWritten } from "./pool-context.ts";
 // eslint-disable-next-line clean-code/no-duplication -- import list: the rule matches statement shape, and imports are not duplicated logic
 import { gateReviewJudge, loadReviewerGate } from "./reviewer-port.ts";
 import { reviewingBeforeActivation } from "../plugins/reviewing-helpers.ts";
@@ -36,6 +37,7 @@ import { nextVersion, toolFolderReads } from "./update-next.ts";
 import { inWork, takenRefusal, takenState } from "./pick-taken.ts";
 import { countFix, interventionsView, type InterventionsView } from "./queue/interventions.ts";
 import { amend, childOrder, enqueue, type PlanFirst, type Queue, type RunChoice, type WriterRun } from "./queue/queue-entries-and-outcomes.ts";
+import type { QueueAfter } from "./queue/queue-after-writing.ts";
 import { WRITER_REQUEST_CHARS } from "./writer-limits.ts";
 import { type Placement, placementOf } from "./writer-placement.ts";
 import { approve, queuePublish, setMax, pauseQueue, resumeQueue, startAnyway } from "./queue/queue-transitions.ts";
@@ -303,6 +305,46 @@ async function queuedTicket({ known, source }: Pick<Board, "known" | "source">, 
   return fresh;
 }
 
+/** The tickets `keys` name, read as a queue route reads them, and the refusal {@link refuseTaken} gives, if any: what `POST /api/queue` and a writer run's queueing (A11-420) check alike. */
+async function checkedForQueue(board: Pick<Board, "settings" | "source" | "store" | "known" | "claimant">, keys: readonly string[]): Promise<TakenCheck> {
+  const tickets: Ticket[] = [];
+  for (const key of keys) tickets.push(await queuedTicket(board, key));
+  return refuseTaken(board, tickets);
+}
+
+/** What a stopped request's queueing answers (A11-420): it queues nothing. */
+export const STOPPED_BEFORE_QUEUEING = "the request was stopped on the board before its tickets were queued";
+
+/**
+ * A new-ticket run's tickets queued as the run ends (A11-420): checked as `POST /api/queue` checks them, and added by `queueTickets` on the choice the request was stamped with. A
+ * refusal, `refuseTaken`'s or the one `enqueue` throws (`refuseParents` and the rest), is answered as its sentence. A ticket that cannot be read throws. `stillWanted` is asked once the
+ * tracker has been read, just before the add, which nothing can come between: a request stopped while its tickets were being read queues none.
+ */
+async function queueWrittenOf(board: Board, keys: readonly string[], { model, effort, plan }: QueueAfter, stillWanted: () => boolean): Promise<QueuedWritten> {
+  const taken = await checkedForQueue(board, keys);
+  if (taken.refusal !== null) return { refused: taken.refusal.error };
+  if (!stillWanted()) return { refused: STOPPED_BEFORE_QUEUEING };
+  try {
+    board.queueTickets(taken.tickets, { model, effort }, { plan });
+  } catch (err) {
+    return { refused: String((err as Error)?.message ?? err) };
+  }
+  return { queued: taken.tickets.length };
+}
+
+/** What `POST /api/writer`'s `after` may be (A11-420): leave the tickets in the backlog, the default, or queue them once the run ends cleanly. */
+const AFTER_WRITING = ["backlog", "queue"] as const;
+
+/**
+ * The queue defaults a request that asked "Queue them" is stamped with (A11-420): the saved choice's `model` and `effort`, read now, so a Settings change reaches the next request and
+ * this one keeps its own, and planned first. Undefined for a request that keeps its tickets in the backlog. Throws naming the allowed values for any other `after`.
+ */
+function queueAfterOf(body: Json, saved: SavedChoice): QueueAfter | undefined {
+  const after = body.after === undefined ? "backlog" : body.after;
+  if (!(AFTER_WRITING as readonly unknown[]).includes(after)) throw new Error(`after must be ${AFTER_WRITING.map((value) => `"${value}"`).join(" or ")}, not ${JSON.stringify(after)}`);
+  return after === "queue" ? { model: saved.model, effort: saved.effort, plan: true } : undefined;
+}
+
 /**
  * A chairman session's fix made by hand, counted with the Needs-you cards in the health number (A11-257). The tally is a count: what was fixed is required, so a fix is never recorded blind, and `key` is the ticket
  * it was for, when it was for one. The board's log keeps both words, since the tally keeps neither. Answers the view after it.
@@ -328,9 +370,7 @@ async function postRoute(board: Board, method: string, path: string, body: Json)
   if (method === "POST" && path === "/api/queue") {
     const choice = validRunChoice(body);
     const keys = Array.isArray(body.keys) ? body.keys.map(String) : [];
-    const tickets: Ticket[] = [];
-    for (const key of keys) tickets.push(await queuedTicket(board, key));
-    const taken = await refuseTaken(board, tickets);
+    const taken = await checkedForQueue(board, keys);
     if (taken.refusal !== null) return [taken.refusal.status, { error: taken.refusal.error }];
     queueTickets(taken.tickets, choice, { plan: body.plan === true });
     return [200, queueView(board)];
@@ -402,12 +442,13 @@ async function writerRoute(board: Board, method: string, path: string, body: Jso
     if (mode === "grill" && settings.terminal === null) throw new Error("grill needs tickets.terminal, where the run's terminal opens: name it in the host file, or choose quick");
     const form = writerForm(body, settings);
     const placement = writerPlacement(body, form);
-    if (form.parent !== undefined && (await source.read(form.parent)) === null) throw new Error(`no ticket ${form.parent}`);
     // The model and effort are read now and stamped on the request, so a change in Settings reaches the next request, and this one keeps its own.
     const saved = readChoice(deps.choicePath);
+    const queueAfter = queueAfterOf(body, saved);
+    if (form.parent !== undefined && (await source.read(form.parent)) === null) throw new Error(`no ticket ${form.parent}`);
     const model = saved.writerModel ?? settings.writer.model;
     const effort = saved.writerEffort ?? settings.writer.effort;
-    store.set(queueWriter(store.get(), { id: `w${now().toString(36)}`, request, mode, placement, form, model, effort }, now()));
+    store.set(queueWriter(store.get(), { id: `w${now().toString(36)}`, request, mode, placement, form, model, effort, ...(queueAfter === undefined ? {} : { queueAfter }) }, now()));
     wake();
     return [200, writersViewOf(store.get())];
   }
@@ -598,7 +639,9 @@ export function createBoard(deps: BoardDeps) {
   const now = deps.now ?? Date.now;
   let queue: Queue = loadQueue(deps.queuePath, settings.max);
   const store = { get: () => queue, set: (next: Queue) => { queue = next; saveQueue(deps.queuePath, next); deps.queueChanged?.(next); } };
-  const pool = deps.pool ?? createPool(store, { ...deps.poolDeps, settings, source, codeHost, hook: { node: process.execPath, bin: BIN } });
+  // A new-ticket run queues its tickets through the board's own checks (A11-420), which exist once the board does: the pool calls this only as a run ends.
+  const queueWritten = (keys: readonly string[], after: QueueAfter, stillWanted: () => boolean): Promise<QueuedWritten> => queueWrittenOf(board, keys, after, stillWanted);
+  const pool = deps.pool ?? createPool(store, { queueWritten, ...deps.poolDeps, settings, source, codeHost, hook: { node: process.execPath, bin: BIN } });
   const known = { tickets: new Map<string, Ticket>(), claims: new Map<string, string>() };
   let claimantName: string | undefined;
   const claimant = (): string => (claimantName ??= claimantOf(settings));
@@ -653,7 +696,8 @@ export function createBoard(deps: BoardDeps) {
   }
 
   // `known`, `terminalAddress` and `update` are what the board thread's snapshot reads, and where a forwarded write's copies of the page's tickets are kept (`board-thread.ts`).
-  return { handle, api, pool, store, queueTickets, wake, plugins, known, terminalAddress, update };
+  // `queueWritten` is the pool's way to queue a new-ticket run's tickets (A11-420), returned so a test of the board drives it as the pool does.
+  return { handle, api, pool, store, queueTickets, queueWritten, wake, plugins, known, terminalAddress, update };
 }
 
 /**

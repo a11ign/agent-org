@@ -22,6 +22,7 @@ import type { Standoff } from "./standoff-types.ts";
 import type { CapRound, TicketWait } from "./queue-cap.ts";
 import type { CiHold, TicketCi } from "../ci-spend/store.ts";
 import type { Interventions } from "./interventions.ts";
+import type { AfterWriting, QueueAfter } from "./queue-after-writing.ts";
 
 
 
@@ -578,6 +579,10 @@ export type WriterRun = Readonly<{
   toolVersion?: string;
   /** The After-merge checks a `verify` run (one) or a `migrate` pass (up to ten) is for, by id (A11-302). */
   checks?: readonly string[];
+  /** The request asked for its tickets to be queued once the run ends cleanly (A11-420), on the queue defaults stamped when it was made. Absent: they stay in the backlog. */
+  queueAfter?: QueueAfter;
+  /** How the queueing went once a run with `queueAfter` ended (A11-420). Absent on a run without it, and on one still under way. */
+  afterWriting?: AfterWriting;
 }>;
 
 /** The most new-ticket requests that are not finished at once: a fourth is refused until one ends. */
