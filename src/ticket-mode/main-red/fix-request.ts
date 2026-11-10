@@ -3,7 +3,7 @@
 //
 // THE WRITER IS A PRIVILEGED RUN, and a job's log is OUTSIDE INPUT. So the request is built as `dependency-updates/ticket-request.ts` builds its own: the repository and the pull requests rebuilt from addresses matched
 // against `github.com` only, the check's name made quotable, and the error lines of its log quoted as data in a fence and cut to a few short lines. The request begins `unattended:` so the writer takes the create-ticket
-// skill's unattended form. Which checks to ask for is read from the queue: the record of a pull request held as red on main (`not-ours`, A11-179) keeps the checks no ticket owns, with their error lines (`unowned`).
+// skill's unattended form, and names the `Ticket mode` goal label in place of a Bucket. Which checks to ask for is read from the queue: the record of a pull request held as red on main (`not-ours`, A11-179) keeps the checks no ticket owns, with their error lines (`unowned`).
 import type { TicketRequest } from "../dependency-updates/request.ts";
 import type { Entry as DependencyEntry } from "../dependency-updates/filed.ts";
 import { MAX_LINES, quotable } from "../dependency-updates/ticket-request.ts";
@@ -12,8 +12,8 @@ import { WRITER_REQUEST_CHARS } from "../writer-limits.ts";
 import { openPulls } from "../board-view/view-types-and-filters.ts";
 import { currentFix, fixMergedOn } from "./fix-record.ts";
 
-/** The Bucket every fix ticket carries: a check red on main is keep-the-lights-on work. */
-export const FIX_BUCKET = "KTLO";
+/** The goal label every fix ticket carries: the fix is the board's own work, holding its runs' pull requests. The A11ign team has no Bucket label group, so the request names no Bucket (the plan of A11-428). */
+export const FIX_GOAL_LABEL = "Ticket mode";
 /** The most held pull requests a request names. */
 const MAX_PULLS = 10;
 
@@ -35,7 +35,7 @@ export function fixRequest(facts: FixFacts): string {
   const quoted = lines.length === 0 ? "No error lines could be read from the check's log." : `\`\`\`text\n${lines.join("\n")}\n\`\`\``;
   const text = `unattended: file one ticket to fix a check that is red on the default branch.
 
-- **Bucket:** ${FIX_BUCKET}. A check red on main holds every pull request that runs it: keep-the-lights-on work.
+- **Labels:** the \`${FIX_GOAL_LABEL}\` goal label. Set no Bucket label: this team has no Bucket label group.
 - **Team:** \`${team}\`. The board set it on this request: file the ticket in it.
 - **Parent:** none.
 - **Type:** defect.

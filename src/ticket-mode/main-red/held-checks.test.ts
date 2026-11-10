@@ -78,6 +78,7 @@ test("A11-428: a check held as red on main with no owner is recorded with its er
   const text = await requests[0]!.request("A11");
   assert.match(text, /^unattended: file one ticket/, "the writer takes the unattended create");
   assert.ok(text.includes("```text\nnot ok 3 - migrate-host collects no tests\nAssertionError: expected 1 to equal 0\n```"), "the check's error lines are quoted as data");
+  assert.ok(text.includes("- **Labels:** the `Ticket mode` goal label. Set no Bucket label") && !text.includes("**Bucket:**"), "it carries the Ticket mode goal label, and no Bucket, which this team has no group for");
   assert.ok(text.includes(`- **Check:** \`${CHECK}\``) && text.includes(`  - ${URL_1}`) && text.includes("- **Team:** `A11`"), "it names the check, the pull request it holds and the team");
 });
 
