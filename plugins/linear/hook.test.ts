@@ -60,7 +60,8 @@ test("A11-135: a new-ticket run may create a ticket with no id and no blocks, an
   assert.equal(verdict(CREATE, { id: "7d1c5e2a-0000-4000-8000-000000000001", title: "x" }), 2, "a UUID id is an update too");
   assert.match(toolVerdict(CREATE, { title: "x", blocks: ["A11-3"] }, GRANTED).say[0], /writes a relation on another ticket/);
   assert.equal(verdict(UPLOAD, { issue: "A11-3", filename: "x.md" }), 2, "an attachment to a ticket this run did not create");
-  assert.equal(verdict(CREATE, { title: "x" }, { created: Array.from({ length: 10 }, (_, i) => `A11-${i + 1}`) }), 2, "an eleventh creation");
+  assert.equal(verdict(CREATE, { title: "x" }, { created: Array.from({ length: 24 }, (_, i) => `A11-${i + 1}`) }), 0, "the twenty-fifth creation is allowed");
+  assert.equal(verdict(CREATE, { title: "x" }, { created: Array.from({ length: 25 }, (_, i) => `A11-${i + 1}`) }), 2, "a twenty-sixth creation");
   assert.equal(verdict(CREATE, { title: "x" }, { created: null }), 2, "a record that cannot be read refuses a creation");
   assert.equal(verdict(UPLOAD, { issue: "A11-140" }, { created: null }), 2, "and an attachment");
   assert.equal(toolVerdict("mcp__linear__save_comment", {}, GRANTED).code, 2, "every other write stays refused");
@@ -96,11 +97,11 @@ test("A11-135: each creation is recorded as its result returns, by the hook alon
 test("A11-135: the record counts a run's creations, fails closed when it cannot be read, and is the board's own file", () => {
   const dir = tmpDir("ticket-hook-count-");
   writeFileSync(join(dir, "writer-run"), JSON.stringify({ mode: "quick", tools: [CREATE, UPLOAD, ATTACH] }));
-  writeFileSync(join(dir, CREATED_FILE), `${Array.from({ length: 10 }, (_, i) => `{"identifier":"A11-${i + 1}"}`).join("\n")}\n`);
+  writeFileSync(join(dir, CREATED_FILE), `${Array.from({ length: 25 }, (_, i) => `{"identifier":"A11-${i + 1}"}`).join("\n")}\n`);
   const pre = (tool_name: string, tool_input: Record<string, unknown>) => main(JSON.stringify({ tool_name, tool_input }), ["pre-tool-use", dir]).code;
-  assert.equal(pre(CREATE, { title: "x" }), 2, "the eleventh creation");
-  assert.equal(pre(UPLOAD, { issue: "A11-10", filename: "x.md" }), 0, "an attachment to the tenth");
-  assert.equal(pre(UPLOAD, { issue: "A11-11", filename: "x.md" }), 2, "an attachment to a ticket past the record");
+  assert.equal(pre(CREATE, { title: "x" }), 2, "the twenty-sixth creation");
+  assert.equal(pre(UPLOAD, { issue: "A11-25", filename: "x.md" }), 0, "an attachment to the twenty-fifth");
+  assert.equal(pre(UPLOAD, { issue: "A11-26", filename: "x.md" }), 2, "an attachment to a ticket past the record");
   assert.equal(pre("Write", { file_path: join(dir, CREATED_FILE) }), 2, "a worker may not write the record");
   assert.equal(pre("Bash", { command: `echo '{}' >> ${dir}/${CREATED_FILE}` }), 2, "nor append to it");
   writeFileSync(join(dir, CREATED_FILE), "garbage\n");
