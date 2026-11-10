@@ -5816,7 +5816,7 @@ async function twoRunsHeldOnMain() {
   ctx.store.set(finish(finish(ctx.store.get(), "NBF-1", { kind: "reviewed", prs: [approvedPr] }, 100), "NBF-2", { kind: "reviewed", prs: [PR_2] }, 100));
   await watchRound(ctx.pool);
   for (const [key, pr, head] of [["NBF-1", approvedPr, HEAD_1], ["NBF-2", PR_2, HEAD_2]] as const) {
-    assert.deepEqual(ctx.entry(key).checkHeads, { [pr.url]: { head, step: "not-ours", note: HELD_NOTE, notOurs: { ui: null }, waitingOnMain: ["ui"] } }, `${key} is held as red on main, and records which check it waits on`);
+    assert.deepEqual(ctx.entry(key).checkHeads, { [pr.url]: { head, step: "not-ours", note: HELD_NOTE, notOurs: { ui: null }, waitingOnMain: ["ui"], unowned: { ui: ["not ok 3 - git spawn classification", "AssertionError: expected 1 to equal 2"] } } }, `${key} is held as red on main, and records which check it waits on, and, with no owner named, its error lines for a fix ticket (A11-428)`);
     assert.deepEqual([ctx.entry(key).phase, ctx.entry(key).rounds], ["finished", undefined], `${key} has no round`);
   }
   return { ...ctx, ci, pulls };

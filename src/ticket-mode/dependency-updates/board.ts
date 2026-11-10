@@ -9,6 +9,7 @@ import type { Ticket, TicketSource } from "../source.ts";
 import { dependencyUpdateSweep } from "./sweep.ts";
 import { defectRequests } from "../watchdog-defect.ts";
 import { readRecord, watchdogPath } from "../watchdog-record.ts";
+import { fixRequests } from "../main-red/fix-request.ts";
 
 /** The file the sweep keeps what it asked for in: beside the queue, in the board's tickets directory. */
 export const DEPENDENCY_TICKETS_FILE = "dependency-tickets.json";
@@ -61,8 +62,8 @@ export function boardDependencySweep(board: BoardDependencies): () => Promise<vo
     writer: () => (settings.writer === null ? null : { model: choice().writerModel ?? settings.writer.model, effort: choice().writerEffort ?? settings.writer.effort }),
     runChoice: () => ({ model: choice().model, effort: choice().effort }),
     queueTickets: board.queueTickets, wake: board.wake, now: board.now, log: (line) => process.stderr.write(`ticket:serve: ${line}\n`),
-    // The watchdog's record is read at every sweep: an hour with more than two restarts is asked for once (A11-363).
-    requests: () => defectRequestsOf(watchdogPath(settings.stateDir), board.now()),
+    // The watchdog's record is read at every sweep: an hour with more than two restarts is asked for once (A11-363). A check that holds pull requests as red on main with no owner is asked one fix ticket for (A11-428), unless the machine turned that off.
+    requests: (tickets) => [...defectRequestsOf(watchdogPath(settings.stateDir), board.now()), ...(settings.fixRedMain === true ? fixRequests(board.store.get(), tickets) : [])],
   });
   // The clones' origins are read beside the loop first, so the sweep's repositories come from the cache and not from a `git` it waits on for each clone (A11-282).
   return async () => {
