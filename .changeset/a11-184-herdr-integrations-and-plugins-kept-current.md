@@ -1,5 +1,0 @@
----
-"agent-org": patch
----
-
-herdr's `claude` and `codex` integrations are installed by every `agent-org onboard` (`herdr integration install claude`, then `codex`, one line each, also with `--no-terminal`), and the herdr web ui is installed at its newest release tag, never the default branch. Each `agent-org update` run now reads `herdr integration status` and re-installs either integration when it is outdated or missing, moves the herdr plugin agent-org installed (`devswha/herdr-web-ui`) to its newest release tag with `herdr plugin install <repo> --ref <tag> -y`, restarts only the terminal service when the web ui moved, and logs what it changed. `agent-org doctor` fails a `herdr claude integration` or `herdr codex integration` row that is outdated or missing, naming the command, and prints a `WARN` row (the exit code is unchanged) when herdr or an installed herdr plugin is behind its newest release. A herdr upgrade stays a person's step, because it restarts every pane; doctor prints the steps.

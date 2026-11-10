@@ -1,5 +1,0 @@
----
-"agent-org": patch
----
-
-A ready `lane:ceo` row that carries a path, not a decision, can be run by a one-shot seat that carries the ceo brief instead of waiting for the standing `ceo` seat (a11ign/agent-org#914, Phase 1b of a11ign/a11ign#4505, the second lane after #832), behind `workers.ceoOneShot` in the host declaration, which is OFF. With it on, `wake.ts` turns the gate's order for such a row into one addressed to `engineers` with the sibling cause `ready-ceo-row-unclaimed` (`SPAWN_CAUSES` is untouched) and `briefRole: "ceo"`; the spawn path starts the spare named for the row, briefs it with `ceo.md`, writes #947's record of the spawn before the claim and takes it back if the claim is refused or the spawn fails; and a row whose Acceptance names a fleet or lab command, or that is under a future `Fleet-hold-until`, is held while a ceo run is live. `SPAWN_BRIEF_ROLES` now lists `ceo`. With the flag off the order, what `deliver` does with it and the record file are unchanged, and no record is written. `ROUTED_TO`, `FLEET_LAB_PATTERNS`, `fleetOrLabAcceptance` and `laneReason` are not edited. Revert: remove `workers.ceoOneShot` (or set it to `false`).
