@@ -31,8 +31,11 @@ export type DependencySweepDeps = Readonly<{
   wake: () => void;
   now: () => number;
   log: (line: string) => void;
-  /** Requests that are not a pull request's (A11-363): the watchdog's defects. Each is asked for once by its key, as a pull request's are, and settled by the same sweep. Absent: none. */
-  requests?: () => readonly TicketRequest[];
+  /**
+   * Requests that are not a dependency pull request's: the watchdog's defects (A11-363) and the fixes of checks red on main (A11-428), given what the sweep has recorded, by key. Each is asked for once by its key, as a pull
+   * request's are, and settled by the same sweep. Absent: none.
+   */
+  requests?: (tickets: Readonly<Record<string, Entry>>) => readonly TicketRequest[];
 }>;
 
 /** What a sweep remembers between sweeps, in memory only: the lines it has said, and the count that keeps its run ids apart. */

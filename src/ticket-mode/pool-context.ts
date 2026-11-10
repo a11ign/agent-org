@@ -40,6 +40,8 @@ import { type FlakeLog, flakesPath, flakesViewOf, recordFlakes } from "./flakes.
 import type { StartReadsState } from "./pool-start-reads.ts";
 import { READ_TIMEOUT_MS } from "./queue/start-reads.ts";
 import { callOutcomes, type CallLedger } from "./call-outcomes.ts";
+import { DEPENDENCY_TICKETS_FILE } from "./dependency-updates/board.ts";
+import { fixReadsOf, type FixReads } from "./main-red/fix-owners.ts";
 
 /** What {@link PoolDeps.queueWritten} answers (A11-420): how many tickets it queued, or the sentence its refusal gave. */
 export type QueuedWritten = Readonly<{ queued: number } | { refused: string }>;
@@ -273,6 +275,11 @@ export type PoolContext = Readonly<{
   workspaceCloses: WorkspaceCloses;
   /** Asks for a pass now (A11-364): `createPool` sets it to its tick, and work that queues a run after the pass decided calls it (a plan attached, a run moved to the repository its worker named). Nothing until then, as in a context no pool made. */
   wake: { run: () => void };
+  /**
+   * Reads the board's fix tickets for checks red on main (A11-428): which fix owns a held check, and whether it merged. Undefined when the machine's `tickets.fixRedMain` is off, and in a context no pool made: a held pull
+   * request then names only the owner its `Blocked-by:` line or the check's refusal names, as before A11-428.
+   */
+  fixes?: () => FixReads;
 }>;
 
 /** Build a pool's context from its store and deps: the seams it is given, the state it keeps, and what it remembers of its reviewers. */
@@ -354,6 +361,7 @@ export function newPoolContext(store: QueueStore, deps: PoolDeps): PoolContext {
     reseating: new Map<string, Reseat>(), envLost: new Map<string, readonly string[]>(), paneEnv: deps.paneEnv ?? livePaneEnv(herdrCall, settings.herdrSession),
     exposure: { at: null, checks: [], said: new Map<string, string>() }, hostAlerts: newHostAlertState(), runTmpBase: deps.privateTmpBase === undefined ? undefined : resolve(deps.privateTmpBase), legacySweep: newLegacySweepState(),
     startReads: { pending: new Set<Promise<void>>(), reading: new Set<string>() }, workspaceCloses: new Set<Promise<void>>(), wake: { run: () => {} },
+    fixes: settings.fixRedMain === true ? fixReadsOf(join(settings.stateDir, "tickets", DEPENDENCY_TICKETS_FILE), store.get, log) : undefined,
   };
 }
 

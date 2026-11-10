@@ -100,6 +100,11 @@ export type TicketSettings = Readonly<{
    */
   designTools: boolean;
   /**
+   * Whether the board files a fix ticket for a check that holds a pull request as red on main with no owner, queues it, and brings the held pull requests up to date with main once it merges (A11-428). True by default;
+   * false keeps the hold as it was before: the card names only an owner a `Blocked-by:` line or the check's refusal names. Optional, so a settings object made by hand (a test's) leaves it off.
+   */
+  fixRedMain?: boolean;
+  /**
    * Whether this machine can capture the board for a worker (`ticket:capture`): both Chromium builds start, so the worker brief asks for a capture of a page a
    * change alters, and the pull request shows it. False by default: a worker is then not told to capture. Onboard sets it when both builds start.
    */
@@ -421,6 +426,13 @@ function designToolsOf(value: unknown): boolean {
   return value;
 }
 
+/** `tickets.fixRedMain`: false for the board not to file fix tickets for checks red on main (A11-428). Absent is true. Any other value is refused by name. */
+function fixRedMainOf(value: unknown): boolean {
+  if (value === undefined) return true;
+  if (typeof value !== "boolean") throw new TicketSettingsRefusal("tickets.fixRedMain", `must be true or false, not ${JSON.stringify(value)}`);
+  return value;
+}
+
 /** `tickets.capture`: true when this machine can capture the board for a worker. Absent is false. Any other value is refused by name. */
 function captureOf(value: unknown): boolean {
   if (value === undefined) return false;
@@ -599,6 +611,7 @@ export function parseTicketSettings(host: unknown, home: string = homedir(), mac
     publish: publisherOf(publish),
     drafts: draftsOf(tickets.drafts),
     designTools: designToolsOf(tickets.designTools),
+    fixRedMain: fixRedMainOf(tickets.fixRedMain),
     capture: captureOf(tickets.capture),
     prReview: prReviewOf(tickets.prReview),
     reviewer: isActive(reviewer) ? reviewer.provider : null,

@@ -16,6 +16,9 @@ import { log, messageOf } from "./pool-state.ts";
 import { ownerOfRed } from "./ticket-references.ts";
 import { conflictLine } from "./worker-files.ts";
 import { type PoolContext } from "./pool-context.ts";
+import { MAX_LINES } from "./dependency-updates/ticket-request.ts";
+import type { FixOwner, FixReads } from "./main-red/fix-owners.ts";
+import { repositoryOfPull } from "./main-red/fix-request.ts";
 
 /** The most error lines a round's brief quotes from the logs of all the checks that failed at a head, and the most characters of each: a brief names the failure, it is not the log. */
 export const QUOTED_LINES = 40;
@@ -144,38 +147,77 @@ function rerun(ctx: PoolContext, checks: readonly ReadCheck[]): Promise<string |
   return ctx.codeHost.rerunFailedChecks(checks.flatMap(({ detailsUrl }) => (detailsUrl === null ? [] : [detailsUrl])));
 }
 
+/** A held check as the watch reads it: the ticket a `Blocked-by:` line or its refusal names as its owner, or null, and, when the log was read, its last error lines (A11-428), else null. */
+type HeldRead = Readonly<{ owner: string | null; lines: readonly string[] | null }>;
+
 /**
  * The ticket that owns a red check the run cannot mend: the one the pull request's `Blocked-by:` line names, else the one the check's own refusal text names (A11-179): a failing test's title names tickets too, and is no owner. A check that was named at this head
- * already has its answer in `previous`, so its log is not read again on every watch. Null when no ticket is named.
+ * already has its answer in `previous`, so its log is not read again on every watch, unless the board files fixes (`fixes`) and the record holds no error lines for a check no ticket owns (one made before A11-428).
  */
-async function ownerOf(ctx: PoolContext, key: string, body: string, check: FailingCheck, previous: Readonly<Record<string, string | null>>): Promise<string | null> {
+async function heldCheckOf(ctx: PoolContext, key: string, body: string, check: FailingCheck, previous: CheckHead | undefined): Promise<HeldRead> {
   const viaBody = ownerOfRed(key, body, []);
-  if (viaBody !== null) return viaBody;
-  if (Object.hasOwn(previous, check.name)) return previous[check.name];
-  return ownerOfRed(key, "", (await readCheck(ctx, check)).refusals);
+  if (viaBody !== null) return { owner: viaBody, lines: null };
+  const owners = previous?.notOurs ?? {};
+  const known = previous?.unowned?.[check.name] ?? null;
+  // An owner named at this head is the answer; so is "no owner", once its error lines are recorded or the board files no fixes and needs none.
+  const answeredBefore = Object.hasOwn(owners, check.name) && (owners[check.name] !== null || known !== null || ctx.fixes === undefined);
+  if (answeredBefore) return { owner: owners[check.name] ?? null, lines: known };
+  const read = await readCheck(ctx, check);
+  return { owner: ownerOfRed(key, "", read.refusals), lines: read.lines.slice(-MAX_LINES) };
 }
 
-/** The card's note for checks held as red on main, with the ticket that owns each when one is named. PURE. */
-const heldNote = (names: readonly string[], owners: Readonly<Record<string, string | null>>): string =>
-  names.map((name) => `${name} is red on main / not this run's${(owners[name] ?? null) === null ? "" : `; owned by ${owners[name]}`}`).join("; ");
+/** What the card says of a held check's owner: the ticket named, else the board's fix ticket (A11-428), or that one is being filed, else nothing. PURE. */
+function ownerWords(named: string | null, fix: FixOwner | undefined): string {
+  if (named !== null) return `; owned by ${named}`;
+  if (fix === undefined) return "";
+  return "ticket" in fix ? `; owned by ${fix.ticket}` : "; a fix ticket is being filed";
+}
+
+/** The card's note for checks held as red on main, with the ticket that owns each when one is named, or the board's fix ticket for it (A11-428). PURE. */
+const heldNote = (names: readonly string[], owners: Readonly<Record<string, string | null>>, fixes: Readonly<Record<string, FixOwner>> = {}): string =>
+  names.map((name) => `${name} is red on main / not this run's${ownerWords(owners[name] ?? null, fixes[name])}`).join("; ");
+
+/** The board's fixes for the held checks no ticket owns (A11-428), by check, from one read of its fix tickets, `applied` being the fixes the pull request has taken. None when the board files none, or the pull request's repository is not one of github.com's. PURE. */
+function fixOwnersOf(reads: FixReads | undefined, url: string, unowned: readonly string[], applied: readonly string[]): Record<string, FixOwner> {
+  const repository = repositoryOfPull(url);
+  if (reads === undefined || repository === null) return {};
+  return Object.fromEntries(unowned.flatMap((name) => {
+    // A fix that merged and that this pull request has not taken yet is still its owner: the pull request is brought up to date with main for it, and only red again after that is a new fix asked for.
+    const merged = reads.lastMerged(repository, name);
+    const fix = reads.ownerOf(repository, name) ?? (merged !== null && !applied.includes(merged) ? { ticket: merged } : null);
+    return fix === null ? [] : [[name, fix]];
+  }));
+}
 
 /**
  * The record for a head whose red checks are all ones the run cannot mend (A11-179): they fail on the default branch, or on pull requests that touch none of the run's files. No round is started and
  * nothing is rerun. The card is told so, with the ticket that owns each check when one is named. Made again on every watch, and said in the log when it changes. It records which of the checks are red on
- * the default branch (`waitingOnMain`, A11-215), and keeps those an earlier record at this head recorded, so a watch that cannot read main does not forget what the pull request waits on.
+ * the default branch (`waitingOnMain`, A11-215), and keeps those an earlier record at this head recorded, so a watch that cannot read main does not forget what the pull request waits on. When the board files
+ * fixes (A11-428), the checks no ticket owns are recorded with their error lines (`unowned`), which the dependency sweep asks the writer to fix, and the card names the board's fix ticket for each (`fixes`).
  */
 async function notOursAnswer(ctx: PoolContext, entry: Entry, pull: Readonly<{ url: string; read: PullFeedback }>, outside: readonly FailingCheck[], known: CheckHead | undefined, reds: ForeignRedsRead): Promise<CheckHead> {
-  const { read } = pull;
+  const { url, read } = pull;
   const sameHead = known?.head === read.head && known.step === "not-ours";
-  const previous = sameHead ? known.notOurs ?? {} : {};
+  const reads = ctx.fixes?.();
   const owners: Record<string, string | null> = {};
-  for (const check of outside) owners[check.name] = await ownerOf(ctx, entry.ticket.key, read.body ?? "", check, previous);
+  const unowned: Record<string, readonly string[]> = {};
+  for (const check of outside) {
+    const held = await heldCheckOf(ctx, entry.ticket.key, read.body ?? "", check, sameHead ? known : undefined);
+    owners[check.name] = held.owner;
+    if (reads !== undefined && held.owner === null) unowned[check.name] = held.lines ?? [];
+  }
   // A roll-up that failed reports its jobs' results: with every job behind it elsewhere's, it is red for the same reason and belongs to the same ticket.
   const owner = Object.values(owners).find((name) => name !== null) ?? null;
   for (const name of read.failing.filter((failing) => isRollUpCheck(failing) && !Object.hasOwn(owners, failing))) owners[name] = owner;
-  const note = heldNote(outside.map(({ name }) => name), owners);
+  const applied = known?.applied ?? [];
+  const fixes = fixOwnersOf(reads, url, Object.keys(unowned), applied);
+  const filed = Object.fromEntries(Object.entries(fixes).flatMap(([name, fix]) => ("ticket" in fix ? [[name, fix.ticket]] : [])));
+  const note = heldNote(outside.map(({ name }) => name), owners, fixes);
   const waiting = [...new Set([...(sameHead ? known.waitingOnMain ?? [] : []), ...Object.keys(owners).filter((name) => reds.onMain.has(name))])].filter((name) => Object.hasOwn(owners, name));
-  const answer: CheckHead = { head: read.head!, step: "not-ours", note, notOurs: owners, ...(waiting.length === 0 ? {} : { waitingOnMain: waiting }) };
+  const answer: CheckHead = {
+    head: read.head!, step: "not-ours", note, notOurs: owners, ...(waiting.length === 0 ? {} : { waitingOnMain: waiting }),
+    ...(Object.keys(unowned).length === 0 ? {} : { unowned }), ...(Object.keys(filed).length === 0 ? {} : { fixes: filed }), ...(applied.length === 0 ? {} : { applied }),
+  };
   if (JSON.stringify(known) !== JSON.stringify(answer)) log(`${entry.ticket.key}: ${note}`);
   return answer;
 }
@@ -355,6 +397,58 @@ export async function askUpdate(ctx: PoolContext, url: string, head: string): Pr
   }
 }
 
+/** Why the board cannot bring a held pull request up to date with main itself, or null when it can: the host has no update, or the pull request is stacked on another branch, which an update would give it in place of main. PURE. */
+function cannotUpdate(ctx: PoolContext, read: PullFeedback, mainBranch: string): string | null {
+  if (ctx.codeHost.updateBranch === undefined) return "the code host cannot update a branch";
+  return read.base === mainBranch ? null : `it is based on ${read.base ?? "another branch"}, not on ${mainBranch}`;
+}
+
+/** Whether the known record is the hold (`not-ours`) at the pull request's head, naming a fix of the board's (A11-428). PURE. */
+const isHeldOnFix = (known: CheckHead | undefined, head: string): known is CheckHead & { fixes: Readonly<Record<string, string>> } =>
+  known?.step === "not-ours" && known.head === head && known.fixes !== undefined;
+
+/** Whether a held pull request waits before the board updates it: it conflicts (its conflict round is the answer), or its run holds a workspace. PURE. */
+const waitsToUpdate = (entry: Entry, read: PullFeedback): boolean => read.conflicting || entry.workspace !== undefined;
+
+/**
+ * What {@link updateOnFix} did: the answer for the pull request; or, for the hold made next, the merged fixes it found the pull request already has (`applied`), or why the board cannot update it (`why`), which its card says.
+ */
+type FixUpdate = { lines: string[]; answer: CheckHead } | Readonly<{ applied?: readonly string[]; why?: string }>;
+
+/**
+ * THE RULE OF A11-428: a pull request held as red on main on a check the board filed a fix ticket for is brought up to date with main once that ticket's pull request merges, whether or not main runs the check, so its checks run
+ * again with the fix in them. It applies when the known record is the hold (`not-ours`) at the pull request's head and names a fix (`fixes`) the board's read says merged, and it has not taken that fix yet (`applied`). The updated
+ * record says why the checks run again, and carries the fixes taken. An update that finds nothing to take answers the fixes as taken: the branch has them, and its red is read afresh. A pull request that conflicts, whose run
+ * holds a workspace, whose default branch was not read, or whose update the host refused, is answered as any hold is, still naming the fix, and asked again next watch. One the board cannot update (no update on the host, a
+ * stacked base) is too, and its card says why, for a person. Null when the rule does not apply.
+ */
+async function updateOnFix(ctx: PoolContext, entry: Entry, pull: Readonly<{ url: string; read: PullFeedback }>, known: CheckHead | undefined, reds: ForeignRedsRead): Promise<FixUpdate | null> {
+  const { url, read } = pull;
+  if (read.head === null || !isHeldOnFix(known, read.head)) return null;
+  const reads = ctx.fixes?.();
+  if (reads === undefined) return null;
+  const merged = Object.entries(known.fixes).filter(([, ticket]) => reads.merged(ticket) && !(known.applied ?? []).includes(ticket));
+  const { mainBranch } = reds;
+  if (merged.length === 0 || mainBranch === null || waitsToUpdate(entry, read)) return null;
+  const tickets = [...new Set(merged.map(([, ticket]) => ticket))];
+  const applied = [...(known.applied ?? []), ...tickets];
+  const blocked = cannotUpdate(ctx, read, mainBranch);
+  if (blocked !== null) return { why: `${tickets.join(", ")} merged, but the board cannot update from main (${blocked}): a person updates it` };
+  const result = await askUpdate(ctx, url, read.head);
+  if (result.kind === "updated") {
+    const note = `${tickets.join(", ")} merged with the fix for ${merged.map(([name]) => name).join(", ")}: updated from main, so the checks run again`;
+    log(`${entry.ticket.key}: ${note} (${url})`);
+    return { lines: [], answer: { head: read.head, step: "updated", note, applied } };
+  }
+  if (result.kind === "up-to-date") return { applied };
+  if (result.kind === "refused") return { why: `${tickets.join(", ")} merged, but the board could not update from main (${result.reason}), asked again next watch` };
+  log(`${entry.ticket.key}: ${url} could not be updated from main after ${tickets.join(", ")} merged: it conflicts with its base`);
+  return { lines: [conflictLine(url, read.base)], answer: known };
+}
+
+/** A hold with why the board cannot update it from main after its fix merged (A11-428) added to its card's note, when there is a why. PURE. */
+const withWhy = (answer: CheckHead, why: string | undefined): CheckHead => (why === undefined ? answer : { ...answer, note: `${answer.note}; ${why}` });
+
 /**
  * THE RULE OF A11-215: a pull request held as red on main is brought up to date with main once main reports the checks it waits on passing, and not before. It applies when the known record is the hold (`not-ours`) at the pull
  * request's head with checks recorded as waited on main, every check the pull request has red now is one of them, and the host can update a branch. Main is read for those checks now ({@link mainSays}): still failing, or a host that cannot
@@ -382,7 +476,8 @@ async function updateHeld(ctx: PoolContext, entry: Entry, pull: Readonly<{ url: 
  * infrastructure reason are rerun, once, and named on the card; red again on the same head after that, they are named for a person and no worker gets them. A head with a check of each kind is a rerun and then a round for the code's, which names the others.
  * A round that ended with the head where it was and the checks still red is answered by a rerun when the worker's reply says the failure is not its change's ({@link rerunOnUnrelatedReply}).
  * A check that is red where the run's files are not (`foreign`, A11-179) is the run's no more than an infrastructure failure is a fault in its change: it starts no round and is not rerun, and it is
- * looked at again on every watch, which is why it is the one record that does not end the answer for its head. A pull request held as red on main whose checks main now passes is brought up to date with main instead ({@link updateHeld}).
+ * looked at again on every watch, which is why it is the one record that does not end the answer for its head. A pull request held as red on main whose checks main now passes is brought up to date with main instead ({@link updateHeld}), and so is one whose
+ * fix ticket, which the board filed, merged ({@link updateOnFix}, A11-428).
  */
 async function answerPull(ctx: PoolContext, entry: Entry, pull: Readonly<{ url: string; read: PullFeedback }>, known: CheckHead | undefined, foreign: ForeignReds): Promise<{ lines: string[]; answer: CheckHead | null }> {
   const { url, read } = pull;
@@ -402,6 +497,10 @@ async function answerPull(ctx: PoolContext, entry: Entry, pull: Readonly<{ url: 
   // The failed jobs of a run are rerun only once the run has finished: a head not answered yet waits for its running checks, before any log is read (A11-300).
   if (!reran && !looked && runStillGoing(read, ctx.now())) return none;
   const reds = await foreign(entry, url);
+  const fixed = await updateOnFix(ctx, entry, pull, known, reds);
+  if (fixed !== null && "answer" in fixed) return fixed;
+  // The fixes an update found the branch already has are taken: the hold made next does not name them, and its red is read afresh.
+  const heldRecord = fixed?.applied === undefined ? known : { ...known!, applied: fixed.applied };
   const mended = await updateHeld(ctx, entry, pull, known, reds);
   if (mended !== null) return mended;
   const answered = checksToAnswer(read);
@@ -413,7 +512,7 @@ async function answerPull(ctx: PoolContext, entry: Entry, pull: Readonly<{ url: 
   if (own.length > 0) return answerOwn(ctx, entry, pull, { own, infrastructure, outside }, reran ? known : undefined, known);
   // The rerun of the code's own checks is still under way, and what is red now is neither the code's own nor an infrastructure failure: its record is kept, not replaced by a hold or an infrastructure rerun that would forget what to record if it passes (A11-300).
   if (infrastructure.length === 0 && isUnsettledRerun(known, read.head)) return none;
-  if (infrastructure.length === 0 && outside.length > 0) return { lines: [], answer: await notOursAnswer(ctx, entry, pull, outside, known, reds) };
+  if (infrastructure.length === 0 && outside.length > 0) return { lines: [], answer: withWhy(await notOursAnswer(ctx, entry, pull, outside, heldRecord, reds), fixed?.why) };
   return { lines: [], answer: await answerInfrastructure(ctx, entry, { head: read.head, checks: infrastructure, reran: reran && known.rerun === undefined }) };
 }
 
