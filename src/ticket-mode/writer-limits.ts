@@ -7,5 +7,5 @@
 /** The longest request a new-ticket run takes, in characters. */
 export const WRITER_REQUEST_CHARS = 8000;
 
-/** The most tickets one writer run may create: the hook refuses an eleventh creation. */
-export const MAX_CREATED = 10;
+/** The most tickets one writer run may create: the hook refuses a twenty-sixth creation. Room for an epic of 20 ideas in one repository, and a cap on a runaway run. */
+export const MAX_CREATED = 25;
