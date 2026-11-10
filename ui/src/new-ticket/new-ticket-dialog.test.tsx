@@ -14,14 +14,14 @@ describe("the dialog", () => {
     expect(textOf(inDialog().getByRole("heading", { level: 2 }))).toBe("New ticket");
     expect(inDialog().getByLabelText("What is the ticket for?")).toBeTruthy();
     expect((inDialog().getByLabelText("What is the ticket for?") as HTMLTextAreaElement).placeholder).toBe("Describe it in plain words. The writer turns it into one or more tickets.");
-    expect(textOf(document.getElementById("new-ticket-count"))).toBe("0 / 8000 · one request can become up to 10 tickets");
+    expect(textOf(document.getElementById("new-ticket-count"))).toBe("0 / 8000 · one request can become up to 25 tickets");
   });
 
   it("counts the request against the limits the server enforces", async () => {
     await pageOver();
     openDialog();
     typeRequest("Add a retry button");
-    expect(textOf(document.getElementById("new-ticket-count"))).toBe("18 / 8000 · one request can become up to 10 tickets");
+    expect(textOf(document.getElementById("new-ticket-count"))).toBe("18 / 8000 · one request can become up to 25 tickets");
     expect((inDialog().getByLabelText("What is the ticket for?") as HTMLTextAreaElement).maxLength).toBe(8000);
   });
 
