@@ -115,11 +115,26 @@ test("a browser that has not paired gets the pairing page and no API, and a code
     const paired = await pairWith(u.base, code);
     assert.equal(paired.status, 200);
     const cookie = String(paired.headers.get("set-cookie"));
-    assert.match(cookie, /^ticket_session=[0-9a-f]{48}; HttpOnly; SameSite=Strict; Path=\/; Max-Age=31536000$/);
+    assert.match(cookie, /^ticket_session=[0-9a-f]{48}; HttpOnly; SameSite=Lax; Path=\/; Max-Age=31536000$/);
     assert.equal(cookie.includes(u.local.key), false, "the browser gets a session of its own, not the key");
     const page = await fetch(`${u.base}/`, { headers: { cookie: cookie.split(";")[0] } });
     assert.match(await page.text(), /<title>Next root<\/title>/, "a paired browser's / is the built UI");
     assert.equal((await pairWith(u.base, code)).status, 401, "a code pairs one browser");
+  } finally {
+    await u.close();
+  }
+});
+
+test("a browser that is already paired and presses Pair again is answered as paired, with no new cookie, and spends no code", async () => {
+  const u = await ui([WORK], { uiBuilds: [builtUi().root] });
+  try {
+    const cookie = await pairedCookie(u.base, u.local.key);
+    const { code } = await (await fetch(`${u.base}/api/pair-code`, { method: "POST", headers: { "x-ticket-token": u.local.key } })).json() as { code: string };
+    const again = await fetch(`${u.base}/pair`, { method: "POST", headers: { "Content-Type": "application/json", cookie }, body: JSON.stringify({ code: "WRONG-CODE" }) });
+    assert.equal(again.status, 200, "not `no route POST /pair`");
+    assert.deepEqual(await again.json(), { paired: true });
+    assert.equal(again.headers.get("set-cookie"), null, "its own session stands");
+    assert.equal((await pairWith(u.base, code)).status, 200, "the live code was not spent");
   } finally {
     await u.close();
   }
