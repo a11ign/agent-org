@@ -1,5 +1,0 @@
----
-"agent-org": patch
----
-
-Model routing through the decision provider is no longer pinned to Sonnet/high. The `covered` question ("does the Acceptance fully cover the Done-when?") was answered `no` on every logged decision, because a Done-when always runs past the Acceptance command, and composing it as a gate sent every provider route to Sonnet/high: dearer than the file-count fallback it replaced. It is no longer asked, and the answers compose as: mechanical with a score of at most 2 (or the score not given and a Region of at most 3 files) is Haiku/high; a score of at most 3 with subsystems not answered `yes` is Sonnet/medium; debugging an unknown failure, or anything else, is Sonnet/high. Each provider route's decision-log line now ends `[fallback would be <route>]`, and when the provider's last 20 routes averaged dearer than the fallback's a `route-costlier-than-fallback` event is written to the failure ledger (one per UTC day). The `score` levels and the `subsystems` options now carry their signals and examples drawn from merged rows, inside the same string criteria. a11ign/a11ign#4764.
