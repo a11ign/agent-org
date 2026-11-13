@@ -16,6 +16,7 @@ import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { delimiter, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { stopChild } from "../src/lib/stop-child.ts";
 import { captureHost, HERDR_STUB } from "../src/ticket-mode/capture.ts";
 import type { HealthView, RequestHealthView } from "../src/ticket-mode/health-route.ts";
 import type { LoopReading } from "../src/ticket-mode/loop-delay.ts";
@@ -180,15 +181,7 @@ export async function startThrowawayInstance(dir: string, { gated = false, holds
   const instance: ChildProcess = spawn(process.execPath, [join(CHECKOUT, "src", "bin.ts"), "ticket:serve"], { env, stdio: ["ignore", "ignore", "pipe"] });
   let stderr = "";
   instance.stderr?.on("data", (chunk: Buffer) => { stderr += chunk.toString(); });
-  const stop = async (): Promise<void> => {
-    releaseGh();
-    if (instance.exitCode !== null || instance.signalCode !== null) return;
-    const exited = new Promise<void>((done) => { instance.once("exit", () => done()); });
-    instance.kill("SIGTERM");
-    const killer = setTimeout(() => instance.kill("SIGKILL"), STOP_GRACE_MS);
-    await exited;
-    clearTimeout(killer);
-  };
+  const stop = (): Promise<void> => { releaseGh(); return stopChild(instance, STOP_GRACE_MS); };
   try {
     await waitFor("the instance answering", async () => (await timedRead(port, "/api/queue")).status === 200 || instance.exitCode !== null);
   } catch (err) {
