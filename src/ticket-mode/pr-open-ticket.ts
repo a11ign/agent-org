@@ -22,6 +22,7 @@ import { HOST_FILE_ENV, readTicketSettings, type TicketSettings } from "./settin
 import { DEFAULT_KEYWORDS, type Keywords, type TicketSource } from "./source.ts";
 import { ticketDir, ticketFolder } from "./ticket-paths.ts";
 import { READY_FILE } from "./worker-files.ts";
+import { LOCAL_REVIEW_FILE, LOCAL_REVIEW_RECORD_FILE, localReviewCheck, readLocalReviews, type LocalReviewRecord } from "./local-review-record.ts";
 import { TICKET_ENV } from "./worktree-command.ts";
 
 /**
@@ -52,6 +53,11 @@ export type TicketContext = Readonly<{
   hasChangesets: boolean;
   /** The two words the tracker reads a pull request's body by, which name the ticket and say whether it completes it (A11-92). */
   keywords: Keywords;
+  /**
+   * The review of the local diff a create needs (A11-440), present when the pool marked the run with `tickets.localReview` on: the last review recorded for this tree, or null for none.
+   * Absent is off, and nothing is checked.
+   */
+  localReview?: Readonly<{ record: LocalReviewRecord | null }>;
 }>;
 
 /** The environment a ticket-mode run is started with, as the pool sets it. */
@@ -64,6 +70,8 @@ export type TicketReadDeps = Readonly<{
   /** `git` in the tree `pr:open` runs in. */
   git: (args: string[]) => string;
   exists?: (path: string) => boolean;
+  /** Reads the local review's record beside the outcome file. */
+  read?: (path: string) => string;
 }>;
 
 /**
@@ -72,7 +80,7 @@ export type TicketReadDeps = Readonly<{
  * The tracker's key is read only to make the two reads; nothing is written to the tracker and the key is never printed.
  * @returns {Promise<TicketContext>}
  */
-export async function readTicketContext(env: TicketEnv, { settings = () => hostSettingsOf(env), source = trackerOf, git, exists = existsSync }: TicketReadDeps): Promise<TicketContext> {
+export async function readTicketContext(env: TicketEnv, { settings = () => hostSettingsOf(env), source = trackerOf, git, exists = existsSync, read }: TicketReadDeps): Promise<TicketContext> {
   const key = env[TICKET_ENV.key] ?? "";
   const branch = env[TICKET_ENV.branch] ?? "";
   if (branch === "") throw new Error(`${TICKET_ENV.branch} is unset, so the branch the ticket's worktrees are made on is not known`);
@@ -95,6 +103,8 @@ export async function readTicketContext(env: TicketEnv, { settings = () => hostS
     rmSync(dir, { recursive: true, force: true });
   }
   const tree = gitOrNull(git, ["rev-parse", "--show-toplevel"]);
+  const runDir = ticketDir(host, key);
+  const localReview = exists(join(runDir, LOCAL_REVIEW_FILE)) ? { localReview: { record: tree === null ? null : readLocalReviews(join(runDir, LOCAL_REVIEW_RECORD_FILE), read)[tree] ?? null } } : {};
   return {
     key,
     branch,
@@ -102,15 +112,16 @@ export async function readTicketContext(env: TicketEnv, { settings = () => hostS
     treeKey: tree === null ? null : treeKeyUnder(ticketFolder(host, key), tree),
     regionText,
     regionFrom,
-    readyRun: exists(join(ticketDir(host, key), READY_FILE)),
+    readyRun: exists(join(runDir, READY_FILE)),
     prReview: host.prReview,
     hasChangesets: tree !== null && exists(join(tree, ".changeset", "config.json")),
     keywords: tracker.keywords ?? DEFAULT_KEYWORDS,
+    ...localReview,
   };
 }
 
 /** The host file a run names: the pool gives it as `AGENT_ORG_TICKET_HOST`, else the host's own `AGENT_ORG_HOST`. */
-const hostSettingsOf = (env: TicketEnv): TicketSettings => readTicketSettings({ [HOST_FILE_ENV]: env[TICKET_ENV.host] ?? env[HOST_FILE_ENV] });
+export const hostSettingsOf = (env: TicketEnv): TicketSettings => readTicketSettings({ [HOST_FILE_ENV]: env[TICKET_ENV.host] ?? env[HOST_FILE_ENV] });
 
 /** The tracker the host file names: the enabled tracker plugin's source, built with the key its block names. It alone is built: a command that reads one ticket needs no publisher or reviewer, whose plugin a broken package must not refuse it for. */
 const trackerOf = async (host: TicketSettings): Promise<TicketSource> =>
@@ -158,7 +169,7 @@ type StepVerdict = { refusal: string | null; note: string | null };
 export type TicketChecks = { refusal: string | null; notes: string[] };
 
 /**
- * THE CHECKS OF A TICKET'S PULL REQUEST, in the order a row's are made: the owner, the draft policy, the Region, and the changeset. The first refusal
+ * THE CHECKS OF A TICKET'S PULL REQUEST, in the order a row's are made: the owner, the draft policy, the review of the local diff (A11-440), the Region, and the changeset. The first refusal
  * stops the create, and the notes say what each check found. `base` is the `origin/<base>` the diff is read against, and `diff` the local tree's
  * changed files, read the way the body's checks read them.
  * @param {string} mode @param {string[]} rest the args handed to `gh pr <mode>` @param {string} body @param {TicketContext} ticket
@@ -172,6 +183,9 @@ export function ticketChecks(mode: string, rest: string[], body: string, ticket:
   const draft = ticketDraftRefusal(mode, rest, ticket);
   if (draft !== null) return { refusal: draft, notes: [] };
   const notes: string[] = [];
+  const reviewed = localReviewStep(mode, body, ticket, { git, base });
+  if (reviewed.note !== null) notes.push(reviewed.note);
+  if (reviewed.refusal !== null) return { refusal: reviewed.refusal, notes };
   const region = regionCheck(body, ticket, { git, base, rootFiles });
   if (region.note !== null) notes.push(region.note);
   if (region.refusal !== null) return { refusal: region.refusal, notes };
@@ -196,6 +210,17 @@ function ownerRefusal(ticket: TicketContext, git: (args: string[]) => string): s
   const where = branch === null ? "a checkout git could not read" : branch === "HEAD" ? "a detached HEAD" : `\`${branch}\``;
   return `pr-open: REFUSED -- ${ticket.key}'s branch is \`${ticket.branch}\`, but this working tree is on ${where}. Run pr:open from that branch's worktree. `
     + "Nothing was sent to GitHub (A11-74).";
+}
+
+/**
+ * THE REVIEW OF THE LOCAL DIFF (A11-440), on a run the pool marked with `tickets.localReview` on: a create needs a review of this tree at its current commit (`localReviewCheck`). Only
+ * `create` is asked: an `edit` opens nothing, and the board's own review reads each new head.
+ * @param {string} mode @param {string} body @param {TicketContext} ticket @param {{ git: (args: string[]) => string, base: string }} deps `base` is the `origin/<base>` the create's diff is read against
+ * @returns {StepVerdict}
+ */
+function localReviewStep(mode: string, body: string, ticket: TicketContext, { git, base }: { git: (args: string[]) => string; base: string }): StepVerdict {
+  if (mode !== "create" || ticket.localReview === undefined) return { refusal: null, note: null };
+  return localReviewCheck({ record: ticket.localReview.record, head: gitOrNull(git, ["rev-parse", "HEAD"]), base, body, key: ticket.key });
 }
 
 /**

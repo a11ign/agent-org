@@ -10,6 +10,7 @@ import { tmpDir } from "../lib/tmp-fixture.ts";
 import { MAX_STOP_REFUSALS, main, prReviewEvent, protectedFiles, publishConnectors, publisherSkills, readOutcomeFile, resolveWritePath, stopVerdict, toolVerdict, writerGrants } from "./hook.ts";
 import { buildCatalog, defaultCatalog } from "../plugins/registry.ts";
 import { FINDINGS_GIVEN_FILE, FINDINGS_RETRIED_FILE, OPENED_FILE, PROTECTED_FILE, QUESTION_FILE, READY_FILE, defaultBinDir, protectedPaths } from "./worker-files.ts";
+import { LOCAL_REVIEW_FILE, LOCAL_REVIEW_RECORD_FILE } from "./local-review-record.ts";
 import { lineForm } from "./blocker-findings-check.ts";
 import { outcomeWritten } from "./pool-outcome.ts";
 import { CREATED_FILE } from "./writer.ts";
@@ -1006,4 +1007,13 @@ test("A11-358: the hook says when the record of the pull requests a run opened c
   assert.match(answer.say.join("\n"), /ticket:hook: 1 of 2 lines of opened-pulls\.jsonl are not a pull request, so only the pull requests it did read may be marked ready by URL\./);
   const other = main(JSON.stringify({ tool_name: "Bash", tool_input: { command: "gh pr ready https://github.com/a11ign/lab/pull/159" } }), ["pre-tool-use", dir]);
   assert.equal(other.code, 2, "one it did not read is refused");
+});
+
+test("A11-440: the local review's mark and its record are not a worker's to write, and the command that writes the record is the worker's to run", () => {
+  const dir = tmpDir("ticket-hook-local-review-");
+  const call = (tool_name: string, tool_input: Record<string, unknown> = {}) => main(JSON.stringify({ tool_name, tool_input }), ["pre-tool-use", dir]).code;
+  assert.equal(call("Write", { file_path: join(dir, LOCAL_REVIEW_RECORD_FILE) }), 2, "a worker may not write the record");
+  assert.equal(bash(`echo '{}' > ${dir}/${LOCAL_REVIEW_RECORD_FILE}`), 2);
+  assert.equal(bash(`rm ${dir}/${LOCAL_REVIEW_FILE}`), 2, "nor lift the check by removing the mark");
+  assert.equal(bash("agent-org ticket:review-local --base main"), 0, "POSITIVE CONTROL: running the review is allowed");
 });
