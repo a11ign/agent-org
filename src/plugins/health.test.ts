@@ -102,14 +102,39 @@ test("A11-163: Install is offered on a bundled plugin that is not installed, and
   assert.match(replacing.controls.confirm.install ?? "", /^Install local\? It replaces tailscale as the exposure: its settings tailnetPorts are dropped, since local does not declare them\.$/);
 });
 
-test("A11-163: a plugin that needs a secret offers no Install button, but the install command and the command for each secret", () => {
-  const health = healthOf(FRESH);
+test("A11-445: a plugin whose every secret is a command offers no Install button, but the install command and the command for each secret", () => {
+  const base = defaultCatalog();
+  const telegramOf = base.plugins.find(({ name }) => name === "telegram")!;
+  const commandOnly: CatalogPlugin = { ...telegramOf, settings: Object.fromEntries(Object.entries(telegramOf.settings).map(([name, entry]) => [name, { ...entry, enter: undefined }])) };
+  const health = healthOf(FRESH, { catalog: { ...base, plugins: base.plugins.map((plugin) => (plugin.name === "telegram" ? commandOnly : plugin)) } });
   const telegram = pluginOf(health, "telegram");
   assert.equal(telegram.controls.offered.includes("install"), false);
   assert.equal(telegram.installCommand, "agent-org plugin install telegram");
   assert.deepEqual(telegram.secrets.map(({ setting }) => setting), ["tokenFile", "chairmanFile", "announcementsFile"]);
   assert.match(telegram.secrets[0].command, /telegram-token/);
   assert.equal(telegram.secrets[1].command, "agent-org messaging:pair");
+});
+
+test("A11-445: a plugin whose every secret the page takes offers Install; one with a secret set only on the host does not, though its token is still a field", () => {
+  const linear = pluginOf(healthOf({ tickets: { providers: { codeHost: { provider: "github" } } } }, { platform: "linux" }), "linear");
+  assert.deepEqual(linear.controls.offered, ["install", "configure"], "key.path is a field, and key.keychain is its alternative off a Mac");
+  const telegram = pluginOf(healthOf(FRESH, { platform: "linux" }), "telegram");
+  assert.equal(telegram.controls.offered.includes("install"), false, "the chairman is paired on the host");
+  assert.deepEqual(telegram.secrets.map(({ setting, field }) => [setting, field]), [
+    ["tokenFile", { place: "the file ~/.config/agent-org/telegram-token", sets: "messaging.tokenFile" }],
+    ["chairmanFile", null],
+    ["announcementsFile", null],
+  ], "the pairing file and the announcements chat id stay commands");
+});
+
+test("A11-445: a Keychain secret is a field only on a Mac, and a setting whose sibling holds the plugin's source is no field", () => {
+  const field = (host: unknown, platform: string, setting: string) => pluginOf(healthOf(host, { platform }), "linear").secrets.find((secret) => secret.setting === setting)?.field;
+  assert.equal(field(FRESH, "linux", "key.keychain"), null, "Linux has no Keychain");
+  assert.deepEqual(field(FRESH, "darwin", "key.keychain"), { place: "the Keychain service agent-org-linear", sets: "tickets.providers.tracker.key" });
+  assert.deepEqual(field(FRESH, "linux", "key.path"), { place: "the file ~/.config/agent-org/linear.key", sets: "tickets.providers.tracker.key" });
+  const onFile = { tickets: { providers: { tracker: { provider: "linear", key: { path: "/home/me/.agent-org/linear.key" } }, codeHost: { provider: "github" } } } };
+  assert.deepEqual(field(onFile, "darwin", "key.path"), { place: "the file /home/me/.agent-org/linear.key", sets: null }, "a held place is written as it is, and no key is set");
+  assert.equal(field(onFile, "darwin", "key.keychain"), null, "linear reads key.path, so its Keychain service is not offered");
 });
 
 test("A11-163: a secret's command is filled from the setting's value, and from the plugin's default when the file holds none", () => {
