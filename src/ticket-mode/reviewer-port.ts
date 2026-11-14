@@ -90,12 +90,16 @@ export function gateReviewJudge(): ReviewJudge {
   return { fields: orders.REVIEW_PULL_FIELDS, trustOf: (pr) => trust.reviewTrustOf(pr, declared), settledOf: (pr, required) => orders.settledGreenOf(pr, required), unrequiredRedOf: (pr, required) => orders.unrequiredRedOf(pr, required) };
 }
 
+/** The newest review the reviewer posted on `head`, whatever its state, or undefined when it has posted none there. */
+export const newestReviewOn = (reviews: readonly Review[], head: string): Review | undefined =>
+  reviews.filter((r) => r.author === REVIEWER_LOGIN && r.commit === head).sort((a, b) => b.at - a.at)[0];
+
 /**
  * The reviewer's verdict on `head`: the newest review it posted on that commit, `convinced` for an approval and `not-convinced` for requested
  * changes; null while it has not posted one. A review on an earlier head says nothing about this one.
  */
 export function reviewVerdict(reviews: readonly Review[], head: string): "convinced" | "not-convinced" | null {
-  const newest = reviews.filter((r) => r.author === REVIEWER_LOGIN && r.commit === head).sort((a, b) => b.at - a.at)[0];
+  const newest = newestReviewOn(reviews, head);
   if (newest === undefined) return null;
   return newest.state === "APPROVED" ? "convinced" : newest.state === "CHANGES_REQUESTED" ? "not-convinced" : null;
 }
@@ -105,7 +109,7 @@ export function reviewVerdict(reviews: readonly Review[], head: string): "convin
  * newest counts, and only when it is a block: a head the reviewer approved has no block to answer.
  */
 export function standingBlock(reviews: readonly Review[], head: string): Review | null {
-  const newest = reviews.filter((r) => r.author === REVIEWER_LOGIN && r.commit === head).sort((a, b) => b.at - a.at)[0];
+  const newest = newestReviewOn(reviews, head);
   return newest?.state === "CHANGES_REQUESTED" ? newest : null;
 }
 
