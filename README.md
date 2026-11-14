@@ -24,8 +24,6 @@ Then `agent-org onboard` sets the machine up. Each task has a short page of its 
 | [Troubleshooting](docs/guide/troubleshooting.md) | `agent-org doctor`, the watchdog and the board's health |
 | [Working on agent-org](docs/guide/development.md) | the TypeScript source and the board UI package (`ui/`) |
 
-[docs/installing-and-updating.md](docs/installing-and-updating.md) is the longer account of installing and updating.
-
 ## Releases
 
 **A tag is the release.** `v<version>` on this repository, with a GitHub Release carrying the `CHANGELOG.md` entry, and nothing is published to a registry. **A tag is

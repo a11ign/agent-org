@@ -1,6 +1,6 @@
 # Install
 
-[Back to the README](../../README.md).
+[Back to the README](../../README.md). [docs/installing-and-updating.md](../installing-and-updating.md) is the longer account of installing and updating.
 
 Install the newest release with one command. It uses no `sudo`:
 
@@ -43,7 +43,7 @@ name a project's `package.json` script used (`row-file`, `pr:open`, `board:settl
 
 ## What an install holds
 
-`src/` (the programs and their data, without `*.test.*`), `host/` (the unit templates `host:install` reads), `LICENSE`, `README.md` and
+`src/` (the programs and their data, without `*.test.*`), `host/` (the unit templates `host:install` reads), `LICENSE`, `README.md`, `docs/guide/` (the pages the README links to) and
 `package.json`. The tests are not shipped: they read the project's tree and run in this repository's CI. A version folder installed from a release that ships the board UI's
 build also holds `ui-build/` (A11-191): the static files CI built and attached to the release, which `ticket:ui` serves at `/`. It lives inside the version folder, so a run
 that started on a version keeps that version's UI, and a prune removes it with the folder.

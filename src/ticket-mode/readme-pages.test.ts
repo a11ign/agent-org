@@ -32,6 +32,15 @@ function brokenLinks(file: string, markdown: string, exists: (path: string) => b
     .map((target) => `${file}: ${target}`);
 }
 
+/** The paths `package.json`'s `files` ships, as prefixes: an entry ships itself and everything under it. Its `!` entries only drop test files, which no README links to. */
+const shippedPrefixes = (packageJson: string): string[] =>
+  (JSON.parse(packageJson) as { files: string[] }).files.filter((entry) => !entry.startsWith("!"));
+
+/** Each link target the package does not ship: a README installed into a project's `node_modules` would link to nothing there. */
+function unshippedTargets(targets: readonly string[], shipped: readonly string[]): string[] {
+  return targets.filter((target) => !shipped.some((entry) => target === entry || target.startsWith(`${entry}/`)));
+}
+
 const guidePagesOnDisk = (): string[] => readdirSync(join(ROOT, GUIDE)).filter((name) => name.endsWith(".md")).map((name) => `${GUIDE}/${name}`).sort();
 
 test(`the README is under ${README_MAX_LINES} lines and links to a page for each task`, () => {
@@ -49,6 +58,15 @@ test("the list of guide pages is the folder's pages, so a new page is named and 
 test("every relative link in the README and the guide pages names a file that exists", () => {
   const exists = (path: string): boolean => existsSync(join(ROOT, path));
   assert.deepEqual(["README.md", ...GUIDE_PAGES].flatMap((file) => brokenLinks(file, read(file), exists)), []);
+});
+
+test("every page the README links to is in the package, so an installed README's links resolve", () => {
+  assert.deepEqual(unshippedTargets(relativeLinkTargets(read("README.md")), shippedPrefixes(read("package.json"))), []);
+});
+
+test("a target is shipped by an entry that is it or a folder above it, and a `!` entry ships nothing", () => {
+  const shipped = shippedPrefixes(JSON.stringify({ files: ["src", "!src/**/*.test.ts", "docs/guide", "README.md"] }));
+  assert.deepEqual(unshippedTargets(["docs/guide/install.md", "README.md", "docs/guide-old.md", "docs/other.md"], shipped), ["docs/guide-old.md", "docs/other.md"]);
 });
 
 test("a link is resolved from the folder of the page it is on, and a web or in-page link is not a file", () => {
