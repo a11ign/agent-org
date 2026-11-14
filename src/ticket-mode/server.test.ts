@@ -744,19 +744,20 @@ function epicBoard(blockers: TicketSource["blockers"] | null) {
   return { ...board(4747, {}, { source }), reads };
 }
 
-test("A11-76: the queue refuses a parent with a 400 that says why, over HTTP, and queues the same ticket once its sub-issues are done", async () => {
+test("A11-429: a parent sent to /api/queue is queued as its open sub-issues, never itself, beside the ordinary tickets with it, and an epic of epics down to its leaves", async () => {
   const b = epicBoard(null);
   await b.api("GET", "/api/tickets", {});
-  await assert.rejects(b.api("POST", "/api/queue", { keys: ["A11-25", "A11-24"], model: "opus", effort: "high" }),
-    /A11-24 has 3 open sub-issues \(A11-27, A11-25, A11-26\): a parent is not queued.*Queue its children instead/);
-  assert.deepEqual(b.store.get().entries, [], "nothing of the request is queued, not even the ordinary ticket beside the parent");
-  const [, queue] = await b.api("POST", "/api/queue", { keys: ["A11-30"], model: "opus", effort: "high" }) as [number, any];
-  assert.deepEqual(queue.entries.map((e: any) => e.ticket.key), ["A11-30"], "an epic with no sub-issue open is an ordinary ticket");
-  const source: TicketSource = createFakeTracker([{ ...ticket("A11-24"), children: ["A11-25"] }]);
+  const [, queue] = await b.api("POST", "/api/queue", { keys: ["A11-30", "A11-24", "A11-25"], model: "opus", effort: "high" }) as [number, any];
+  assert.deepEqual(queue.entries.map((e: any) => e.ticket.key), ["A11-30", "A11-25", "A11-26", "A11-27"],
+    "the ordinary ticket, then A11-24's sub-issues in identifier order; A11-25, named twice, is queued once, and A11-24 is not queued");
+  const nested = epicBoard(null);
+  const [, deep] = await nested.api("POST", "/api/queue", { keys: ["A11-40"], model: "opus", effort: "high" }) as [number, any];
+  assert.deepEqual(deep.entries.map((e: any) => e.ticket.key), ["A11-25", "A11-26", "A11-27", "A11-41"], "A11-40's sub-issue A11-24 is itself a parent, so its own sub-issues are queued");
+  const source: TicketSource = createFakeTracker([{ ...ticket("A11-24"), children: ["A11-25"] }, ticket("A11-25")]);
   await overHttp(async (base) => {
-    const refused = await fetch(`${base}/api/queue`, { method: "POST", headers: keyed, body: JSON.stringify({ keys: ["A11-24"], model: "opus", effort: "high" }) });
-    assert.equal(refused.status, 400);
-    assert.match((await refused.json() as { error: string }).error, /^A11-24 has 1 open sub-issue \(A11-25\): a parent is not queued/);
+    const answer = await fetch(`${base}/api/queue`, { method: "POST", headers: keyed, body: JSON.stringify({ keys: ["A11-24"], model: "opus", effort: "high" }) });
+    assert.equal(answer.status, 200, "not the 400 that queued nothing (A11-429)");
+    assert.deepEqual(((await answer.json()) as any).entries.map((e: any) => e.ticket.key), ["A11-25"]);
   }, { source });
 });
 
@@ -1086,15 +1087,15 @@ test("A11-420: a request stopped while its tickets are read queues none: the sto
   assert.deepEqual(await b.queueWritten(["NBF-1", "NBF-2"], { model: "sonnet", effort: "high", plan: false }, () => true), { queued: 2 }, "POSITIVE CONTROL: a run still running queues them");
 });
 
-test("A11-420: a run's queueing is refused with the queue's own sentence when another instance holds a ticket or one is a parent, and nothing is queued", async () => {
+test("A11-420: a run's queueing is refused with the queue's own sentence when another instance holds a ticket, and nothing is queued; a parent it filed is queued as its sub-issues", async () => {
   const taken = board(4747, {}, {}, trackerClaimedBy(["NBF-1"], [inProgress("NBF-1"), ticket("NBF-2")]));
   assert.deepEqual(await taken.queueWritten(["NBF-2", "NBF-1"], { model: "sonnet", effort: "high", plan: true }, () => true),
     { refused: "NBF-1 is In Progress in the tracker and desk.99999999 claimed it, so another instance holds it" }, "refuseTaken's sentence, as /api/queue answers it");
   assert.deepEqual(taken.store.get().entries, [], "not even the ticket that is free");
-  const parent = board(4747, {}, {}, createFakeTracker([{ ...ticket("A11-24"), children: ["A11-25"] }, ticket("A11-30")]));
-  const refused = await parent.queueWritten(["A11-30", "A11-24"], { model: "sonnet", effort: "high", plan: false }, () => true);
-  assert.match("refused" in refused ? refused.refused : "", /^A11-24 has 1 open sub-issue \(A11-25\): a parent is not queued/, "enqueue's refusal, as its sentence");
-  assert.deepEqual(parent.store.get().entries, []);
+  const parent = board(4747, {}, {}, createFakeTracker([{ ...ticket("A11-24"), children: ["A11-25"] }, ticket("A11-25"), ticket("A11-30")]));
+  const queued = await parent.queueWritten(["A11-24", "A11-25", "A11-30"], { model: "sonnet", effort: "high", plan: false }, () => true);
+  assert.deepEqual(queued, { queued: 2 }, "an epic a writer run filed, with its sub-issue, queues the sub-issue once and not the epic (A11-429)");
+  assert.deepEqual(parent.store.get().entries.map((e) => e.ticket.key), ["A11-25", "A11-30"]);
   await assert.rejects(parent.queueWritten(["NBF-404"], { model: "sonnet", effort: "high", plan: false }, () => true), /no ticket NBF-404/, "a ticket that cannot be read throws, as the route's read does");
 });
 
