@@ -106,6 +106,11 @@ export type TicketSettings = Readonly<{
    */
   fixRedMain?: boolean;
   /**
+   * The answerer (A11-438, `auto-answer.ts`): whether a cheap model tries to answer a worker's `needs-human` question from what is written down before the run is parked for a person (`on`, off by default), the confidence
+   * an answer needs (`threshold`, 0.9 by default) and the model asked (`model`, `haiku` by default). Optional, so a settings object made by hand (a test's) leaves it off.
+   */
+  autoAnswer?: AutoAnswerSettings;
+  /**
    * Whether this machine can capture the board for a worker (`ticket:capture`): both Chromium builds start, so the worker brief asks for a capture of a page a
    * change alters, and the pull request shows it. False by default: a worker is then not told to capture. Onboard sets it when both builds start.
    */
@@ -429,6 +434,24 @@ function designToolsOf(value: unknown): boolean {
   return value;
 }
 
+/** What the answerer is set to (A11-438): see `TicketSettings.autoAnswer`. */
+export type AutoAnswerSettings = Readonly<{ on: boolean; threshold: number; model: string }>;
+
+/** The confidence an automatic answer needs when `tickets.autoAnswerThreshold` is absent (A11-438). */
+export const DEFAULT_AUTO_ANSWER_THRESHOLD = 0.9;
+
+/**
+ * `tickets.autoAnswer`, `tickets.autoAnswerThreshold` and `tickets.autoAnswerModel` (A11-438): off, 0.9 and `haiku` when absent. A switch that is not true or false, a threshold that is not a number above 0 and at most 1, and a
+ * model that is not a word are each refused by name.
+ */
+function autoAnswerOf(tickets: Readonly<Record<string, unknown>>): AutoAnswerSettings {
+  const { autoAnswer: on = false, autoAnswerThreshold: threshold = DEFAULT_AUTO_ANSWER_THRESHOLD, autoAnswerModel: model = "haiku" } = tickets;
+  if (typeof on !== "boolean") throw new TicketSettingsRefusal("tickets.autoAnswer", `must be true or false, not ${JSON.stringify(on)}`);
+  if (typeof threshold !== "number" || !(threshold > 0 && threshold <= 1)) throw new TicketSettingsRefusal("tickets.autoAnswerThreshold", `must be a number above 0 and at most 1, not ${JSON.stringify(threshold)}`);
+  if (typeof model !== "string" || !/^[\w.[\]-]+$/.test(model)) throw new TicketSettingsRefusal("tickets.autoAnswerModel", `must be a model name, such as "haiku", not ${JSON.stringify(model)}`);
+  return { on, threshold, model };
+}
+
 /** `tickets.fixRedMain`: false for the board not to file fix tickets for checks red on main (A11-428). Absent is true. Any other value is refused by name. */
 function fixRedMainOf(value: unknown): boolean {
   if (value === undefined) return true;
@@ -633,6 +656,7 @@ export function parseTicketSettings(host: unknown, home: string = homedir(), mac
     drafts: draftsOf(tickets.drafts),
     designTools: designToolsOf(tickets.designTools),
     fixRedMain: fixRedMainOf(tickets.fixRedMain),
+    autoAnswer: autoAnswerOf(tickets),
     capture: captureOf(tickets.capture),
     prReview: prReviewOf(tickets.prReview),
     reviewer: isActive(reviewer) ? reviewer.provider : null,

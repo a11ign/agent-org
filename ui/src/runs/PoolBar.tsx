@@ -6,8 +6,17 @@ import { poolOf, poolWords } from "./runs-model.ts";
 import { useFlakes } from "./use-flakes.ts";
 import { useHealth } from "./use-health.ts";
 
-/** A day of the title: its date and count, and the stand-offs the board settled with no person that day when it settled any (A11-290). */
-const dayLine = ({ date, total, standoffs }: InterventionsView["days"][number]): string => (standoffs > 0 ? `${date}: ${total} (${standoffs} stand-offs settled with no person)` : `${date}: ${total}`);
+/**
+ * A day of the title: its date and count, the stand-offs the board settled with no person that day when it settled any (A11-290), and the questions answered that day, automatically and by a person, apart, when any was
+ * (A11-438). An instance from before A11-438 sends no answer counts, which read as none.
+ */
+function dayLine({ date, total, standoffs, autoAnswers = 0, personAnswers = 0 }: InterventionsView["days"][number]): string {
+  const notes = [
+    ...(standoffs > 0 ? [`${standoffs} stand-offs settled with no person`] : []),
+    ...(autoAnswers + personAnswers > 0 ? [`questions answered: ${autoAnswers} automatically, ${personAnswers} by a person`] : []),
+  ];
+  return notes.length === 0 ? `${date}: ${total}` : `${date}: ${total} (${notes.join("; ")})`;
+}
 
 /**
  * The health number (A11-257): today's person-interventions, with the last 7 days, each as its date and count, in the title. When the board settled stand-offs with no person today (a re-review that stayed not convinced, settled by the planner and the worker, A11-290),
