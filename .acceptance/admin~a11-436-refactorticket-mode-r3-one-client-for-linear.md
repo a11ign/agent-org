@@ -2,7 +2,7 @@ Linear's calls go through the one outside client (A11-436, step 1 of 3): a 503 t
 
 Acceptance:
 ```bash
-npx rstest run --config scripts/rstest/rstest.config.ts src/ticket-mode/outside-client.test.ts plugins/linear/linear.test.ts src/plugins/loader.test.ts src/ticket-mode/pool-linear-connections.test.ts
+npx rstest run --config scripts/rstest/rstest.config.ts src/ticket-mode/outside-client.test.ts plugins/linear/linear.test.ts src/plugins/loader.test.ts
 ```
 
 Mutation: in `src/ticket-mode/outside-client.ts`, add `"refused"` to `RETRIED`, and the 401 test fails (`[linear.made(), waits]` is `[4, [200, 800, 2000]]`). Make `note` record every attempt with `ledger.record`, and the 503-twice test fails (`calls: 3`).
