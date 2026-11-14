@@ -382,6 +382,13 @@
   border-color: var(--color-warn-border);
   color: var(--color-warn-text);
 }
+/* A low readiness score's reasons (A11-443): cut to the row, and whole in the title. */
+.readiness-reasons {
+  min-width: 0;
+  max-width: 40ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
 .label-tag {
   max-width: 100%;
   overflow: hidden;

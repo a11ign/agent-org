@@ -68,6 +68,18 @@ test("a read that uses the terminal address asks the board thread to work it out
   assert.equal(asked, 1, "only the read that used it asked");
 });
 
+test("A11-443: the request thread answers POST /api/readiness itself, from its own copies of the listed tickets, so the poll is never forwarded with every ticket's copy", async () => {
+  const { board, tracker, data } = boardOver();
+  const snapshot = snapshotOf(board, null, HEALTH, 7);
+  const settings = { ...data.settings, readiness: true };
+  const reads = readBoardOf({ ...data, settings, snapshot }, { source: tracker, plugins: PLUGINS, latest: () => snapshot, health: () => null, terminalRead: () => undefined });
+  await localRoute(reads, "GET", "/api/tickets", {}, new URLSearchParams());
+  // The fake tracker's tickets have no description, so each is scored 0 without a model call.
+  assert.deepEqual(await localRoute(reads, "POST", "/api/readiness", { keys: ["NBF-1"] }, new URLSearchParams()),
+    [200, { on: true, scores: { "NBF-1": { state: "scored", score: 0, reasons: ["The ticket has no description."], low: true } } }]);
+  assert.equal(board.known.tickets.size, 0, "the board thread holds no copy of the listed tickets");
+});
+
 test("the request thread answers the terminal's run itself, from the snapshot, and forwards every other write", async () => {
   const { board, tracker, data } = boardOver();
   const snapshot = snapshotOf(board, null, HEALTH, 7);

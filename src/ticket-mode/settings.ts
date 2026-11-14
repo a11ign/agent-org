@@ -117,6 +117,11 @@ export type TicketSettings = Readonly<{
    */
   localReview?: boolean;
   /**
+   * Whether the Tickets page shows each ticket's readiness score, which a cheap model makes once per description (A11-443, `readiness.ts`), and offers the writer for a low one. False by default:
+   * the feature turns on only once the offline check shows low scores go with more rounds, re-plans or Needs-you. Optional, so a settings object made by hand (a test's) leaves it off.
+   */
+  readiness?: boolean;
+  /**
    * Whether this machine can capture the board for a worker (`ticket:capture`): both Chromium builds start, so the worker brief asks for a capture of a page a
    * change alters, and the pull request shows it. False by default: a worker is then not told to capture. Onboard sets it when both builds start.
    */
@@ -454,6 +459,13 @@ function lessonsOf(value: unknown): boolean {
   return value;
 }
 
+/** `tickets.readiness`: true for the Tickets page to show each ticket's readiness score (A11-443). Absent is false. Any other value is refused by name. */
+function readinessOf(value: unknown): boolean {
+  if (value === undefined) return false;
+  if (typeof value !== "boolean") throw new TicketSettingsRefusal("tickets.readiness", `must be true or false, not ${JSON.stringify(value)}`);
+  return value;
+}
+
 /** `tickets.localReview`: true for a worker to run the reviewer on its local diff before it opens a pull request (A11-440). Absent is false. Any other value is refused by name. */
 function localReviewOf(value: unknown): boolean {
   if (value === undefined) return false;
@@ -660,6 +672,7 @@ export function parseTicketSettings(host: unknown, home: string = homedir(), mac
     fixRedMain: fixRedMainOf(tickets.fixRedMain),
     lessons: lessonsOf(tickets.lessons),
     localReview: localReviewOf(tickets.localReview),
+    readiness: readinessOf(tickets.readiness),
     capture: captureOf(tickets.capture),
     prReview: prReviewOf(tickets.prReview),
     reviewer: isActive(reviewer) ? reviewer.provider : null,

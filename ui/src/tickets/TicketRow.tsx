@@ -3,8 +3,10 @@ import { NEEDS_DECISION, GRILL, GRILL_TITLE, safeHref } from "../../../src/ticke
 import { QUEUE_CHILDREN, QUEUE_CHILDREN_TITLE, childrenNote, isParentTicket, missingPlan, parentTick, projectOf, selectable, ticketCount, type TicketNode } from "../../../src/ticket-mode/board-view/view-types-and-filters.ts";
 import { ownerName } from "../../../src/ticket-mode/assignee-filter.ts";
 import { groupTags } from "../../../src/ticket-mode/label-filters.ts";
-import type { QueueView, TicketView } from "../api/types.ts";
+import type { QueueView, ReadinessView, TicketView } from "../api/types.ts";
 import { FoldChevron, NoPlanMark, PriorityMark } from "./icons.tsx";
+import { IMPROVE, IMPROVE_TITLE, readinessLabel, readinessTitle } from "./readiness-model.ts";
+import type { ReadinessScores } from "./use-readiness.ts";
 
 /** What a row needs of the page: the queue, the selection, which parents are open, whether rows name their owner, and what the row's buttons do. */
 export type RowContext = Readonly<{
@@ -21,11 +23,15 @@ export type RowContext = Readonly<{
   paused: boolean;
   /** The list is the tab's kept copy (A11-270): the buttons that write wait for the instance's own answer, and the rows are drawn as they are. */
   held: boolean;
+  /** Each listed ticket's readiness score (A11-443), empty while the feature is off; and why "Improve with the writer" is disabled on this machine, or null when it is not. */
+  readiness: ReadinessScores;
+  improveReason: string | null;
   pick: (keys: readonly string[]) => void;
   unpick: (keys: readonly string[]) => void;
   toggleParent: (key: string) => void;
   queueChildren: (ticket: TicketView) => void;
   grill: (ticket: TicketView) => void;
+  improve: (ticket: TicketView, view: Extract<ReadinessView, { state: "scored" }>) => void;
 }>;
 
 /** The note a row carries when its ticket is on the queue or another instance holds it. */
@@ -76,6 +82,24 @@ function PlanMark({ ticket, context }: Readonly<{ ticket: TicketView; context: R
   return <NoPlanMark note={missing.note} covered={missing.covered} />;
 }
 
+/**
+ * A ticket's readiness score (A11-443): its pill, titled with its reasons. A low one also shows its reasons and "Improve with the writer". Nothing while it is being scored, when it could not be,
+ * or while the feature is off.
+ */
+function Readiness({ ticket, context }: Readonly<{ ticket: TicketView; context: RowContext }>) {
+  const view = context.readiness.get(ticket.key);
+  if (view?.state !== "scored") return null;
+  const title = readinessTitle(view);
+  if (!view.low) return <span className="pill-tag readiness" title={title}>{readinessLabel(view)}</span>;
+  return (
+    <>
+      <span className="pill-tag pill-tag-warn readiness" title={title}>{readinessLabel(view)}</span>
+      {view.reasons.length === 0 ? null : <span className="row-note readiness-reasons" title={view.reasons.join(" ")}>{view.reasons.join(" ")}</span>}
+      <button type="button" className="ghost ghost-small" title={context.improveReason ?? IMPROVE_TITLE} disabled={context.improveReason !== null || context.paused || context.held} onClick={() => context.improve(ticket, view)}>{IMPROVE}</button>
+    </>
+  );
+}
+
 /** The labels a ticket carries in a group, as small tags after its title, each titled with its group. The Goal group's is the goal pill's already, and the board's row with an open decision draws the decision in place of it. */
 function LabelTags({ ticket }: Readonly<{ ticket: TicketView }>) {
   return (
@@ -119,6 +143,7 @@ function LeafRow({ ticket, depth, context }: Readonly<{ ticket: TicketView; dept
       {isParentTicket(ticket) ? null : <PlanMark ticket={ticket} context={context} />}
       <Title ticket={ticket} />
       <LabelTags ticket={ticket} />
+      <Readiness ticket={ticket} context={context} />
       <RowTail ticket={ticket} depth={depth} context={context} />
     </div>
   );
