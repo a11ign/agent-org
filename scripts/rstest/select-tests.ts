@@ -50,8 +50,11 @@ const FALLBACK_RULES: ReadonlyArray<{ matches: (path: string) => boolean; why: s
   { matches: (path) => path.startsWith(".github/") || path === ".npmrc" || path === ".gitignore", why: "CI and repository settings: tests read the workflows and the tree" },
 ];
 
-/** The lint inputs whose change drops the lint cache and, with it, the narrow scope: the config, the manifest and the lockfile. */
-const LINT_FALLBACK_PATHS = ["eslint.config.ts", "package.json", "pnpm-lock.yaml"] as const;
+/**
+ * The lint inputs whose change drops the lint cache and, with it, the narrow scope: the config, the data it reads, the manifest and the lockfile. The config reads
+ * `blocking-calls.baseline.json` for the files its blocking-call ban leaves out (A11-433), so a file dropped from it is linted again although the file itself did not change.
+ */
+const LINT_FALLBACK_PATHS = ["eslint.config.ts", "blocking-calls.baseline.json", "package.json", "pnpm-lock.yaml"] as const;
 
 const isUnder = (path: string, roots: readonly string[]): boolean => roots.some((root) => path.startsWith(root));
 const isNotReadByRootSuite = (path: string): boolean => NOT_READ_BY_ROOT_SUITE.some((pattern) => pattern.test(path));

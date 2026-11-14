@@ -17,6 +17,7 @@ import { log } from "./pool-state.ts";
 import { newHostAlertState, type HostAlertReads, type HostAlertState } from "./host-alerts.ts";
 import { newLegacySweepState, type LegacySweepState, type LegacyTmp } from "./legacy-tmp.ts";
 import { defaultGit, type Git } from "./worktree.ts";
+import { codexSessionsDir } from "./outcomes/reviewer-tokens.ts";
 import { noReviewerMemory, reviewerMemoryPath, readReviewerMemory, type ReviewerMemory, type ReviewerPort, type ReviewerRef, REVIEWER_LOGIN } from "./reviewer-port.ts";
 import { type DrainStore } from "./pool-drain.ts";
 import { type PullRead } from "./board-view/pull-review-state.ts";
@@ -65,6 +66,8 @@ export type PoolDeps = Readonly<{
   load?: () => Readonly<{ load: number; cores: number }>;
   /** Where Claude Code keeps each project's transcripts. */
   transcriptsRoot?: string;
+  /** Where Codex keeps the reviewer's session rollouts (A11-430); `$CODEX_HOME/sessions`, else `~/.codex/sessions`, when absent. */
+  codexSessionsRoot?: string;
   /** Claude Code's plugin install record, read to check each worker's plugins are installed where its session will find them. */
   pluginRecord?: string;
   /** Start the session's headless herdr server; called only when its listing does not answer, and the machine has no herdr service (a hand-run `ticket:serve`). */
@@ -162,6 +165,8 @@ export type PoolContext = Readonly<{
   /** The `tickets.preflight` commands, asked before a run starts: a failure holds every start, and says why. */
   gate: ReturnType<typeof createGate>;
   transcripts: string;
+  /** Where Codex keeps the reviewer's session rollouts, read for a review's tokens (A11-430). */
+  codexSessions: string;
   git: Git;
   /** The accounts whose feedback a worker does not answer besides its own: the reviewer's, so its verdict never moves `feedbackAt`. None on a machine with no reviewer. */
   feedbackIgnores: readonly string[];
@@ -294,6 +299,7 @@ export function newPoolContext(store: QueueStore, deps: PoolDeps): PoolContext {
   const now = deps.now ?? Date.now;
   const gate = createGate(settings.preflight, deps.preflight ?? shellPreflight, now);
   const transcripts = deps.transcriptsRoot ?? join(homedir(), ".claude", "projects");
+  const codexSessions = deps.codexSessionsRoot ?? codexSessionsDir();
   const git = deps.git ?? defaultGit;
   /** How long a run with a working note may sit idle with no newer outcome before the board marks it stalled. */
   const stallMs = settings.stallMinutes * 60_000;
@@ -355,7 +361,7 @@ export function newPoolContext(store: QueueStore, deps: PoolDeps): PoolContext {
   /** The new-ticket runs whose drafts are being read, by id, so a tick that sees the same outcome meanwhile reads them once. */
   const finishing = new Set<string>();
   return {
-    store, settings, source, codeHost, hook, deps, herdr, herdrAsync, herdrCall, wait, now, calls: deps.calls ?? callOutcomes, gate, transcripts, git, feedbackIgnores, hostFile, stallMs, session, misses, answered, rebasing: new Set<string>(),
+    store, settings, source, codeHost, hook, deps, herdr, herdrAsync, herdrCall, wait, now, calls: deps.calls ?? callOutcomes, gate, transcripts, codexSessions, git, feedbackIgnores, hostFile, stallMs, session, misses, answered, rebasing: new Set<string>(),
     startedHere, attaching, cloning: new Map<string, Promise<string>>(), cloneSweep: { busy: false }, attachRetries, writeRetries, telling: new Set<string>(), answering: new Set<string>(), pendingMoves, removing, batches, reviewerOn, reviewerFile, reviewerMemory, reviewer, reviewerState, offPulls: new Set<string>(), publisher: deps.publisher, reviewerStarted, reviewerResumed,
     reviewerReposts, reviewerRereviewed, closing, pullReads, refusedHeads, greenSeen, reviewerDropped, claudeSessions, finishing, tickState: { busy: false, again: false }, fillState: newFillState(), ownLogin: { value: null }, flakes: flakeLog(settings.stateDir, now), repliesRead: new Set<string>(), baseMerges: new Map<string, BaseMerge>(), mergeFlows: new Map(), settledPulls: new Set<string>(), listingMs: deps.listingMs ?? 60_000, readMs: deps.readMs ?? READ_TIMEOUT_MS, idleSaid: { reason: null }, keptSweep: { busy: false, done: Promise.resolve() }, stackMergeAsked: new Map<string, StackMergeAsk>(), restacked: new Map<string, RestackDone>(), restackSaid: new Set<string>(), waitPolls: new Map(), pullReadAt: new Map<string, number>(), recordSaid: new Set<string>(), waitReading: new Set<string>(), restart: { read: false },
     reseating: new Map<string, Reseat>(), envLost: new Map<string, readonly string[]>(), paneEnv: deps.paneEnv ?? livePaneEnv(herdrCall, settings.herdrSession),

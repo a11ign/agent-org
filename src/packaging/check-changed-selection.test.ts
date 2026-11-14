@@ -205,7 +205,7 @@ test("the lint scope is the changed files ESLint lints, and a deleted or non-sou
   assert.deepEqual(selectLintScope(changed, existing), { kind: "files", files: ["src/a.ts", "ui/src/b.tsx", "ui/src/c.astro"] });
 });
 
-testEach("a change to a lint input lints the whole tree", [{ name: "the config", path: "eslint.config.ts" }, { name: "the manifest", path: "package.json" }, { name: "the lockfile", path: "pnpm-lock.yaml" }], ({ path }) => {
+testEach("a change to a lint input lints the whole tree", [{ name: "the config", path: "eslint.config.ts" }, { name: "the data the config reads (A11-433)", path: "blocking-calls.baseline.json" }, { name: "the manifest", path: "package.json" }, { name: "the lockfile", path: "pnpm-lock.yaml" }], ({ path }) => {
   const scope = selectLintScope(["src/a.ts", path], new Set(["src/a.ts", path]));
   assert.equal(scope.kind, "fallback");
   assert.deepEqual(scope.kind === "fallback" ? scope.fallbacks.map((fallback) => fallback.path) : [], [path]);

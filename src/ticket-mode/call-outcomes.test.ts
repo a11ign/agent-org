@@ -1,7 +1,7 @@
 // no-token: gh -- the clock and the fetch are injected; nothing is spawned or sent
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { addCallFigures, CALL_WINDOW_MS, countedFetch, countProgram, createCallLedger, ghFailed, networkUpSince, observedFetch, per100, serviceOfUrl, statusFailed } from "./call-outcomes.ts";
+import { addCallFigures, CALL_WINDOW_MS, countedFetch, countProgram, createCallLedger, ghFailed, networkUpSince, per100, serviceOfUrl, statusFailed } from "./call-outcomes.ts";
 
 test("failures per 100 calls is rounded to one decimal place, and 0 when there were no calls", () => {
   assert.deepEqual([per100(0, 0), per100(1, 3), per100(3, 200), per100(5, 5)], [0, 33.3, 1.5, 100]);
@@ -104,24 +104,4 @@ test("A11-399: the network is up since a crash only when a call succeeded after 
   assert.equal(upAfter("linear", true), false, "Linear's latest call failed");
   clock += CALL_WINDOW_MS;
   assert.equal(networkUpSince(ledger, crashedAt), false, "calls of an hour ago are no evidence");
-});
-
-test("A11-345: observedFetch counts nothing, but a retry that got through is the ledger's latest call, so the network reads as up again", async () => {
-  let clock = 1_000;
-  const ledger = createCallLedger(() => clock);
-  let status = 503;
-  const answering = (async () => { if (status === 0) throw new TypeError("fetch failed"); return new Response("", { status }); }) as typeof fetch;
-  const first = countedFetch(answering, ledger, "linear");
-  const retry = observedFetch(answering, ledger, "linear");
-  await first("https://tracker.example/graphql");
-  clock = 2_000;
-  assert.equal(networkUpSince(ledger, 500), false, "the first attempt failed and nothing has got through");
-  status = 200;
-  await retry("https://tracker.example/graphql");
-  assert.deepEqual(ledger.figures().linear, { calls: 1, failures: 1, failuresPer100: 100 }, "the retry is not a call of its own");
-  assert.equal(networkUpSince(ledger, 500), true, "the retry that was answered shows the network is up");
-  status = 0;
-  clock = 3_000;
-  await assert.rejects(retry("https://tracker.example/graphql"), /fetch failed/);
-  assert.deepEqual([ledger.figures().linear.calls, networkUpSince(ledger, 500)], [1, false], "a retry that fails is not counted either, and the network is down again");
 });

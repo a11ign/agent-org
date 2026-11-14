@@ -69,10 +69,15 @@ export type SchemaEntry = Readonly<{
   switch?: true;
   secret?: "path" | "keychain";
   /**
-   * The exact command that sets a `secret` entry's value (A11-163), which the Settings page shows with a copy button because a secret is never typed in the page. `{value}` is the
-   * setting's current value, and `{value|fallback}` takes `fallback` when the file holds none. A plugin's manifest must give one for each of its secret entries.
+   * The exact command that sets a `secret` entry's value (A11-163), which the Plugins page shows with a copy button. `{value}` is the setting's current value, and `{value|fallback}` takes
+   * `fallback` when the file holds none. A plugin's manifest must give one for each of its secret entries.
    */
   setCommand?: string;
+  /**
+   * A `secret` entry the Plugins page may also take in a write-only field (A11-445): `token` is one line, such as an API key, which the instance stores where the setting points (a mode-600
+   * file, or the macOS Keychain) and never shows again. An entry without it is set only by its command.
+   */
+  enter?: "token";
   /** Further paths this key covers, for a key that takes one of several shapes. */
   also?: readonly string[];
   explanation: string;
@@ -277,6 +282,20 @@ export const SCHEMA: readonly SchemaEntry[] = [
     explanation: "How many past runs of one model and effort, on tickets with the same label in the same repository, the queue footer needs before it suggests that model and effort for the selected tickets. The suggestion says its first-pass rate and its sample size, and only advises: the run starts on the model and effort the person queues. A run is read from the outcome log; one that has passed so far counts after a day, since its review may still send it back.", breaks: "Not a whole number of 1 or more refuses the board's start, naming the setting. Too low suggests from a handful of runs.", edit: { editable: true, input: "number", applies: "board" } },
   { key: "tickets.ciBudgetMinutes", file: HOST, group: "Workers", type: "whole number of weighted minutes, 0 for none", absent: "default", default: "300",
     explanation: "How many weighted CI minutes one ticket's pushes may run before the board acts. The board reads the workflow runs on the ticket's branch, in each repository the run works in, and adds up each job's minutes rounded up to a whole minute, as GitHub bills: a macOS minute counts ten, a Windows minute two, any other GitHub-hosted minute one, and a self-hosted runner none. The card shows the total (\"CI: 3 pushes, 48 jobs, ~184 min\"). When the ticket passes the budget its worker is told once in its pane to batch its pushes, and the card shows the line in amber. At twice the budget, and again at each further whole budget, the board holds the run: a live run is stopped and queued again, keeping its Claude session, and starts its next round on the board's next pass with the reason and the push-once rule at the head of its brief; a finished run's next round carries them. No person is asked, and the hold counts toward no round cap. 0 turns the warning and the hold off; the figures still show.", breaks: "Not a whole number of 0 or more refuses the board's start, naming the setting. Too low holds ordinary runs: a ticket with a macOS job in its CI spends its weighted minutes tenfold. A code host plugin that cannot read a branch's runs (contract 1.22) shows no figures and holds nothing.", edit: { editable: true, input: "number", applies: "board" } },
+  { key: "tickets.prices", file: HOST, group: "Workers", type: "list of { prefix or model, input, output, cacheRead, maxPrompt }", absent: "default", default: "the trace's published prices (src/trace/prices.ts)",
+    explanation: "The prices the Outcomes figures are read at, in dollars per million tokens (A11-430). The list is the whole table: a model it leaves out has no price, and its runs' dollars are shown as a floor, never priced at a neighbour's rate. Absent, the published prices on the day the table was read apply. Every dollar figure says \"at configured prices\".", breaks: "A row that names neither or both of prefix and model, or a rate that is not a number of 0 or more, refuses the board's start and the Outcomes read, naming the field. A stale price makes every dollar figure wrong by as much.", edit: { editable: true, input: "json", applies: "now", note: "The Outcomes figures read the host file again on each request" } },
+  { key: "tickets.prices[].prefix", file: HOST, group: "Workers", type: "the start of a Claude model id, such as claude-opus-5-5", absent: "unset", default: null,
+    explanation: "A Claude row matches every model id that starts with it, the first row that does. Give either prefix or model.", breaks: "Both or neither with model refuses the table.", edit: { editable: false, why: "a list is changed as a whole: edit tickets.prices" } },
+  { key: "tickets.prices[].model", file: HOST, group: "Workers", type: "another vendor's exact model name, such as gpt-5.6-luna", absent: "unset", default: null,
+    explanation: "A row of any other vendor matches only this exact name. Give either prefix or model.", breaks: "Both or neither with prefix refuses the table.", edit: { editable: false, why: "a list is changed as a whole: edit tickets.prices" } },
+  { key: "tickets.prices[].input", file: HOST, group: "Workers", type: "dollars per million uncached input tokens", absent: "unset", default: null,
+    explanation: "The input rate. A cache write is priced at 1.25 times it (5 minutes) or twice it (1 hour).", breaks: "Not a number of 0 or more refuses the table.", edit: { editable: false, why: "a list is changed as a whole: edit tickets.prices" } },
+  { key: "tickets.prices[].output", file: HOST, group: "Workers", type: "dollars per million output tokens", absent: "unset", default: null,
+    explanation: "The output rate.", breaks: "Not a number of 0 or more refuses the table.", edit: { editable: false, why: "a list is changed as a whole: edit tickets.prices" } },
+  { key: "tickets.prices[].cacheRead", file: HOST, group: "Workers", type: "dollars per million cache-read tokens", absent: "unset", default: null,
+    explanation: "The cache-read rate.", breaks: "Not a number of 0 or more refuses the table.", edit: { editable: false, why: "a list is changed as a whole: edit tickets.prices" } },
+  { key: "tickets.prices[].maxPrompt", file: HOST, group: "Workers", type: "whole number of tokens", absent: "unset", default: null,
+    explanation: "The largest prompt the rates are quoted for: a request above it has no price, since the vendor states another rate there.", breaks: "Not a whole number of 1 or more refuses the table.", edit: { editable: false, why: "a list is changed as a whole: edit tickets.prices" } },
   { key: "tickets.preflight", file: HOST, group: "Workers", type: "list of { name, run, timeoutSeconds }", absent: "default", default: "none",
     explanation: "Commands that must exit 0 before a run starts, in order. While one fails, no run starts and every queued one stays Queued. The board shows each command's name and the first line it printed, so a command prints what a person should do, never a secret. A pass stands for a minute and a failure is tried again after a minute. Publishing and the new-ticket writer are not held. agent-org doctor runs each command and reports it.", breaks: "A failing command holds every run, and the board says why.", edit: { editable: true, input: "json", applies: "board", dangerous: "A failing command holds every run until it passes, and each command runs for every worker." } },
   { key: "tickets.preflight[].name", file: HOST, group: "Workers", type: "text the board shows", absent: "unset", default: null,
