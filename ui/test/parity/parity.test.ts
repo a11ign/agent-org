@@ -1,5 +1,5 @@
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync, readFileSync } from "node:fs";
+import { dirname, join, relative, resolve } from "node:path";
 import { UI_ROOT } from "../site.ts";
 
 // PARITY.md (docs/design/atomaut/) lists everything the old board (src/ticket-mode/ui.html, retired by A11-202) did, and where Atomaut does it (A11-220). This holds the file to its own rules: every feature
@@ -31,6 +31,18 @@ export function featureRows(markdown: string): Row[] {
   return rows;
 }
 
+/** A designed row's last cell (A11-446): `designed: ` and one or more Markdown links to its captures, separated by commas. */
+const DESIGNED = /^designed: \[[^\]]+\]\([^)\s]+\)(, \[[^\]]+\]\([^)\s]+\))*$/;
+
+/** Whether a last cell says where the feature's look comes from: an Atomaut board, `pattern: <words>`, or `designed:` and its captures. */
+const namesWhereItsLookComesFrom = (board: string): boolean => /^Atomaut[A-Za-z]+$/.test(board) || /^pattern: \S.*$/.test(board) || DESIGNED.test(board);
+
+/** The captures a `designed:` last cell links to, as written (relative to PARITY.md). Empty for a board or a pattern. PURE. */
+export function capturesOf(board: string): string[] {
+  if (!DESIGNED.test(board)) return [];
+  return [...board.matchAll(/\]\(([^)\s]+)\)/g)].map((match) => match[1]);
+}
+
 /** What is wrong with a row, naming it, or nothing. */
 export function problemsOf({ cells, line }: Row): string[] {
   const named = `row at line ${line} (${cells[0] ?? ""})`;
@@ -39,7 +51,9 @@ export function problemsOf({ cells, line }: Row): string[] {
   const [, , , ticket, board] = cells;
   const problems = [...empty];
   if (ticket !== "" && !/^A11-\d+$/.test(ticket)) problems.push(`${named} has a Ticket that is not a ticket key: ${ticket}`);
-  if (board !== "" && !/^Atomaut[A-Za-z]+$/.test(board) && !/^pattern: \S.*$/.test(board)) problems.push(`${named} has a Board or pattern that is neither an Atomaut board nor "pattern: <words>": ${board}`);
+  if (board !== "" && !namesWhereItsLookComesFrom(board)) {
+    problems.push(`${named} has a Board or pattern that is neither an Atomaut board, "pattern: <words>" nor "designed: [capture](path)": ${board}`);
+  }
   return problems;
 }
 
@@ -54,6 +68,27 @@ describe("PARITY.md rows", () => {
 
   it("gives every feature row a feature, an ui.html source, an Atomaut page, a ticket key, and a board or a pattern", () => {
     expect(rows.flatMap(problemsOf)).toEqual([]);
+  });
+});
+
+describe("PARITY.md's designed rows (A11-446)", () => {
+  const CAPTURES = join(UI_ROOT, "captures");
+  const designed = rows.filter(({ cells }) => capturesOf(cells[4] ?? "").length > 0);
+
+  it("link each capture to a PNG in ui/captures/ that is there", () => {
+    const missing = designed.flatMap(({ cells, line }) =>
+      capturesOf(cells[4]).flatMap((link) => {
+        const file = resolve(dirname(PARITY), link);
+        const inCaptures = !relative(CAPTURES, file).startsWith("..") && file.endsWith(".png");
+        return inCaptures && existsSync(file) ? [] : [`row at line ${line} (${cells[0]}) links ${link}, which is no PNG in ui/captures/`];
+      }),
+    );
+    expect(missing).toEqual([]);
+  });
+
+  it("design herdr not opening and the Claude plugins tab, so neither is a pattern row", () => {
+    const undesigned = [/herdr does not open/, /Claude plugins tab/].filter((words) => !rows.some(({ cells }) => words.test(cells[0]) && capturesOf(cells[4]).length > 0));
+    expect(undesigned.map((words) => words.source)).toEqual([]);
   });
 });
 
@@ -75,6 +110,18 @@ describe("the checks on a row", () => {
     expect(problemsOf(at([...good.slice(0, 3), "soon", good[4]]))).toHaveLength(1);
     expect(problemsOf(at([...good.slice(0, 4), "a banner"]))).toHaveLength(1);
     expect(problemsOf(at([...good.slice(0, 4), "pattern:"]))).toHaveLength(1);
+  });
+
+  it("passes a designed row that links its captures, and reads the links", () => {
+    const designed = "designed: [one](../../../ui/captures/a/one-1440x900.png), [two](../../../ui/captures/a/two-1440x900.png)";
+    expect(problemsOf(at([...good.slice(0, 4), designed]))).toEqual([]);
+    expect(capturesOf(designed)).toEqual(["../../../ui/captures/a/one-1440x900.png", "../../../ui/captures/a/two-1440x900.png"]);
+    expect(capturesOf("pattern: status banner")).toEqual([]);
+  });
+
+  it("fails a designed row that links nothing", () => {
+    expect(problemsOf(at([...good.slice(0, 4), "designed: the banner"]))).toHaveLength(1);
+    expect(problemsOf(at([...good.slice(0, 4), "designed:"]))).toHaveLength(1);
   });
 
   it("fails a row with a cell too few", () => {
