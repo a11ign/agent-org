@@ -15,7 +15,7 @@ import { type BlockReport, DEFAULT_PROVIDER, type Providers } from "../ticket-mo
 import type { Catalog, CatalogPlugin, LoadedPlugin, PluginDeps, PluginModule, PluginSettings } from "./manifest.ts";
 import { blockSettings, pluginNamed } from "./registry.ts";
 import { readsConcernContract, unreadMajorRefusal } from "./version.ts";
-import { outsideClient, type OutsideClient } from "../ticket-mode/outside-client.ts";
+import { outsideClient, type OutsideClient, type OutsideService } from "../ticket-mode/outside-client.ts";
 
 /**
  * What loading found: the plugins that loaded, and one refusal for each that did not, naming it. A plugin whose module imported but whose `create` threw is a refusal and also
@@ -27,13 +27,17 @@ export type LoadResult = Readonly<{
   refusals: readonly Readonly<{ plugin: string; concern: Concern; why: string }>[];
 }>;
 
+/** The service whose figure a plugin of each concern calls through the outside client: core names no tracker's address, so the tracker's calls are the `linear` figure whichever plugin it is. */
+const SERVICE_OF: Partial<Readonly<Record<Concern, OutsideService>>> = { tracker: "linear", codeHost: "github" };
+
 /**
- * The deps a plugin of `concern` is given: a tracker is given the board's outside client bound to the `linear` figure (A11-436), since core names no tracker's address: its calls are timed, retried, held off by
- * the breaker and counted once there (A11-345, A11-363). Every other plugin gets `deps` as they are.
+ * The deps a plugin of `concern` is given: a tracker and a code host are each given the board's outside client bound to their service (A11-436): their calls are timed, retried, held off by the breaker and
+ * counted once there (A11-345, A11-363). Every other plugin gets `deps` as they are.
  */
 export function depsFor(concern: Concern, deps: PluginDeps, client: OutsideClient = outsideClient): PluginDeps {
-  if (concern !== "tracker") return deps;
-  return { ...deps, outside: (attempt, options) => client.call("linear", attempt, options) };
+  const service = SERVICE_OF[concern];
+  if (service === undefined) return deps;
+  return { ...deps, outside: (attempt, options) => client.call(service, attempt, options) };
 }
 
 /** Imports a module by its file URL: the default is `import()`, and a test passes its own. */

@@ -4,7 +4,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createCallLedger, networkUpSince } from "./call-outcomes.ts";
-import { BREAKER_FAILURES, BREAKER_OPEN_MS, RETRY_WAITS_MS, ServiceUnavailable, createOutsideClient, failureKindOf, isTransient } from "./outside-client.ts";
+import { BREAKER_FAILURES, BREAKER_OPEN_MS, RETRY_WAITS_MS, ServiceUnavailable, countProgram, createOutsideClient, failureKindOf, isTransient, programKindOf } from "./outside-client.ts";
 import { isTransient as attachIsTransient } from "./attach-retry.ts";
 import { isRetryableWrite } from "./result-write-retry.ts";
 import { crashRetryAfter } from "./crash-retry.ts";
@@ -70,7 +70,7 @@ test("Given a service fails 10 times in a row on a connection reset, its breaker
   assert.equal(made, BREAKER_FAILURES, "no attempt is made once ten in a row have failed");
   const refused = await client.call("github", failing).then(() => null, (err: unknown) => err);
   assert.ok(refused instanceof ServiceUnavailable);
-  assert.match(refused.message, /^GitHub is unavailable: 10 calls in a row failed/);
+  assert.match(refused.message, /GitHub is unavailable: 10 calls in a row failed/);
   assert.equal(made, BREAKER_FAILURES, "refused at once: the service is not asked");
   assert.equal(isTransient(refused), true, "a refusal of the breaker is transient: a run that meets it is not a crash");
   assert.equal(await client.call("linear", async () => "answered"), "answered", "each service has its own breaker");
@@ -173,4 +173,64 @@ test("A11-399: a retry that got through is not a call of its own, but it shows t
   assert.equal(await call, "answered");
   assert.deepEqual(ledger.figures().linear, { calls: 1, failures: 1, failuresPer100: 100 });
   assert.equal(networkUpSince(ledger, 500), true, "the answered retry is the ledger's latest call");
+});
+
+/** A `gh` answer as `exec` gives it. */
+const ghExit = (status: number | null, stderr = "") => ({ status, stdout: "", stderr });
+
+test("The one rule reads a program's exit: a gh that could not start or was cut, or printed that the network or GitHub failed, is transient; one that exited non-zero for an answer is refused", () => {
+  const kinds = [ghExit(0), ghExit(null, "spawn gh ETIMEDOUT"), ghExit(1, "read tcp 192.0.2.10:443: connection reset by peer"), ghExit(1, "Post \"https://api.github.com/graphql\": dial tcp: lookup api.github.com: no such host"),
+    ghExit(1, "HTTP 502: Bad Gateway"), ghExit(1, "HTTP 429: API rate limit exceeded"), ghExit(1, "gh: Not Found (HTTP 404)"), ghExit(8, ""), ghExit(1, "no pull requests found for branch"),
+    ghExit(null, "spawn gh ENOENT"), ghExit(null, "spawn gh ENOBUFS")].map(programKindOf);
+  assert.deepEqual(kinds, [null, "network", "network", "network", "server", "rate-limit", "refused", "refused", "refused", "refused", "refused"],
+    "a gh that is not installed or printed past its buffer fails the same way on every try, so it is not tried again and does not open the breaker");
+  const failure = (stderr: string) => Object.assign(new Error(`Command failed: gh api x\n${stderr}`), { status: 1, stderr, exit: { status: 1, stderr } });
+  assert.deepEqual([isTransient(failure("connection reset by peer")), isTransient(failure("HTTP 503")), isTransient(failure("HTTP 401: Bad credentials")), isTransient(failure("HTTP 404"))], [true, true, false, false],
+    "a thrown gh failure is classed by its exit, so a run that crashed on a reset is retried and one that met a 401 is not");
+});
+
+test("A gh call is counted by the one rule: a failure another try could get past is a failed call, and an answer GitHub gave is not; any other program is not a call to GitHub", () => {
+  const ledger = createCallLedger(() => 1_000);
+  for (const answer of [ghExit(1, "HTTP 500"), ghExit(null, "spawn gh ETIMEDOUT"), ghExit(1, "HTTP 429: API rate limit exceeded"), ghExit(1, "HTTP 404"), ghExit(8), ghExit(0)]) countProgram("/home/agent/.local/bin/gh", answer, ledger);
+  countProgram("ssh", ghExit(1, "HTTP 500"), ledger);
+  countProgram("claude", ghExit(null, "timeout"), ledger);
+  assert.deepEqual(ledger.figures().github, { calls: 6, failures: 3, failuresPer100: 50 });
+});
+
+test("Given gh fails 10 times in a row on a connection reset, the board's next gh call is refused at once by the breaker, which says GitHub is unavailable", async () => {
+  const { client, ledger } = world();
+  let made = 0;
+  const reset = async () => { made += 1; return ghExit(1, "read tcp: connection reset by peer"); };
+  const byExit = { exitOf: (answer: ReturnType<typeof ghExit>) => answer } as const;
+  const answers = [await client.call("github", reset, byExit), await client.call("github", reset, byExit)];
+  assert.deepEqual(answers.map(({ status }) => status), [1, 1], "a gh that failed every try answers its last exit, for the runner to read as it always did");
+  await assert.rejects(client.call("github", reset, byExit), ServiceUnavailable, "the tenth failed attempt in a row opens the breaker part-way through the third call");
+  assert.equal(made, BREAKER_FAILURES);
+  await assert.rejects(client.call("github", reset, byExit), /GitHub is unavailable: 10 calls in a row failed/);
+  assert.equal(made, BREAKER_FAILURES, "refused at once: gh is not run");
+  assert.deepEqual(ledger.figures().github, { calls: 3, failures: 3, failuresPer100: 100 }, "each call is counted once, and a call the breaker refused is not counted");
+});
+
+test("A gh answer GitHub gave (a 404) is not tried again, does not trip the breaker and is not a failed call; one that failed on GitHub is tried again with the call's own time", async () => {
+  const { client, ledger, waits } = world();
+  let made = 0;
+  const notFound = await client.call("github", async () => { made += 1; return ghExit(1, "gh: Not Found (HTTP 404)"); }, { exitOf: (answer) => answer });
+  assert.deepEqual([notFound.status, made, waits], [1, 1, []]);
+  const answered = await client.call("github", async () => { made += 1; return made === 2 ? ghExit(1, "HTTP 502: Bad Gateway") : ghExit(0); }, { exitOf: (answer) => answer, attemptMs: 120_000 });
+  assert.deepEqual([answered.status, made, waits], [0, 3, [RETRY_WAITS_MS[0]]]);
+  assert.deepEqual(ledger.figures().github, { calls: 2, failures: 1, failuresPer100: 50 });
+});
+
+test("A call made once (a write) is not tried again after a failure another try could get past, and is still counted and seen by the breaker", async () => {
+  const { client, ledger, waits } = world();
+  let made = 0;
+  await assert.rejects(client.call("github", async () => { made += 1; throw reset(); }, { once: true }), /fetch failed/);
+  assert.deepEqual([made, waits], [1, []]);
+  assert.deepEqual(ledger.figures().github, { calls: 1, failures: 1, failuresPer100: 100 });
+});
+
+test("A call that names its own time is cut at it, not at its service's", async () => {
+  const client = createOutsideClient({ ledger: createCallLedger(() => 0), sleep: async () => undefined, retryWaitsMs: [], attemptMs: { linear: 1, github: 1 } });
+  assert.equal(await client.call("github", () => new Promise((done) => { setTimeout(() => done("late but within its own time"), 20); }), { attemptMs: 1_000 }), "late but within its own time");
+  await assert.rejects(client.call("github", () => new Promise(() => undefined)), { name: "TimeoutError" });
 });

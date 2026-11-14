@@ -1,7 +1,7 @@
 // no-token: gh -- the clock and the fetch are injected; nothing is spawned or sent
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { addCallFigures, CALL_WINDOW_MS, countedFetch, countProgram, createCallLedger, ghFailed, networkUpSince, per100, serviceOfUrl, statusFailed } from "./call-outcomes.ts";
+import { addCallFigures, CALL_WINDOW_MS, countedFetch, createCallLedger, networkUpSince, per100, serviceOfUrl, statusFailed } from "./call-outcomes.ts";
 
 test("failures per 100 calls is rounded to one decimal place, and 0 when there were no calls", () => {
   assert.deepEqual([per100(0, 0), per100(1, 3), per100(3, 200), per100(5, 5)], [0, 33.3, 1.5, 100]);
@@ -46,21 +46,6 @@ test("a fetch counted as the tracker counts every request, as failed when it thr
   const byAddress = countedFetch((async () => new Response("", { status: 200 })) as typeof fetch, ledger);
   await byAddress("https://api.linear.app/graphql");
   assert.equal(ledger.figures().linear.calls, 3, "core reads no tracker's address: only the tracker's own fetch counts its calls");
-});
-
-test("a gh that could not start, was cut, or printed that the network or GitHub failed is a failed call, and one that exited non-zero for an answer is not", () => {
-  const failed = [{ status: null, stderr: "spawnSync gh ETIMEDOUT" }, { status: 1, stderr: "HTTP 502: Bad Gateway" }, { status: 1, stderr: "Post \"https://api.github.com/graphql\": dial tcp: lookup api.github.com: no such host" },
-    { status: 1, stderr: "HTTP 429: API rate limit exceeded" }];
-  const answered = [{ status: 0, stderr: "" }, { status: 1, stderr: "HTTP 404: Not Found" }, { status: 8, stderr: "" }, { status: 1, stderr: "no pull requests found for branch" }];
-  assert.deepEqual([failed.map(ghFailed), answered.map(ghFailed)], [[true, true, true, true], [false, false, false, false]]);
-});
-
-test("a program is counted only when it is gh", () => {
-  const ledger = createCallLedger(() => 1_000);
-  countProgram("/home/agent/.local/bin/gh", { status: 1, stderr: "HTTP 500" }, ledger);
-  countProgram("ssh", { status: 1, stderr: "HTTP 500" }, ledger);
-  countProgram("claude", { status: null, stderr: "timeout" }, ledger);
-  assert.deepEqual(ledger.figures().github, { calls: 1, failures: 1, failuresPer100: 100 });
 });
 
 test("two threads' figures are added and the failures per 100 are worked out from the sums, not averaged", () => {
