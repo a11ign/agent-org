@@ -305,10 +305,29 @@ async function queuedTicket({ known, source }: Pick<Board, "known" | "source">, 
   return fresh;
 }
 
-/** The tickets `keys` name, read as a queue route reads them, and the refusal {@link refuseTaken} gives, if any: what `POST /api/queue` and a writer run's queueing (A11-420) check alike. */
+/**
+ * The tickets `keys` name, read as a queue route reads them, and the refusal {@link refuseTaken} gives, if any: what `POST /api/queue` and a writer run's queueing (A11-420) check alike.
+ *
+ * A PARENT IS QUEUED AS ITS OPEN SUB-ISSUES, never itself (A11-76, `refuseParents`). A page whose list was read before a parent's sub-issues existed still offers the parent's
+ * checkbox, so Select all sends it, and a writer run that files an epic hands its parent over with its children: refusing the whole batch for that one key queued nothing (A11-429).
+ * Each parent is replaced by its open sub-issues in the order `POST /api/queue-children` gives them, a sub-issue that is itself a parent by its own, and a key named twice is queued once.
+ */
 async function checkedForQueue(board: Pick<Board, "settings" | "source" | "store" | "known" | "claimant">, keys: readonly string[]): Promise<TakenCheck> {
   const tickets: Ticket[] = [];
-  for (const key of keys) tickets.push(await queuedTicket(board, key));
+  const seen = new Set<string>();
+  const add = async (key: string, of?: string): Promise<void> => {
+    if (seen.has(key)) return;
+    seen.add(key);
+    const ticket = await queuedTicket(board, key, of);
+    const children = ticket.children ?? [];
+    if (children.length === 0) {
+      tickets.push(ticket);
+      return;
+    }
+    const order = childOrder(children, board.source.blockers ? await board.source.blockers(children) : null);
+    for (const child of order.keys) await add(child, key);
+  };
+  for (const key of keys) await add(key);
   return refuseTaken(board, tickets);
 }
 
