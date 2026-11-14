@@ -21,6 +21,7 @@ import { queueEntryView, queueView, shownWriter, type QueueView } from "./queue-
 export type { QueueEntryView, QueueListEntry, QueueView, RunDetailEntry } from "./queue-view.ts";
 import { interventionsView } from "./queue/interventions.ts";
 import { flakesPath, flakesViewOf } from "./flakes.ts";
+import { suggestionView } from "./suggest-model.ts";
 import { type Queue, type RunChoice, type WriterRun, writerStatus } from "./queue/queue-entries-and-outcomes.ts";
 import { isTicketWriter, type TicketWriterRun } from "./queue/writer-modes.ts";
 import { EFFORTS, MODELS, readSettingsView } from "./settings-read.ts";
@@ -318,6 +319,13 @@ export async function readRoute(board: ReadBoard, method: string, path: string, 
   if (method === "GET" && path === "/api/interventions") return [200, interventionsView(store.get(), (board.now ?? Date.now)())];
   // The tests that flaked three times in seven days (A11-300), read from the flake log in the board's state: the chairman's session files a ticket for each.
   if (method === "GET" && path === "/api/flakes") return [200, flakesViewOf(flakesPath(board.settings.stateDir), (board.now ?? Date.now)())];
+  if (method === "GET" && path === "/api/suggestion") {
+    // The model and effort the queue footer suggests for the selected tickets (A11-435), from the outcome log: advisory, so it changes nothing. A key the page has not listed has no kind, and no suggestion.
+    const keys = (query.get("keys") ?? "").split(",").filter((key) => key !== "");
+    const tickets = keys.map((key) => known.tickets.get(key));
+    const listed = tickets.every((ticket) => ticket !== undefined) ? tickets.filter((ticket) => ticket !== undefined) : [];
+    return [200, suggestionView({ stateDir: settings.stateDir, tickets: listed, clones: Object.keys(settings.clones), minSample: settings.suggestMinSample, now: (board.now ?? Date.now)() })];
+  }
   return undefined;
 }
 

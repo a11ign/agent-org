@@ -47,7 +47,7 @@ const READ_TIMEOUT_MS = 15_000;
  * error, since its tracker is offline, and are timed all the same: a refusal waits behind a held loop as long as any answer.
  */
 export const ROUTES = ["/api/config", "/api/settings", "/api/plugins", "/api/pick", "/api/people", "/api/projects", "/api/search?q=queue", "/api/tickets", "/api/tickets?assignee=me", "/api/tickets?project=web", "/api/parents", "/api/queue", "/api/writer",
-  "/api/session-asks", "/api/health", "/api/interventions", "/api/flakes"];
+  "/api/session-asks", "/api/health", "/api/interventions", "/api/flakes", "/api/suggestion?keys=NBF-1"];
 /**
  * The GET routes the board thread answers (A11-282): `/api/session-asks` marks each check it lists as sent, a change to the checks file, whose one writer is the board thread. They are
  * timed and shown, and held to no bound: they wait while the board thread is held, as every write does. A session reads them, never a board page.

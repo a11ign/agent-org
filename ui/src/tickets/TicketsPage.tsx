@@ -19,6 +19,7 @@ import { countText, planPatternOf, queueOptionsOf, type QueueOptions } from "./t
 import { useFolding } from "./use-folding.ts";
 import { useQueueNow } from "./use-queue-now.ts";
 import { useBatch, useSelection } from "./use-queue-state.ts";
+import { useSuggestion } from "./use-suggestion.ts";
 import { useTicketActions } from "./use-ticket-actions.ts";
 import { useFilters, useList } from "./use-tickets-page.ts";
 import { useWorkspaceSearch } from "./use-workspace-search.ts";
@@ -36,11 +37,12 @@ function usePage(shell: ShellValue) {
   // A match the search found outside the list can be picked and queued as a listed ticket can (A11-378).
   const selected = mergedTickets(shell.allTickets, search.results).filter(({ key }) => selection.selected.has(key));
   const options = shell.config === null ? NO_OPTIONS : queueOptionsOf(shell.config, selected, batch);
+  const suggestion = useSuggestion(shell.client, [...selection.selected]);
   const { queue, learn } = useQueueNow();
   const actions = useTicketActions({ selection, batch, options, learn });
   // A ticket opened from the "Search tickets" palette arrives here ticked, with the banner that says so (A11-387).
   const fromSearch = useFromSearch(shell, selection, batch);
-  return { filters, list, search, folding, selection, batch, options, actions, queue, fromSearch };
+  return { filters, list, search, folding, selection, batch, options, suggestion, actions, queue, fromSearch };
 }
 
 type Page = ReturnType<typeof usePage>;
@@ -68,7 +70,7 @@ function contextOf(page: Page, shell: ShellValue): SectionsContext {
 
 /** The sections, the search's matches outside them, and the queue bar while tickets are selected. */
 function Listing({ page, shell }: Readonly<{ page: Page; shell: ShellValue }>) {
-  const { list, selection, actions, batch, options } = page;
+  const { list, selection, actions, batch, options, suggestion } = page;
   const held = shell.tickets.cached || shell.queue.cached;
   const context = contextOf(page, shell);
   return (
@@ -76,7 +78,7 @@ function Listing({ page, shell }: Readonly<{ page: Page; shell: ShellValue }>) {
       <Sections sections={list.sections} context={context} />
       <SearchResults search={page.search} listed={shell.projectTickets} context={context} />
       {selection.selected.size > 0 && shell.config !== null ? (
-        <QueueBar config={shell.config} count={selection.selected.size} options={options} batch={batch} busy={actions.busy || held} paused={shell.unreachable !== null} onClear={() => { selection.clear(); batch.reset(); }} onQueue={actions.queueSelected} />
+        <QueueBar config={shell.config} count={selection.selected.size} options={options} batch={batch} busy={actions.busy || held} paused={shell.unreachable !== null} suggestion={suggestion} onClear={() => { selection.clear(); batch.reset(); }} onQueue={actions.queueSelected} />
       ) : null}
     </>
   );

@@ -134,6 +134,8 @@ export type TicketSettings = Readonly<{
    * should have woken it by then. Marking it ends nothing. 30 by default.
    */
   stallMinutes: number;
+  /** How many decided past runs of one model and effort, of a kind, the queue footer needs before it suggests them (A11-435, `suggest-model.ts`). */
+  suggestMinSample: number;
   /**
    * The weighted CI minutes one ticket's pushes may run before the board warns its worker, and, at twice that, holds the run (A11-261); 0 is none. {@link DEFAULT_CI_BUDGET_MINUTES} by default. The figures show whatever it is.
    */
@@ -549,6 +551,16 @@ function instanceOf(value: unknown, machine: string): string {
   return value;
 }
 
+/** The whole-number limits on a worker's run, in the order they are checked: its idle time, the runs a suggestion needs (A11-435), its CI budget and how long an update may wait for it. */
+function workerLimitsOf(tickets: Readonly<Record<string, unknown>>): Pick<TicketSettings, "stallMinutes" | "suggestMinSample" | "ciBudgetMinutes" | "updateMaxDeferHours"> {
+  return {
+    stallMinutes: positiveInteger(tickets.stallMinutes, "tickets.stallMinutes", 30),
+    suggestMinSample: positiveInteger(tickets.suggestMinSample, "tickets.suggestMinSample", 20),
+    ciBudgetMinutes: nonNegativeInteger(tickets.ciBudgetMinutes, "tickets.ciBudgetMinutes", DEFAULT_CI_BUDGET_MINUTES),
+    updateMaxDeferHours: positiveInteger(tickets.updateMaxDeferHours, "tickets.updateMaxDeferHours", 2),
+  };
+}
+
 /**
  * The settings, from the host file's parsed JSON. PURE: the caller reads the file.
  * @param home the user's home directory, for the default state directory
@@ -618,9 +630,7 @@ export function parseTicketSettings(host: unknown, home: string = homedir(), mac
     reviewerRequired: reviewerRequiredOf(reviewer),
     publishWhen: publishWhenOf(publish),
     pick: pickOf(tickets.pick),
-    stallMinutes: positiveInteger(tickets.stallMinutes, "tickets.stallMinutes", 30),
-    ciBudgetMinutes: nonNegativeInteger(tickets.ciBudgetMinutes, "tickets.ciBudgetMinutes", DEFAULT_CI_BUDGET_MINUTES),
-    updateMaxDeferHours: positiveInteger(tickets.updateMaxDeferHours, "tickets.updateMaxDeferHours", 2),
+    ...workerLimitsOf(tickets),
     // Where the tailnet ports were read before they moved to the exposure plugin: a value no exposure could serve on is still refused after the fields before it.
     ...refuseUnservablePorts(settingOf(exposure, "tailnetPorts")),
     stackRequired: stack.value ?? true,
