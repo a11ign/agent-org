@@ -3,7 +3,7 @@ import { mutate } from "./mutate.ts";
 import { send, type Fetch, type Target } from "./request.ts";
 import type {
   Change, CheckAnswer, ChoiceView, CloseRequest, ConfigView, ConnectionsView, EditFile, FlakesView, InterventionsView, People, PickView, ProjectView, PluginActionDone, PluginActionRequest, PluginsAnswer, SecretDone, QueueChildrenView, QueueEntryView, QueueView, RunAction, RunChoice,
-  SavedChoice, SettingsPreview, SettingsRestored, SettingsSaved, SettingsView, Ticket, TicketsPageView, TicketView, ViewConnection, WritersView,
+  SavedChoice, SettingsPreview, SettingsRestored, SettingsSaved, SettingsView, SuggestionView, Ticket, TicketsPageView, TicketView, ViewConnection, WritersView,
 } from "./types.ts";
 
 /** What a queued run is started with: the model and effort, and whether it is planned first. */
@@ -62,6 +62,8 @@ export function createClient(connection: ViewConnection | null, { fetch: fetchWi
     interventions: read<InterventionsView>("/api/interventions"),
     /** The tests that flaked three times in seven days (A11-300): the board lists them as needing a fix. */
     flakes: read<FlakesView>("/api/flakes"),
+    /** The model and effort the queue footer suggests for the selected tickets, from how past runs of their kind went (A11-435): advisory, the person still chooses. */
+    suggestion: (keys: readonly string[], signal?: AbortSignal) => read<SuggestionView>(`/api/suggestion?${new URLSearchParams({ keys: keys.join(",") })}`)(signal),
     settings: read<SettingsView>("/api/settings"),
     plugins: read<PluginsAnswer>("/api/plugins"),
     /** The plugins, with the instance asked to run their checks again (A11-270): what a person's Retry and "Read the plugins again" send. */
