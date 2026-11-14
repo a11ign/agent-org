@@ -573,7 +573,7 @@ function greenDoctor(home: string): DoctorDeps {
     pnpmVersion: () => ({ version: "10.34.5", via: "npm exec" as const }),
     probe: async () => 200,
     hostPlace: async () => ({ kind: "no-project" }), platform: "linux", arch: "x64",
-    herdrPlace: () => ({ kind: "unit", where: "/user.slice/agent-org-herdr.service" }), guards: () => ({ watchdog: false, dropIn: false, readCacheDropIn: false }), updateStatus: () => ({ kind: "absent" }),
+    herdrPlace: () => ({ kind: "unit", where: "/user.slice/agent-org-herdr.service" }), guards: () => ({ watchdog: false, dropIn: false, readCacheDropIn: false }), ghWrapperDeclared: async () => true, updateStatus: () => ({ kind: "absent" }),
     herdrIntegrations: () => ({ status: 0, stdout: "claude: current (v10)\ncodex: current (v8)\n", stderr: "" }), herdrVersion: () => "herdr 0.9.3", herdrPlugins: () => null, herdrStatus: () => ({ kind: "absent" }),
     uiBuild: () => ({ found: "/t/ui-build", declared: true, looked: "/t/ui-build", version: "v0.280.0" }),
     drain: () => ({ kind: "none" }), runs: () => [], longWaits: () => [], boardFigures: async () => null, reliabilityWatches: () => null, watchdog: () => null, instanceVersion: () => "v0.280.0", pluginCopies: () => [], releaseTags: () => [],

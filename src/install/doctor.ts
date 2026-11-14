@@ -62,7 +62,7 @@ import { HERDR_INTEGRATIONS, HERDR_PLUGINS, herdrBehind, herdrStatusPath, herdrV
 import { HOUR_MS, readUpdateStatus, updateStatusPath, type StatusFile } from "./update-safety.ts";
 import { hostHerdrPlace, type HerdrPlace } from "./herdr-place.ts";
 import { handInstallCommand, TOOL_HERDR_VERSION } from "./herdr-install.ts";
-import { guardsPresent } from "./interim-guards.ts";
+import { guardsPresent, wrapperDeclared } from "./interim-guards.ts";
 // eslint-disable-next-line clean-code/no-duplication -- import list: the rule matches statement shape, and imports are not duplicated logic
 import { drainPath, readDrain, type Drain } from "./update-drain.ts";
 import { judgeShellCommand, readShellCommand, realShellDeps, shellContext, type ShellReading } from "./shell-command.ts";
@@ -129,6 +129,8 @@ export type DoctorDeps = Readonly<{
   herdrPlace: (session: string) => HerdrPlace;
   /** Which interim guards are still on disk: the gh-wrapper watchdog and the `keep-herdr.conf` and `gh-read-cache-off.conf` drop-ins (A11-145, A11-169, A11-172). */
   guards: () => Readonly<{ watchdog: boolean; dropIn: boolean; readCacheDropIn: boolean }>;
+  /** Whether the installed `gh` wrapper is the one the host file declares: the proof that retires the watchdog and the read-cache drop-in. Asked only while either is on disk. */
+  ghWrapperDeclared: () => Promise<boolean>;
   /** What the auto-update last saw: nothing yet, a status, or a file that cannot be read (A11-90). */
   updateStatus: () => StatusFile;
   /** `herdr integration status` run now (A11-184): its exit status and text. */
@@ -607,6 +609,7 @@ export async function diagnose(deps: DoctorDeps): Promise<Check[]> {
   const instance = await serviceChecks("instance", settings?.port ?? 4747, instanceState, deps);
   // Asked once, of a running instance only: the board's health rows and the reliability rows both read it (A11-363, A11-366).
   const boardFigures = instanceState === "running" ? await deps.boardFigures(settings?.port ?? 4747) : null;
+  const herdrPlace = herdrPlaceOf(settings, instanceState, deps);
   const ui = await serviceChecks("ui", settings?.uiPort ?? 4748, deps.serviceState("ui"), deps);
   const plugins = pluginsOf(settings, deps);
   const place: HostPlaceReading = noProject ? { kind: "no-project" } : await deps.hostPlace().catch((cause: unknown): HostPlaceReading => ({ kind: "unreadable", reason: String((cause as Error)?.message ?? cause).split("\n")[0] }));
@@ -633,8 +636,8 @@ export async function diagnose(deps: DoctorDeps): Promise<Check[]> {
     ...instance,
     ...boardHealthChecks(settings, boardFigures, deps),
     ...reliabilityChecks(settings, boardFigures, deps),
-    ...herdrScopeChecks(settings, instanceState, deps),
-    ...readCacheGuardChecks(deps),
+    ...herdrScopeChecks(settings, herdrPlace, deps),
+    ...await interimGuardChecks(herdrPlace, deps),
     ...ui,
     uiBuildCheck(deps),
     ...terminal,
@@ -720,32 +723,74 @@ function herdrScopeRow(place: HerdrPlace, { session, registered }: { session: st
   return failed(name, `the herdr server for session ${session} is in ${where}`, MOVE_HERDR);
 }
 
-/**
- * Where the herdr server of the tickets session runs (A11-169). It passes in `agent-org-herdr.service`, where a restart of the instance, the ui or the terminal never reaches it. It fails inside
- * the instance's cgroup (a restart of the instance ends every worker) and in the old transient scope, with the `--move` that fixes both. Checked only when the instance is registered and a host file
- * names the session. The two interim guards are rows of their own, failing while either stands on a host whose herdr runs in its unit.
- */
-function herdrScopeChecks(settings: TicketSettings | null, instanceState: ServiceState, deps: DoctorDeps): Check[] {
-  if (settings === null || instanceState === "not-registered") return [];
-  const session = settings.herdrSession;
-  const place = deps.herdrPlace(session);
-  const service = registeredCheck("herdr", deps, "it holds every worker's pane");
-  const scope = herdrScopeRow(place, { session, registered: service.ok });
-  const present = deps.guards();
-  const retire = "run `agent-org start herdr --move`, or `agent-org onboard`, which retires it on its proof";
-  const guards = place.kind === "unit" ? [
-    ...(present.dropIn ? [failed("keep-herdr.conf", "the instance unit still has the KillMode drop-in, which herdr's own service replaced", retire)] : []),
-    ...(present.watchdog ? [failed("gh-wrapper watchdog", "the hand-set gh-wrapper watchdog is still installed, and the start-time wrapper check replaced it", retire)] : []),
-  ] : [];
-  return [service, scope, ...guards];
+/** Where the herdr server of the tickets session runs, read once for the herdr scope row and the KillMode drop-in's: null, and not asked, without a host file or a registered instance. */
+function herdrPlaceOf(settings: TicketSettings | null, instanceState: ServiceState, deps: DoctorDeps): HerdrPlace | null {
+  return settings === null || instanceState === "not-registered" ? null : deps.herdrPlace(settings.herdrSession);
 }
 
 /**
- * The hand-set `gh-read-cache-off.conf` drop-in turns the gh read cache off for every call the instance makes (A11-172). It stood in for the review claim reading past the cache, which the claim's read now
- * does, so it fails while it stands, with the command that retires it. Absent where the drop-in is.
+ * Where the herdr server of the tickets session runs (A11-169). It passes in `agent-org-herdr.service`, where a restart of the instance, the ui or the terminal never reaches it. It fails inside
+ * the instance's cgroup (a restart of the instance ends every worker) and in the old transient scope, with the `--move` that fixes both. Checked only when the instance is registered and a host file
+ * names the session. The interim guards are rows of their own (`interimGuardChecks`).
  */
-function readCacheGuardChecks(deps: DoctorDeps): Check[] {
-  return deps.guards().readCacheDropIn ? [failed("gh-read-cache-off.conf", "the instance unit still turns the gh read cache off, which the review claim no longer needs", "run `agent-org onboard`, which retires it")] : [];
+function herdrScopeChecks(settings: TicketSettings | null, place: HerdrPlace | null, deps: DoctorDeps): Check[] {
+  if (settings === null || place === null) return [];
+  const session = settings.herdrSession;
+  const service = registeredCheck("herdr", deps, "it holds every worker's pane");
+  const scope = herdrScopeRow(place, { session, registered: service.ok });
+  return [service, scope];
+}
+
+/** What a guard's row says: its name, the sentence once it is off disk, while it stands with its replacement proven and while it stands unproven, and the command for each. */
+type GuardRow = Readonly<{ name: string; retired: string; removable: string; kept: string; fix: string; keptFix: string }>;
+
+const GUARD_ROWS = {
+  dropIn: {
+    name: "keep-herdr.conf", retired: "retired: the instance unit has no KillMode drop-in",
+    removable: "the instance unit still has the KillMode drop-in, and herdr's own service replaced it (the herdr server runs in agent-org-herdr.service), so the guard can be removed",
+    kept: "kept: the KillMode drop-in still keeps herdr alive across an instance restart, until the herdr server runs in agent-org-herdr.service",
+    fix: "run `agent-org start herdr --move`, or `agent-org onboard`, which removes it",
+    keptFix: "run `agent-org start herdr --move` at a quiet moment, which moves herdr into its service and removes the drop-in",
+  },
+  watchdog: {
+    name: "gh-wrapper watchdog", retired: "retired: the hand-set gh-wrapper watchdog is not installed",
+    removable: "the hand-set gh-wrapper watchdog is still installed, and the start-time wrapper check replaced it (the installed gh wrapper is the one host.json declares), so the guard can be removed",
+    kept: "kept: the installed gh wrapper is not the one host.json declares, so the start-time wrapper check that replaces the watchdog is not proven",
+    fix: "run `agent-org onboard`, which removes it",
+    keptFix: "run `agent-org host:install`, then `agent-org onboard`, which removes it",
+  },
+  readCacheDropIn: {
+    name: "gh-read-cache-off.conf", retired: "retired: the instance unit leaves the gh read cache on",
+    removable: "the instance unit still turns the gh read cache off, and the review claim reads past the cache (the installed gh wrapper is the one host.json declares), so the guard can be removed",
+    kept: "kept: the installed gh wrapper is not the one host.json declares, so the review claim's read past the gh read cache is not proven",
+    fix: "run `agent-org onboard`, which removes it; the instance picks the change up at its next restart",
+    keptFix: "run `agent-org host:install`, then `agent-org onboard`, which removes it",
+  },
+} as const satisfies Record<string, GuardRow>;
+
+/**
+ * A guard's row: `ok` only once it is off disk, so a passing row always means retired. It FAILS while it stands: with its replacement proven, saying it can be removed and the command that removes it,
+ * and unproven, saying it is kept and what proves its replacement.
+ */
+function guardRow(row: GuardRow, { present, proven }: { present: boolean; proven: boolean }): Check {
+  if (!present) return ok(row.name, row.retired);
+  return proven ? failed(row.name, row.removable, row.fix) : failed(row.name, row.kept, row.keptFix);
+}
+
+/**
+ * One row for each interim guard set by hand on the agents host (A11-145, A11-169, A11-172, A11-444), read with the proofs `retireGuards` reads: the KillMode drop-in's is herdr running in its own unit, and the
+ * watchdog's and the read-cache drop-in's is the installed gh wrapper being the one host.json declares, asked only while either is on disk. Only Linux with systemd has any guard, so other platforms show none.
+ */
+async function interimGuardChecks(herdrPlace: HerdrPlace | null, deps: DoctorDeps): Promise<Check[]> {
+  if (deps.platform !== "linux") return [];
+  const present = deps.guards();
+  const herdrInOwnUnit = herdrPlace?.kind === "unit";
+  const ghWrapperDeclared = (present.watchdog || present.readCacheDropIn) && await deps.ghWrapperDeclared();
+  return [
+    guardRow(GUARD_ROWS.dropIn, { present: present.dropIn, proven: herdrInOwnUnit }),
+    guardRow(GUARD_ROWS.watchdog, { present: present.watchdog, proven: ghWrapperDeclared }),
+    guardRow(GUARD_ROWS.readCacheDropIn, { present: present.readCacheDropIn, proven: ghWrapperDeclared }),
+  ];
 }
 
 /**
@@ -1133,7 +1178,7 @@ export function defaultDoctorDeps(): DoctorDeps {
     platform: process.platform,
     arch: process.arch,
     herdrPlace: (session) => hostHerdrPlace(services, session),
-    guards: () => guardsPresent(process.env, homedir(), pathExists),
+    guards: () => guardsPresent(process.env, homedir(), pathExists), ghWrapperDeclared: wrapperDeclared,
     updateStatus: () => readUpdateStatus(updateStatusPath(process.env, homedir())),
     herdrIntegrations: () => runHerdr(["integration", "status"]),
     shellCommand: () => readShellCommand(realShellDeps(process.env, homedir(), toolDir(process.env, homedir()))),
