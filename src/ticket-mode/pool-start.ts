@@ -497,7 +497,7 @@ function heldNote(entry: Entry, entries: readonly Entry[], now: number): string 
  * recorded before it begins, so a second tick cannot start it again. A pass that starts nothing says why, once for each reason (A11-359), and keeps the runs it held and why for `/api/health` (A11-363's fill figures).
  */
 export async function fill(ctx: PoolContext): Promise<void> {
-  const { batches, deps, removing, rebasing, store } = ctx;
+  const { batches, deps, store } = ctx;
   // A stopping instance starts nothing: it is waiting for the runs that are starting to finish (A11-363).
   if (ctx.fillState.stopping) {
     noteFillHolding(ctx, STOPPING);
@@ -529,32 +529,65 @@ export async function fill(ctx: PoolContext): Promise<void> {
   }
   noteFillHolding(ctx, null);
   const starts = nextStarts(store.get(), load, cores, at);
-  const begun = new Set<string>();
   // A host's own condition for starting work (`tickets.preflight`): while one fails, no ticket run starts and every queued one stays Queued, with the reason on the board.
   // Publishing and the new-ticket writer need none of it, so they go on.
   const held = starts.length === 0 || ctx.settings.preflight.length === 0 ? null : await preflightHold(ctx);
   if (held !== null) noteFillHolding(ctx, PREFLIGHT_FAILING);
   saidWhyIdle(ctx, starts.length === 0 ? whyNothingStarts(store.get(), load, cores, at) : held === null ? null : `${held}, so no ticket run starts`);
-  if (held === null) recordStacks(ctx, starts);
-  for (const entry of held === null ? starts : []) {
+  if (held === null) {
+    recordStacks(ctx, starts);
+    await openChosen(ctx, starts);
+  }
+  if (publishStarts(store.get())) await startPublish(ctx);
+  if (writerToStart(store.get()) !== undefined) await startWriter(ctx);
+  noteFillCompleted(ctx);
+}
+
+/**
+ * Open every run a pass chose ({@link nextStarts}), side by side (A11-442), and wait until each has opened or failed. A batch's tickets open as its one run, and a batch's talk sessions as their one session. Stacked review
+ * rounds open one after another ({@link mergesBaseFirst}), beside the rest.
+ */
+async function openChosen(ctx: PoolContext, starts: readonly Entry[]): Promise<void> {
+  const { removing, rebasing, store } = ctx;
+  const begun = new Set<string>();
+  const opening: Promise<void>[] = [];
+  // Stacked review rounds fetch and merge their base in clones they may share before they open, so they keep starting one after another, beside the rest.
+  let rounds: Promise<void> = Promise.resolve();
+  for (const entry of starts) {
     // A talk session resumes a finished run's own session where it ran: no brief is written, and no plan or worktree is touched. A batch's tickets share that session: one pane (A11-171).
     if (entry.talk) {
       if (begun.has(entry.ticket.key)) continue;
       // Every queued talk session of the batch starts with the one that is let start: the run is one, in one slot, and a member left behind would open a second pane.
       const together = entry.batch === undefined ? [entry] : store.get().entries.filter((e) => e.batch === entry.batch && e.talk === true && e.phase === "queued");
       for (const member of together) begun.add(member.ticket.key);
-      await startTalk(ctx, together);
+      opening.push(startTalk(ctx, together));
       continue;
     }
     if (begun.has(entry.ticket.key) || removing.has(entry.ticket.key) || rebasing.has(entry.ticket.key)) continue;
     const batch = entry.batch === undefined ? [entry] : starts.filter((e) => e.batch === entry.batch && !e.talk);
     for (const member of batch) begun.add(member.ticket.key);
-    await (batch.length > 1 ? startBatch(ctx, batch) : startOne(ctx, entry));
+    if (mergesBaseFirst(entry)) rounds = rounds.then(() => startOne(ctx, entry));
+    else opening.push(batch.length > 1 ? startBatch(ctx, batch) : startOne(ctx, entry));
   }
-  if (publishStarts(store.get())) await startPublish(ctx);
-  if (writerToStart(store.get()) !== undefined) await startWriter(ctx);
-  noteFillCompleted(ctx);
+  await allStarted([...opening, rounds]);
 }
+
+/**
+ * Wait for every start a pass chose, opened side by side (A11-442): a planned epic's independent tickets start at once, and the third does not wait for the first two to read the tracker, open their panes and settle.
+ * Who starts was decided before any opened ({@link nextStarts}, overlap and slots included), so opening them together changes no choice. Each start records its own failure on its run; one that throws anyway is
+ * thrown on once every other start has ended, so the pass never ends with a start still under way.
+ */
+async function allStarted(opening: readonly Promise<void>[]): Promise<void> {
+  const thrown = (await Promise.allSettled(opening)).flatMap((result) => (result.status === "rejected" ? [result.reason as unknown] : []));
+  for (const later of thrown.slice(1)) log(`a start of this pass failed beside another (${messageOf(later)})`);
+  if (thrown.length > 0) throw thrown[0];
+}
+
+/**
+ * Whether a queued run merges its stacked base into its branch before it opens ({@link mergeBeforeRound}): a review round on a stack. Its `git fetch` and merge run in a clone another such round may share, where two at
+ * once can fail on the remote branch's lock, so these start one after another as before A11-442. PURE.
+ */
+const mergesBaseFirst = (entry: Entry): boolean => entry.review !== undefined && entry.stackBase !== undefined;
 
 /**
  * Whether the run `key` is in was stopped while it was starting. The stop is the person's last word, so the workspace its start raced is closed

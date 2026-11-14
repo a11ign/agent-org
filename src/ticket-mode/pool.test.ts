@@ -162,7 +162,8 @@ test("a tick starts as many as `max` allows, each in ticket mode's own herdr ses
   assert.deepEqual(["NBF-1", "NBF-2", "NBF-3"].map((k) => entry(k).phase), ["running", "running", "queued"]);
   assert.ok(h.calls.every((args) => args[0] === "--session" && args[1] === "tickets"), "never the org's session");
   assert.ok(h.calls.some((args) => args.includes("start") && args.includes("t-nbf-1")), "herdr's agent name is the key in lower case, which herdr requires");
-  const start = h.calls.find((args) => args.includes("start"))!;
+  // The two runs open side by side (A11-442), so NBF-1's calls are found by its name, not by coming first.
+  const start = h.calls.find((args) => args.includes("start") && args.includes("t-nbf-1"))!;
   const tail = start.slice(start.indexOf("--") + 1);
   assert.equal(tail[0], `Read ${ticketDir(settings, "NBF-1")}/brief.md and follow it.`);
   assert.deepEqual(tail.slice(-2), ["--disallowedTools", "AskUserQuestion"]);
@@ -172,7 +173,7 @@ test("a tick starts as many as `max` allows, each in ticket mode's own herdr ses
   assert.equal(written.permissions.defaultMode, "bypassPermissions", "the settings sit in the ticket's folder, where the worker starts");
   assert.deepEqual(worktreesIn(folder), [], "no worktree is made for it: the worker chooses the repository");
   assert.ok(existsSync(join(ticketDir(settings, "NBF-1"), "brief.md")));
-  const create = h.calls.find((args) => args.includes("create"))!;
+  const create = h.calls.find((args) => args.includes("create") && args.includes("t-nbf-1"))!;
   assert.ok(create.includes("--cwd") && create.includes(folder), "the worker starts in the ticket's folder");
   for (const pair of ["AGENT_ORG_TICKET=NBF-1", "AGENT_ORG_TICKET_BRANCH=nbf-1", "AGENT_ORG_TICKET_HOST=/work/.agent-org/host.json"]) {
     assert.ok(create.includes(pair), `its shell carries ${pair}, which ticket:worktree reads`);
@@ -1674,26 +1675,30 @@ test("the tickets queued together are planned by one run in one slot: each shows
   const { tracker } = batchTracker({ ...source, download: async (t, dir) => [join(dir, `attachment-1-${t.key}.png`)] });
   const { pool, h, entry, settings, store } = setup(2, ["NBF-1", "NBF-2", "NBF-3", "NBF-4"], BATCH_PLANNER, { source: tracker, planFirst: ["NBF-1", "NBF-2", "NBF-3"], batch: true });
   await pool.tick();
+  // The batch's run and NBF-4's open side by side (A11-442), so which workspace herdr numbers first is not asserted: that the batch shares one, and NBF-4 has another, is.
+  const shared = entry("NBF-1").workspace;
   for (const key of ["NBF-1", "NBF-2", "NBF-3"]) {
-    assert.deepEqual([entry(key).phase, entry(key).workspace, entry(key).pane, runStatus(entry(key), store.get().entries)], ["running", "w1", "w1:p1", "planning"], key);
+    assert.deepEqual([entry(key).phase, entry(key).workspace, entry(key).pane, runStatus(entry(key), store.get().entries)], ["running", shared, `${shared}:p1`, "planning"], key);
   }
-  assert.deepEqual([entry("NBF-4").phase, entry("NBF-4").workspace], ["running", "w2"], "the batch held one of the two slots, so NBF-4 took the other");
+  assert.equal(entry("NBF-4").phase, "running", "the batch held one of the two slots, so NBF-4 took the other");
+  assert.ok(entry("NBF-4").workspace !== undefined && entry("NBF-4").workspace !== shared, "in a workspace of its own");
   const starts = h.calls.filter((args) => args.includes("start"));
   assert.equal(starts.length, 2);
-  assert.ok(starts[0].includes(herdrName(BATCH)), "the batch's run is named after the batch, not one of its tickets");
+  const batchStart = starts.find((args) => args.includes(herdrName(BATCH)));
+  assert.ok(batchStart !== undefined, "the batch's run is named after the batch, not one of its tickets");
   const dir = batchDir(settings, BATCH);
   const brief = readFileSync(join(dir, "brief.md"), "utf8");
   assert.match(brief, /^# Plan 3 tickets together: NBF-1, NBF-2, NBF-3\n/);
   assert.ok(brief.includes(`Run the planner with: unattended: plan NBF-1, NBF-2, NBF-3 into ${join(dir, "plan")}`));
   assert.ok(brief.includes(join(ticketDir(settings, "NBF-2"), "attachment-1-NBF-2.png")), "each ticket's files are downloaded into its own folder, as a run of its own has them");
-  const tail = starts[0].slice(starts[0].indexOf("--") + 1);
+  const tail = batchStart.slice(batchStart.indexOf("--") + 1);
   assert.equal(tail[0], `Read ${dir}/brief.md and follow it.`);
   assert.deepEqual([tail[tail.indexOf("--model") + 1], tail[tail.indexOf("--effort") + 1]], ["opus", "max"], "the planning model and effort");
   const written = JSON.parse(readFileSync(join(batchFolder(settings, BATCH), ".claude", "settings.local.json"), "utf8"));
   assert.ok(written.hooks.Stop[0].hooks[0].args.includes(dir), "the stop hook reads the run's outcome file, in the batch's folder");
   const deny = JSON.parse(readFileSync(join(dir, "deny.json"), "utf8")) as { pattern: string }[];
   assert.ok(deny.some(({ pattern }) => new RegExp(pattern).test("git commit -m plan")), "the planning refusals hold for a batch too");
-  const create = h.calls.find((args) => args.includes("create"))!;
+  const create = h.calls.find((args) => args.includes("create") && args.includes(herdrName(BATCH)))!;
   assert.equal(create.some((arg) => arg.startsWith("AGENT_ORG_TICKET=")), false, "a batch's run has no one ticket to make a worktree for");
 });
 
