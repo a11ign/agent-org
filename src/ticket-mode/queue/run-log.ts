@@ -86,6 +86,8 @@ type EventBody =
   | Readonly<{ kind: "finished"; outcome: string; reason?: string }>
   /** A failed write of the run's result to the tracker (A11-304): the `failures`th, and the first line of the error the tracker or the network gave. */
   | Readonly<{ kind: "tracker-write"; step: TrackerWriteStep; failures: number; error: string }>
+  /** The round's transcript could not be read, so no outcome record was written for it (A11-430): `reason` says why. Its tokens are unknown, never 0. */
+  | Readonly<{ kind: "outcome-unread"; reason: string }>
   | Readonly<{ kind: "dismissed" }>
   | Readonly<{ kind: "removed" }>
   | Readonly<{ kind: "requeued"; why: RequeueWhy }>;

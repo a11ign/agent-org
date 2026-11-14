@@ -5,7 +5,8 @@ import type { PreflightExec } from "./preflight.ts";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
-import { basename, join } from "node:path";
+import { basename, dirname, join } from "node:path";
+import { latestOutcomes, outcomesPath, readOutcomes } from "./outcomes/outcome-record.ts";
 import { execFileSync } from "node:child_process";
 import { sandboxGitEnv } from "../lib/git-env.ts";
 import { tmpDir } from "../lib/tmp-fixture.ts";
@@ -20,7 +21,7 @@ import { stackBaseFile, writeStackBase } from "./stack-rebase.ts";
 import { worktreePath } from "./worktree.ts";
 import { TICKET_ENV, main as worktreeMain } from "./worktree-command.ts";
 import {
-  batchDir, batchFolder, countTokens, createPool, feedbackSince, findFolderSession, findTranscript, herdrName, herdrServerCommand, isStartDialog, parseOutcome, publishDir, publishResult,
+  batchDir, batchFolder, createPool, feedbackSince, findFolderSession, findTranscript, herdrName, herdrServerCommand, isStartDialog, parseOutcome, publishDir, publishResult,
   ticketDir, ticketFolder, worktreesIn,
 } from "./pool.ts";
 import { approve, completableRuns, finish, markResumed, park, queuePublish, recordPullStates, recordStackBase, respond, pauseQueue, resumeQueue } from "./queue/queue-transitions.ts";
@@ -267,12 +268,71 @@ test("a run ends on its outcome file once the agent is idle; idle before it ever
   writeFileSync(join(ticketDir(settings, "NBF-1"), "outcome.json"), JSON.stringify({ kind: "draft-pr", prs: [{ repo: "nbl-ui-netbox", url: "https://github.com/x/pull/1" }] }));
   // The session's transcript, filed under a project that is not the worktree's, found by the id herdr reports for the run's workspace.
   mkdirSync(join(root, "transcripts", "-Users-me-work"), { recursive: true });
-  writeFileSync(join(root, "transcripts", "-Users-me-work", "session-t-nbf-1.jsonl"), JSON.stringify({ message: { usage: { input_tokens: 3, output_tokens: 4 } } }));
+  writeFileSync(join(root, "transcripts", "-Users-me-work", "session-t-nbf-1.jsonl"), turnLine("m1", 50, { input_tokens: 3, output_tokens: 4 }));
   await pool.tick();
   assert.deepEqual(entry("NBF-1").tokens, { input: 3, output: 4 });
   assert.deepEqual(entry("NBF-1").outcome, { kind: "draft-pr", prs: [{ repo: "nbl-ui-netbox", url: "https://github.com/x/pull/1" }] });
   assert.deepEqual([entry("NBF-1").workspace, entry("NBF-1").pane], [undefined, undefined], "its workspace was closed");
   assert.equal(entry("NBF-1").session, "session-t-nbf-1", "the session it ran in is kept, for a review run to resume");
+});
+
+/** One assistant record of a Claude transcript: message `id`, written at `at` ms, with `usage`. Claude Code writes one per content block, each repeating the usage. */
+const turnLine = (id: string, at: number, usage: Record<string, number>): string =>
+  JSON.stringify({ type: "assistant", timestamp: new Date(at).toISOString(), message: { id, model: "claude-sonnet-5-5", usage } });
+
+/** The transcript of session `id`, under a project that is not the worktree's, with `lines`. */
+function writeTranscript(root: string, id: string, lines: readonly string[]): string {
+  const file = join(root, "transcripts", "-Users-me-work", `${id}.jsonl`);
+  mkdirSync(dirname(file), { recursive: true });
+  writeFileSync(file, `${lines.join("\n")}\n`);
+  return file;
+}
+
+test("a run resumed for round 2 in the same session records each round's own tokens, and no turn in both (A11-430)", async () => {
+  const clock = { at: 100 };
+  const { pool, status, entry, settings, root, store, h } = setup(1, ["NBF-1"], {}, { now: () => clock.at });
+  await pool.tick();
+  status.set(herdrName("NBF-1"), "idle");
+  const dir = ticketDir(settings, "NBF-1");
+  // Round 1's message is written twice, once per content block, as Claude Code writes it: it counts once.
+  const file = writeTranscript(root, "session-t-nbf-1", [turnLine("m1", 150, { input_tokens: 10, output_tokens: 1 }), turnLine("m1", 160, { input_tokens: 10, cache_read_input_tokens: 5, output_tokens: 7 })]);
+  writeFileSync(join(dir, "outcome.json"), JSON.stringify({ kind: "draft-pr", prs: [{ repo: "nbl-ui-netbox", url: "https://github.com/x/pull/1" }] }));
+  clock.at = 1_000;
+  await pool.tick();
+  assert.deepEqual(entry("NBF-1").outcomeRun?.rounds.map(({ tokens }) => tokens?.["claude-sonnet-5-5"]), [{ input: 10, output: 7, cacheRead: 5, cacheWrite5m: 0, cacheWrite1h: 0 }]);
+  store.set(respond(store.get(), "NBF-1", 1_100));
+  clock.at = 1_200;
+  await pool.tick();
+  assert.equal(entry("NBF-1").phase, "running", "round 2 resumed the same session");
+  // herdr lists the resumed agent in the round's own workspace, with the session it resumed.
+  h.extra.push({ workspace_id: entry("NBF-1").workspace ?? "", label: "round-2", name: null, session: "session-t-nbf-1", status: "idle" });
+  // The resumed session's transcript holds round 1's turn again, and round 2's own.
+  writeFileSync(file, `${[turnLine("m1", 160, { input_tokens: 10, cache_read_input_tokens: 5, output_tokens: 7 }), turnLine("m2", 1_500, { input_tokens: 2, output_tokens: 3 })].join("\n")}\n`);
+  writeFileSync(join(dir, "outcome.json"), JSON.stringify({ kind: "reviewed" }));
+  clock.at = 2_000;
+  await pool.tick();
+  const records = readOutcomes(outcomesPath(settings.stateDir));
+  assert.equal(records.length, 2, "one line per round's end");
+  const [record] = latestOutcomes(records);
+  assert.deepEqual(record?.rounds.map(({ outcome, tokens }) => [outcome, tokens?.["claude-sonnet-5-5"]?.input, tokens?.["claude-sonnet-5-5"]?.output]), [["draft-pr", 10, 7], ["reviewed", 2, 3]]);
+  assert.deepEqual(record?.tokens["claude-sonnet-5-5"], { input: 12, output: 10, cacheRead: 5, cacheWrite5m: 0, cacheWrite1h: 0 }, "the run's tokens are its rounds' own, m1 once");
+  assert.deepEqual([record?.run, record?.model, record?.effort, record?.final], ["NBF-1@100", "sonnet", "high", "reviewed"]);
+  assert.deepEqual(entry("NBF-1").tokens, { input: 17, output: 10 }, "Properties show the run's tokens, each turn once");
+});
+
+test("a run whose transcript cannot be read reports it on the run and writes no outcome record (A11-430)", async () => {
+  const { pool, status, entry, settings, store } = setup(1, ["NBF-1"]);
+  await pool.tick();
+  status.set(herdrName("NBF-1"), "idle");
+  writeFileSync(join(ticketDir(settings, "NBF-1"), "outcome.json"), JSON.stringify({ kind: "needs-human", reason: "which design?", escalation: "reserved" }));
+  await pool.tick();
+  assert.equal(entry("NBF-1").phase, "finished");
+  const unread = (store.get().runLog?.["NBF-1"] ?? []).filter((event) => event.kind === "outcome-unread");
+  assert.equal(unread.length, 1, "the board reports the error on the run");
+  assert.match(unread[0]?.kind === "outcome-unread" ? unread[0].reason : "", /transcript/);
+  assert.deepEqual(readOutcomes(outcomesPath(settings.stateDir)), [], "no record with zero tokens");
+  assert.equal(entry("NBF-1").tokens, undefined, "its tokens are unknown, not 0");
+  assert.ok(entry("NBF-1").outcomeRun?.rounds[0]?.unread !== undefined, "the round is kept, marked unread, so a later round counts only its own turns");
 });
 
 const approvedPr = { repo: "nbl-ui-netbox", url: "https://github.com/x/nbl-ui-netbox/pull/1" };
@@ -457,19 +517,13 @@ test("an outcome file that cannot be read is `needs-human`, saying so", () => {
   assert.equal(parseOutcome("{\"kind\":\"merged\"}").kind, "needs-human");
 });
 
-test("tokens are read from the session's own transcript, found by its id in whichever project Claude Code filed it", () => {
+test("a session's own transcript is found by its id in whichever project Claude Code filed it", () => {
   const root = tmpDir("ticket-tokens-");
   mkdirSync(join(root, "-Users-me-work"), { recursive: true });
   const file = join(root, "-Users-me-work", "u-123.jsonl");
-  writeFileSync(file, [
-    JSON.stringify({ message: { usage: { input_tokens: 10, cache_read_input_tokens: 100, cache_creation_input_tokens: 5, output_tokens: 7 } } }),
-    JSON.stringify({ type: "user", message: { content: "no usage here" } }),
-    "{\"message\":{\"usage\":", // a live transcript's partial last line
-  ].join("\n"));
+  writeFileSync(file, "");
   assert.equal(findTranscript(root, "u-123"), file);
   assert.equal(findTranscript(root, "u-404"), null);
-  assert.deepEqual(countTokens(file), { input: 115, output: 7 });
-  assert.deepEqual(countTokens(null), { input: 0, output: 0 });
 });
 
 test("a session whose herdr server does not answer is started once, and waited for", async () => {
@@ -1733,6 +1787,22 @@ test("a batch's planned outcome attaches each ticket's plan, hands back the one 
   assert.deepEqual([entry("NBF-2").blockers?.map((b) => b.key), runStatus(entry("NBF-2"), store.get().entries)], [["NBF-1"], "blocked"], "NBF-2 waits on NBF-1, as Linear now says");
 });
 
+test("a batch planning run's outcome records carry each ticket a share of its tokens, and the shares add up to the run's (A11-430)", async () => {
+  const { tracker } = batchTracker();
+  const keys = ["NBF-1", "NBF-2", "NBF-3"];
+  const { settings } = await plannedBatch(tracker, (plan, { entry, h, root }) => {
+    for (const key of keys) put(join(plan, key, `${key}-0001-plan-x.md`), "# X\n");
+    // herdr lists the planner's agent in the run's workspace, with its session.
+    h.extra.push({ workspace_id: entry("NBF-1").workspace ?? "", label: "planner", name: null, session: "session-planner", status: "idle" });
+    writeTranscript(root, "session-planner", [turnLine("m1", 50, { input_tokens: 10, cache_read_input_tokens: 101, output_tokens: 7 })]);
+  }, keys);
+  const records = latestOutcomes(readOutcomes(outcomesPath(settings.stateDir)));
+  assert.deepEqual(records.map(({ ticket, batch, final }) => [ticket, batch?.share, batch?.of, final]), [["NBF-1", 1, 3, "planned"], ["NBF-2", 2, 3, "planned"], ["NBF-3", 3, 3, "planned"]]);
+  const shares = records.map(({ tokens }) => tokens["claude-sonnet-5-5"]);
+  assert.deepEqual(shares.map((share) => [share?.input, share?.cacheRead, share?.output]), [[4, 34, 3], [3, 34, 2], [3, 33, 2]], "even shares, the remainder one each to the first tickets");
+  assert.deepEqual([10, 101, 7], ["input", "cacheRead", "output"].map((field) => shares.reduce((sum, share) => sum + (share?.[field as "input"] ?? 0), 0)), "the shares add up to the run's total");
+});
+
 test("an order.json that fails its checks records no blockers and is logged, and the plans are still attached", async () => {
   const { tracker, attached, relations } = batchTracker();
   const { entry, written } = await plannedBatch(tracker, (plan) => {
@@ -1867,7 +1937,7 @@ test("only a batch's run is watched: its tickets without an agent are never cras
   assert.deepEqual(["NBF-1", "NBF-2"].map((key) => entry(key).phase), ["running", "running"], "one listing without it is one miss, counted once for the run");
   await pool.tick();
   assert.deepEqual(["NBF-1", "NBF-2"].map((key) => entry(key).outcome), Array(2).fill({ kind: "crashed", reason: "its herdr workspace is gone" }));
-  assert.deepEqual([entry("NBF-1").tokens, entry("NBF-2").tokens], [{ input: 0, output: 0 }, undefined], "the run's tokens are counted once, on the ticket it was watched through");
+  assert.deepEqual([entry("NBF-1").tokens, entry("NBF-2").tokens], [undefined, undefined], "the run's transcript was never written, so its tokens are unknown on every ticket, not 0");
 });
 
 test("stopping any ticket of a batch stops its whole run, and a retried ticket is planned again on its own", async () => {
@@ -1991,12 +2061,12 @@ test("a batch whose start fails crashes every ticket of it, and a stop while it 
 });
 
 /** Run a batch of NBF-1 and NBF-2 to a planned outcome, after `write` has filled its plan folder. Returns the setup and the board's log. */
-async function plannedBatch(tracker: TicketSource, write: (plan: string) => void) {
+async function plannedBatch(tracker: TicketSource, write: (plan: string, ran: ReturnType<typeof setup>) => void, keys: readonly string[] = ["NBF-1", "NBF-2"]) {
   let ran: ReturnType<typeof setup> | undefined;
   const written = await captureStderr(async () => {
-    ran = setup(1, ["NBF-1", "NBF-2"], BATCH_PLANNER, { source: tracker, planFirst: ["NBF-1", "NBF-2"], batch: true });
+    ran = setup(1, [...keys], BATCH_PLANNER, { source: tracker, planFirst: [...keys], batch: true });
     await ran.pool.tick();
-    write(join(batchDir(ran.settings, BATCH), "plan"));
+    write(join(batchDir(ran.settings, BATCH), "plan"), ran);
     writeFileSync(join(batchDir(ran.settings, BATCH), "outcome.json"), JSON.stringify({ kind: "planned" }));
     ran.status.set(herdrName(BATCH), "idle");
     await ran.pool.tick();

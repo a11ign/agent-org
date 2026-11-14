@@ -38,7 +38,10 @@ import { ticketDecisionsDefect } from "./plan-ticket-decisions.ts";
 import { closeWorkspaceLater } from "./pool-close.ts";
 import { cloneRefusal, mergeWaits, type Order, parseOrder, unknownRepos } from "./batch-order.ts";
 import { CONCLUDED, HANDED_BACK, RESULT_KINDS, pullsOf, type PullHead } from "./board-view/view-types-and-filters.ts";
-import { countTokens, findTranscript } from "./pool-transcripts.ts";
+import { findTranscript } from "./pool-transcripts.ts";
+import { readTurns } from "./outcomes/round-tokens.ts";
+import { type RoundEnd, roundEndsOf } from "./outcomes/round-end.ts";
+import { appendOutcome, type OutcomeRun, outcomesPath } from "./outcomes/outcome-record.ts";
 import { isParked } from "./board-view/pull-status-and-notes.ts";
 import { settledByPulls } from "./board-view/pull-settled.ts";
 // eslint-disable-next-line clean-code/no-duplication -- import list: the rule matches statement shape, and imports are not duplicated logic
@@ -623,9 +626,12 @@ async function attachPlan(ctx: PoolContext, entry: Entry): Promise<void> {
     const named = blockersOfPlan(found.files, key);
     const blockers = named.length === 0 ? named : await writePlanBlockers(ctx, key, named);
     if (!sameRun(ctx, entry)) return;
+    // The planning run is a run of its own: its record is written as it ends, and the ticket is queued again without it, to be worked by a fresh worker.
+    const ends = roundEndsAt(ctx, entry, [entry], () => "planned");
     if (entry.workspace) closeWorkspaceLater(ctx, entry.workspace);
     forgetRun(ctx, name);
-    update(ctx, (queue) => recordPlanBlockers(planDone(recordedOf(moving, stamped, stamp)?.(queue) ?? queue, key, { now: ctx.now() }), key, blockers));
+    update(ctx, (queue) => recordPlanBlockers(planDone(reportedUnread(recordedOf(moving, stamped, stamp)?.(queue) ?? queue, ends, key, ctx.now()), key, { now: ctx.now() }), key, blockers));
+    appendOutcomes(ctx, ends);
     // The ticket is queued again after the pass that saw the outcome decided, so a pass is asked for: the run starts at once, not at the next interval (A11-364).
     ctx.wake.run();
   } catch (err) {
@@ -688,14 +694,18 @@ async function attachBatch(ctx: PoolContext, entry: Entry): Promise<void> {
     if (entry.workspace && !parks) closeWorkspaceLater(ctx, entry.workspace);
     forgetRun(ctx, name);
     const id = entry.workspace === undefined ? undefined : ctx.claudeSessions.get(entry.workspace);
+    // The run's tokens are split across every ticket it planned or asked about, so the shares add up to what it spent (A11-430).
+    const ends = roundEndsAt(ctx, entry, members, (key) => handedBack.get(key)?.kind ?? (misplaced.has(key) ? "needs-human" : "planned"));
     updateEach(ctx, still, (queue, key) => {
       const outcome = handedBack.get(key);
       const refused = misplaced.get(key);
-      if (outcome !== undefined) return (parks ? park : finish)(queue, key, outcome, now(), id === undefined ? {} : { session: id });
-      if (refused !== undefined) return finish(batchPlanDone(queue, key, null, [], now()), key, { kind: "needs-human", reason: refused }, now());
+      const reported = reportedUnread(queue, ends, key, now());
+      if (outcome !== undefined) return (parks ? park : finish)(reported, key, outcome, now(), { ...(id === undefined ? {} : { session: id }), ...recordedRound(ends, key) });
+      if (refused !== undefined) return finish(batchPlanDone(reported, key, null, [], now()), key, { kind: "needs-human", reason: refused }, now(), recordedRound(ends, key));
       const place = order.get(key);
-      return batchPlanDone(queue, key, placed.get(key) ?? place?.repo ?? null, mergeWaits(place), now());
+      return batchPlanDone(reported, key, placed.get(key) ?? place?.repo ?? null, mergeWaits(place), now());
     });
+    appendOutcomes(ctx, new Map([...ends].filter(([key]) => still.some((member) => member.ticket.key === key))));
     // Only a ticket queued again is a start to decide: the ones handed to a person wait for them.
     if (still.some(({ ticket: { key } }) => !handedBack.has(key) && !misplaced.has(key))) ctx.wake.run();
   } catch (err) {
@@ -817,25 +827,71 @@ type Ending = Readonly<{ outcome: Outcome; movedTo?: string }>;
 
 /** {@link end}, or the end of a run the board moves to the repository its worker named, which is queued again at once and so parks nowhere. */
 function finishRun(ctx: PoolContext, entry: Entry, { outcome, movedTo }: Ending): void {
-  const { claudeSessions, now, transcripts } = ctx;
+  const { claudeSessions, now } = ctx;
   // A concluded run never parks, whatever else a later change hands back: nobody would answer its agent.
   const parks = movedTo === undefined && entry.workspace !== undefined && HANDED_BACK.has(outcome.kind) && !CONCLUDED.has(outcome.kind);
   if (entry.workspace && !parks) closeWorkspaceLater(ctx, entry.workspace);
   const id = entry.workspace === undefined ? undefined : claudeSessions.get(entry.workspace);
-  const tokens = countTokens(id === undefined ? null : findTranscript(transcripts, id));
   const { name } = runPlace(ctx, entry);
   const record = id === undefined ? {} : { session: id };
-  // A batch's run spent its tokens once, so they are recorded on the ticket it was watched through, and not counted again on each of the rest.
-  updateEach(ctx, runMembers(ctx, entry), (queue, key) => {
-    const recorded = key === entry.ticket.key ? { ...record, tokens } : record;
-    return movedTo === undefined ? (parks ? park : finish)(queue, key, outcome, now(), recorded) : reroute(queue, key, { outcome, repo: movedTo }, now(), recorded);
+  const members = runMembers(ctx, entry);
+  const ends = roundEndsAt(ctx, entry, members, () => outcome.kind);
+  // A batch's run spent its tokens once: each ticket carries its share of them (`batchShare`), so they add up to the run's and none is counted twice.
+  updateEach(ctx, members, (queue, key) => {
+    const recorded = { ...record, ...recordedRound(ends, key) };
+    // Reported before the run's end is logged, so the end stays the newest event its Timeline words (a canceled ticket's, a hand-back's).
+    const reported = reportedUnread(queue, ends, key, now());
+    return movedTo === undefined ? (parks ? park : finish)(reported, key, outcome, now(), recorded) : reroute(reported, key, { outcome, repo: movedTo }, now(), recorded);
   });
+  appendOutcomes(ctx, ends);
   if (movedTo !== undefined) ctx.wake.run();
   // Not waited for (A11-356): the code host answers a promise. Until it has, the run is finished with its files unrecorded, which is the state a read that failed leaves, and `overlapWait` holds its repository in it.
   void recordPullsAtEnd(ctx, entry, outcome).catch((err: unknown) => log(`${entry.ticket.key}: the files and heads of its pull requests could not be read (${messageOf(err)}), so its repository is held until the next watch reads them`));
   // A run that is not handed back gives its ticket back now. A parked one keeps it In Progress while a person may answer it.
   if (!HANDED_BACK.has(outcome.kind)) for (const member of runMembers(ctx, entry)) void restoreAndLog(ctx, member.ticket.key);
   forgetRun(ctx, name);
+}
+
+/**
+ * What the end of this round records for each ticket of the run (A11-430): its transcript is read once, by the session herdr reported for its workspace. A run that never had an agent has no round to
+ * record, and none is.
+ */
+function roundEndsAt(ctx: PoolContext, entry: Entry, members: readonly Entry[], outcomeOf: (key: string) => string): Map<string, RoundEnd> {
+  if (entry.workspace === undefined) return new Map();
+  const id = ctx.claudeSessions.get(entry.workspace);
+  const read = id === undefined ? { unreadable: `herdr reported no Claude session for its workspace ${entry.workspace}` } : readTurns(findTranscript(ctx.transcripts, id));
+  return roundEndsOf({ members, watched: entry, read, outcomeOf, ...(id === undefined ? {} : { session: id }), now: ctx.now() });
+}
+
+/** The run of `key` with this round added, for the queue: its tokens and its outcome record so far (A11-430). Nothing when the round recorded nothing. PURE. */
+const recordedRound = (ends: ReadonlyMap<string, RoundEnd>, key: string): Readonly<{ outcomeRun?: OutcomeRun; tokens?: Entry["tokens"] }> => {
+  const roundEnd = ends.get(key);
+  return roundEnd === undefined ? {} : { outcomeRun: roundEnd.outcomeRun, ...(roundEnd.tokens === undefined ? {} : { tokens: roundEnd.tokens }) };
+};
+
+/** `queue` with the board's report on `key`'s run when its round's transcript could not be read, so no outcome record was written (A11-430). PURE. */
+function reportedUnread(queue: Queue, ends: ReadonlyMap<string, RoundEnd>, key: string, at: number): Queue {
+  const roundEnd = ends.get(key);
+  return roundEnd !== undefined && "unread" in roundEnd ? logEvent(queue, key, at, { kind: "outcome-unread", reason: shortReason(roundEnd.unread) ?? roundEnd.unread }) : queue;
+}
+
+/**
+ * Append each record the round's end made to the outcome log, and say on the board's log each round that made none, because its transcript could not be read. A log that cannot be written is said
+ * there too: the run's end, which the queue already holds, is not undone for it.
+ */
+function appendOutcomes(ctx: PoolContext, ends: ReadonlyMap<string, RoundEnd>): void {
+  const path = outcomesPath(ctx.settings.stateDir);
+  for (const [key, roundEnd] of ends) {
+    if ("unread" in roundEnd) {
+      log(`${key}: no outcome record was written for this round, because its tokens could not be read: ${roundEnd.unread}`);
+      continue;
+    }
+    try {
+      appendOutcome(path, roundEnd.record);
+    } catch (err) {
+      log(`${key}: its outcome record could not be written to ${path} (${messageOf(err)})`);
+    }
+  }
 }
 
 /**
