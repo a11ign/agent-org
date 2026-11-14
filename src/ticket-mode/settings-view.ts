@@ -29,6 +29,8 @@ export type ViewInput = Readonly<{
   /** The contract rows of the plugins and host keys, one per mismatch. Returned in the view; drawing them is not this module's. */
   contract?: readonly ContractRow[];
   exists: (path: string) => boolean;
+  /** The keys only a plugin the host does not name declares (A11-447), such as a second tracker's: drawn as not in use. Absent is none. */
+  otherPlugins?: ReadonlySet<string>;
 }>;
 
 export type State = "enabled" | "disabled" | "not set" | "default";
@@ -213,7 +215,7 @@ function rowsOf(entry: SchemaEntry, input: ViewInput): Unplaced[] {
     const roleRow = /^(?:tickets\.providers\.codeHost|github)\.identity\.[^.]+$/.test(key);
     const shown = set ? (roleRow ? roleValue(root, path) : showValue({ key, value }, entry, input.exists)) : (aliased ? ALIASED_VALUE : absentValue(entry, state));
     rows.push({ key, file: entry.file, group: entry.group, value: shown, state, source, explanation: entry.explanation, breaks: entry.breaks, depth: path.length - 1, secret: entry.secret !== undefined,
-      ...editOf(entry), raw: set ? rawOf(value) : null, alias: set ? aliasText(entry, key) : null, inUse: set || (entry.aliasOf === undefined && inUseOf(entry, key, root)), nest: nestOf(key) });
+      ...editOf(entry), raw: set ? rawOf(value) : null, alias: set ? aliasText(entry, key) : null, inUse: set || (entry.aliasOf === undefined && !(input.otherPlugins?.has(entry.key) ?? false) && inUseOf(entry, key, root)), nest: nestOf(key) });
     if (Array.isArray(value)) rows.push(...elementRows({ parent: entry, key, items: value, state }, input));
   }
   return rows;

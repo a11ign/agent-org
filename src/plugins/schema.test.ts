@@ -2,7 +2,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { SCHEMA } from "../ticket-mode/config-schema.ts";
-import { defaultSchema, schemaOf } from "./schema.ts";
+import { defaultSchema, keysOfOtherPlugins, schemaOf } from "./schema.ts";
 import { buildCatalog, defaultCatalog, pluginNamed, type PackageFiles } from "./registry.ts";
 
 const entry = (key: string) => ({ key, file: "host.json", group: "Tracker", type: "text", absent: "unset", default: null, explanation: "e", breaks: "b", edit: { editable: false, why: "w" } });
@@ -45,4 +45,11 @@ test("the settings of two plugins of one concern follow the block's enabled entr
   const keys = schemaOf(catalog).map(({ key }) => key);
   const at = keys.indexOf("tickets.providers.tracker.enabled");
   assert.equal(keys[at + 1], "tickets.providers.tracker.token", "the example plugin is first in the catalog, so its settings follow the entry first");
+});
+
+test("A11-447: the keys only another tracker declares are the ones the named tracker's block refuses: neither the shared settings nor the named tracker's own", () => {
+  const catalog = defaultCatalog();
+  const short = (keys: ReadonlySet<string>) => [...keys].map((key) => key.replace("tickets.providers.tracker.", "")).sort();
+  assert.deepEqual(short(keysOfOtherPlugins("tracker", "linear", catalog)), ["prefix", "repo", "token", "token.keychain", "token.path"]);
+  assert.deepEqual(short(keysOfOtherPlugins("tracker", "github-issues", catalog)), ["key", "key.keychain", "key.path"]);
 });
