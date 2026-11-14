@@ -55,6 +55,21 @@ export function promptNote(entry: ViewEntry): string | null {
   return `A safety prompt${agent === undefined ? "" : ` from the ${agent} subagent`} was declined automatically: ${command}`;
 }
 
+/** The day of a reset that is not today, as the card names it, `15 Oct `, or nothing for one later today: the viewer's clock, as {@link clockOf} is. PURE. */
+const dayOf = (ms: number, now: number): string =>
+  (new Date(ms).toDateString() === new Date(now).toDateString() ? "" : `${new Date(ms).toLocaleDateString("en-GB", { day: "numeric", month: "short" })} `);
+
+/**
+ * What a running run's card says while its worker is out of Claude allowance (A11-434), or null: `Waiting: allowance until 14:00`, with the day when the reset is not today, and, once the reset has
+ * passed (`now`), that the allowance was due back then. PURE.
+ */
+export function allowanceLine(entry: ViewEntry, now?: number): string | null {
+  const held = entry.allowance;
+  if (entry.phase !== "running" || held === undefined) return null;
+  const at = `${dayOf(held.until, now ?? held.since)}${clockOf(held.until)}`;
+  return now !== undefined && now >= held.until ? `Waiting: allowance, due back at ${at}` : `Waiting: allowance until ${at}`;
+}
+
 /** What the card says when the pane had lost the run's environment (A11-279): the board started the run again with it, or could not. */
 const ENVIRONMENT_LINES = {
   restored: "its environment was restored",
@@ -79,6 +94,9 @@ function askedReason(entry: ViewEntry, now?: number): string | null {
   const note = workingNote(entry, now);
   const resumed = resumeLine(entry);
   if (entry.handedBack) return entry.handedBack;
+  // A worker out of allowance waits for the reset, whatever its last note said (A11-434).
+  const allowance = allowanceLine(entry, now);
+  if (allowance !== null) return allowance;
   // An idle run is never shown as only running: the board's resume comes first, then what its worker last said (A11-279).
   if (note !== null && !note.stalled) return resumed === null ? note.text : `${resumed}; ${note.text}`;
   if (resumed !== null) return resumed;

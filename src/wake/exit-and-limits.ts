@@ -1,4 +1,4 @@
-import { existsSync, readdirSync, openSync, readSync, closeSync, fstatSync } from "node:fs";
+import { existsSync, readdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { scopesOf } from "../work-gate/vocabulary.ts";
@@ -9,6 +9,10 @@ import { homeProjectDeclaration } from "../project-config.ts";
 import { REPO } from "../project-identity.ts";
 import { rows } from "../plugins/rows.ts";
 import { accountLimitFlag, tickAccountLimit, type AccountLimit } from "../account-limit.ts";
+import { lastSaidIn, spentIn } from "../account-limit-message.ts";
+
+// The message and its reset are read in one leaf, which ticket mode reads too (A11-434); re-exported here so the gate's importers keep their names.
+export { LIMIT_UNREADABLE_HOLD_MS, lastSaidIn, limitResetAt } from "../account-limit-message.ts";
 import { isLimitMenu } from "../worker-state.ts";
 import { inBuildReason, isInBuild, unansweredRefusal, lookupHeldRows } from "../row-claim/own-pr-health-rule.ts";
 import { SPARE_FAMILIES, familyMember } from "../arm-pr.ts";
@@ -47,114 +51,6 @@ export function blockedSessions(agents: { label: string; status: string; }[]): s
 }
 
 // --- #2256: A SESSION OUT OF ALLOWANCE CANNOT ANSWER, SO A PROMPT SENT TO IT IS NOT A DELIVERY ---
-
-/**
- * The line Claude Code writes as the session's own reply when the allowance is spent. MEASURED in the host's
- * transcripts, two forms and one qualifier: `resets 8am (Europe/London)` (494 lines) and, when the reset is more than
- * a day off, `resets Sep 17, 8am (Europe/London)` (1,171), both after `hit your weekly limit`. The qualifier is
- * matched by SHAPE (`[\w-]+`), so a `session` or `5-hour` limit is read the same way but has NOT been seen.
- * Anchored at both ends: a session QUOTING the sentence inside a paragraph (this row's own text does) is not limited.
- */
-const LIMIT_MESSAGE = /^You[’']ve hit your (?:[\w-]+ )?limit · resets (?:([A-Z][a-z]{2}) (\d{1,2}), )?(\d{1,2})(?::(\d{2}))?(am|pm) \(([^)]+)\)$/;
-
-const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
-
-/**
- * How long a limit message whose reset time cannot be read still holds a session back. A matched message with an
- * unreadable reset is a limited session all the same, so it is not offered work; but it must not hold for ever on a
- * guess, and an hour is short beside the two it takes six deliveries to reach the cap.
- */
-export const LIMIT_UNREADABLE_HOLD_MS = 60 * 60_000;
-
-/** How much of a transcript's end is read for its last entry: the limit line is a few hundred bytes. */
-const TRANSCRIPT_TAIL_BYTES = 64 * 1024;
-
-/**
- * A zone's offset from UTC at an instant. `Intl` is the tz database the host already has; nothing here carries one.
- *   @returns milliseconds
- */
-function zoneOffsetMs(instant: number, timeZone: string): number {
-  const parts = Object.fromEntries(new Intl.DateTimeFormat("en-US", { timeZone, hourCycle: "h23", year: "numeric",
-    month: "numeric", day: "numeric", hour: "numeric", minute: "numeric", second: "numeric" })
-    .formatToParts(new Date(instant)).map((part) => [part.type, part.value]));
-  const wall = Date.UTC(+parts.year, +parts.month - 1, +parts.day, +parts.hour, +parts.minute, +parts.second);
-  return wall - Math.floor(instant / 1000) * 1000;
-}
-
-/**
- * The instant a wall-clock time falls on in a zone. `day` may overflow (`Date.UTC` carries it), and the offset is read
- * a second time at the first answer, so a time either side of a clock change lands on the right side.
- * @param wall `month` is 0-based
- */
-function zonedInstant({ year, month, day, hour, minute }: { year: number; month: number; day: number; hour: number; minute: number; }, timeZone: string): number {
-  const asUtc = Date.UTC(year, month, day, hour, minute);
-  return asUtc - zoneOffsetMs(asUtc - zoneOffsetMs(asUtc, timeZone), timeZone);
-}
-
-function dateInZone(instant: number, timeZone: string): { year: number; month: number; day: number; } {
-  const shifted = new Date(instant + zoneOffsetMs(instant, timeZone));
-  return { year: shifted.getUTCFullYear(), month: shifted.getUTCMonth(), day: shifted.getUTCDate() };
-}
-
-/**
- * When a limit message says the allowance returns, as an instant -- or `null` when this is not a limit message or its
- * time cannot be read. THE MESSAGE CARRIES NO YEAR AND, IN ITS SHORT FORM, NO DATE, so the instant it was WRITTEN is
- * what fixes them: the first occurrence of that clock time after it. That is why the caller reads the transcript's
- * timestamp and not the pane -- the same words a day later would name a different instant.
- *  @param writtenAt epoch ms
- */
-export function limitResetAt(text: string, writtenAt: number): number | null {
-  const m = LIMIT_MESSAGE.exec(String(text).trim());
-  if (!m) return null;
-  const [, monthName, dayOfMonth, hour12, minute = "0", meridiem, timeZone] = m;
-  if (Number(hour12) < 1 || Number(hour12) > 12) return null;
-  const hour = (Number(hour12) % 12) + (meridiem === "pm" ? 12 : 0);
-  try {
-    const today = dateInZone(writtenAt, timeZone);
-    const at = (date: object) => zonedInstant({ ...today, ...date, hour, minute: Number(minute) }, timeZone);
-    if (monthName) {
-      const month = MONTHS.indexOf(monthName);
-      if (month < 0) return null;
-      const dated = at({ month, day: Number(dayOfMonth) });
-      return dated > writtenAt ? dated : at({ year: today.year + 1, month, day: Number(dayOfMonth) });
-    }
-    const sameDay = at({});
-    return sameDay > writtenAt ? sameDay : at({ day: today.day + 1 });
-  } catch (err: any) {
-    // An unknown zone name is the one thing `Intl` throws here; anything else is a bug and must not read as "no reset".
-    if (err instanceof RangeError) return null;
-    throw err;
-  }
-}
-
-/**
- * The last thing said in a transcript, read from its end. Lines are JSON; the first line of a tail is usually cut and a
- * line that does not parse is skipped, so a file being written cannot make this throw. Sub-agent (`isSidechain`) and
- * bookkeeping entries are not the conversation.
- */
-export function lastSaidIn(path: string): { role: string; text: string; at: number; } | null {
-  const fd = openSync(path, "r");
-  let tail;
-  try {
-    const size = fstatSync(fd).size;
-    const length = Math.min(size, TRANSCRIPT_TAIL_BYTES);
-    const buffer = Buffer.alloc(length);
-    readSync(fd, buffer, 0, length, size - length);
-    tail = buffer.toString("utf8");
-  } finally {
-    closeSync(fd);
-  }
-  for (const line of tail.split("\n").reverse()) {
-    let entry: any;
-    try { entry = JSON.parse(line); } catch { continue; } // a cut or half-written line: not an entry
-    if ((entry?.type !== "user" && entry?.type !== "assistant") || entry.isSidechain) continue;
-    const content = entry.message?.content;
-    const text = typeof content === "string" ? content
-      : (Array.isArray(content) ? content.map((c: any) => (c?.type === "text" ? c.text : "")).join("") : "");
-    return { role: entry.type, text, at: Date.parse(entry.timestamp) };
-  }
-  return null;
-}
 
 /** @returns the transcript, wherever its project directory is */
 export function transcriptOf(sessionId: string, home: string): string | null {
@@ -204,8 +100,7 @@ function allowanceOf(agent: any, home: string, now: number): ReturnType<typeof s
  */
 function limitSaidBy(sessionId: string, home: string): { text: string; until: number; } | null {
   const said = lastSaidBy(sessionId, home);
-  if (said === null || !LIMIT_MESSAGE.test(said.text)) return null;
-  return { text: said.text, until: limitResetAt(said.text, said.at) ?? (said.at + LIMIT_UNREADABLE_HOLD_MS) };
+  return said === null ? null : spentIn(said);
 }
 
 /**
