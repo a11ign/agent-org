@@ -23,7 +23,11 @@ Design source: [https://claude.ai/artifact/S7AMyTJ3wSDk7s342DzcVD](<https://clau
 
 ## Proposed, not yet in the code (to be built)
 
-None. The four the brief listed are built (re-checked on 2026-11-14, A11-446):
+None.
+
+## Proposed in the brief, built since
+
+The brief proposed these four, and each is now in the code (re-checked on 2026-11-14, A11-446):
 
 * The unreachable "Last known" view and its "Check now" action: A11-195 (`ui/src/tickets/TicketsUnreachable.tsx`, captured in `ui/captures/tickets-unreachable-1440x900.png`).
 * The Auto/Manual placement toggle in the new-ticket dialog: A11-199 (`ui/src/new-ticket/NewTicketDialog.tsx`, captured in `ui/captures/new-ticket/new-ticket-manual-1440x900.png`).
