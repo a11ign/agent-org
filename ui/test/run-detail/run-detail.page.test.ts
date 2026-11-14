@@ -5,7 +5,8 @@ import { PERSONAL } from "../fixtures.ts";
 import { serveInstance, type Serving } from "../instance-routes.ts";
 import { overflowProblem, SCREENS } from "../screenshots.ts";
 import { launchBrowser, startSite, UI_ROOT, type Site } from "../site.ts";
-import { addressOf, detailStand, RUNS_OF, STATES, TERMINAL, type State } from "./run-detail-stand.ts";
+import { addressOf, detailStand, queueOf, RUNS_OF, STATES, TERMINAL, type State } from "./run-detail-stand.ts";
+import { NO_TERMINAL, RUN_ENDED, TAB_BLOCKED } from "../../src/run-detail/use-talk.ts";
 
 let site: Site;
 let browser: Browser;
@@ -114,5 +115,43 @@ describe("no horizontal overflow, and the captures of the twelve boards", () => 
     await page.getByRole("alert").waitFor();
     expect(overflowProblem({ route: addressOf("done"), width: 390, ...(await widthOf(page)) })).toBeNull();
     await context.close();
+  });
+});
+
+/** A way herdr does not open when Talk to it is pressed (A11-446): the stand that makes it, what the page's banner then says, and whether the browser refuses every new tab. */
+type HerdrCase = Readonly<{ name: string; stand: () => ReturnType<typeof detailStand>; says: string; blocksTabs?: boolean }>;
+
+const READY_RUN = RUNS_OF.ready.runs[0];
+const HERDR_CASES: readonly HerdrCase[] = [
+  { name: "no-terminal", stand: () => detailStand("ready", { post: () => queueOf([READY_RUN]) }), says: NO_TERMINAL },
+  { name: "tab-blocked", stand: () => detailStand("ready", { terminal: TERMINAL, post: () => queueOf([READY_RUN]) }), says: TAB_BLOCKED, blocksTabs: true },
+  { name: "refused", stand: () => detailStand("ready", { terminal: TERMINAL, post: () => ({ status: 409, error: "no session to resume: the worker's session was cleared when its run ended" }) }), says: "no session to resume" },
+  { name: "run-ended", stand: () => detailStand("ready", { terminal: TERMINAL, post: () => queueOf([READY_RUN]) }), says: RUN_ENDED },
+];
+
+describe("herdr does not open: each way Talk to it fails, in the page's failure banner, captured", () => {
+  /** Run detail with Talk to it pressed in `herdr`'s case at `screen`: the banner waited for, measured for overflow, and written as `run-detail-herdr-<case>-<W>x<H>.png`. */
+  async function captured(herdr: HerdrCase, screen: (typeof SCREENS)[number]): Promise<void> {
+    const context = await browser.newContext({ viewport: screen, deviceScaleFactor: 1 });
+    try {
+      // A browser that blocks pop-ups gives the page no window, as `window.open` does then.
+      if (herdr.blocksTabs === true) await context.addInitScript(() => { window.open = () => null; });
+      await serveInstance(context, { stand: herdr.stand() });
+      const page = await context.newPage();
+      await page.goto(`${site.origin}${addressOf("ready")}`);
+      await READY.ready(page);
+      await page.locator(".run-buttons").getByRole("button", { name: "Talk to it" }).click();
+      await page.getByRole("alert").filter({ hasText: herdr.says }).waitFor();
+      await page.evaluate(() => document.fonts.ready.then(() => undefined));
+      expect(overflowProblem({ route: `${addressOf("ready")} (herdr ${herdr.name})`, width: screen.width, ...(await widthOf(page)) })).toBeNull();
+      mkdirSync(CAPTURES, { recursive: true });
+      writeFileSync(join(CAPTURES, `run-detail-herdr-${herdr.name}-${screen.width}x${screen.height}.png`), await page.screenshot({ fullPage: true }));
+    } finally {
+      await context.close();
+    }
+  }
+
+  it.each(HERDR_CASES)("$name says why, at 1440px and at 390px", async (herdr) => {
+    for (const screen of SCREENS) await captured(herdr, screen);
   });
 });

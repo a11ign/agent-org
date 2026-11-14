@@ -16,6 +16,7 @@ import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { delimiter, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { stopChild } from "../src/lib/stop-child.ts";
 import { captureHost, HERDR_STUB } from "../src/ticket-mode/capture.ts";
 import type { HealthView, RequestHealthView } from "../src/ticket-mode/health-route.ts";
 import type { LoopReading } from "../src/ticket-mode/loop-delay.ts";
@@ -47,7 +48,7 @@ const READ_TIMEOUT_MS = 15_000;
  * error, since its tracker is offline, and are timed all the same: a refusal waits behind a held loop as long as any answer.
  */
 export const ROUTES = ["/api/config", "/api/settings", "/api/plugins", "/api/pick", "/api/people", "/api/projects", "/api/search?q=queue", "/api/tickets", "/api/tickets?assignee=me", "/api/tickets?project=web", "/api/parents", "/api/queue", "/api/writer",
-  "/api/session-asks", "/api/health", "/api/interventions", "/api/flakes", "/api/suggestion?keys=NBF-1"];
+  "/api/session-asks", "/api/health", "/api/interventions", "/api/flakes", "/api/outcomes", "/api/suggestion?keys=NBF-1"];
 /**
  * The GET routes the board thread answers (A11-282): `/api/session-asks` marks each check it lists as sent, a change to the checks file, whose one writer is the board thread. They are
  * timed and shown, and held to no bound: they wait while the board thread is held, as every write does. A session reads them, never a board page.
@@ -158,13 +159,18 @@ type Result = Readonly<{ routes: readonly RouteTimes[]; health: Health | null; r
  */
 export type Throwaway = Readonly<{ port: number; key: string; dir: string; env: NodeJS.ProcessEnv; ghLog: string; herdrLog: string; ghDoneLog: string; releaseGh: () => void;
   /** Begins the held call of the board thread (`holdsBoardThread` only): it ends when `releaseGh()` opens the gate, or after a few seconds. */
-  holdBoardThread: () => void; stop: () => void }>;
+  holdBoardThread: () => void;
+  /** Stops the instance and resolves once it has EXITED, so nothing it writes lands after the caller's cleanup (a test's private TMPDIR check). SIGKILL after STOP_GRACE_MS. */
+  stop: () => Promise<void> }>;
 
 /**
  * Starts this checkout's `ticket:serve` from a throwaway host in `dir`, and resolves once it answers. Throws with its stderr when it exits first. `gated` makes every `gh` call
  * wait until `releaseGh()`, so the sweeps' calls stay held for as long as the caller likes and no clock is involved; stopping the instance opens the gate too. `holdsBoardThread` loads the preload
  * that can hold the board thread with a synchronous call on demand (`holdBoardThread()`, `loop-load-hold.ts`): the board thread makes no such call of its own any more, so a test of what the request thread does while it is held makes it.
  */
+/** How long a stopped throwaway instance has to exit on SIGTERM before it is killed. */
+const STOP_GRACE_MS = 10_000;
+
 export async function startThrowawayInstance(dir: string, { gated = false, holdsBoardThread = false }: Readonly<{ gated?: boolean; holdsBoardThread?: boolean }> = {}): Promise<Throwaway> {
   const [port, uiPort] = [await freePort(), await freePort()];
   const gate = join(dir, "gh.gate");
@@ -175,11 +181,11 @@ export async function startThrowawayInstance(dir: string, { gated = false, holds
   const instance: ChildProcess = spawn(process.execPath, [join(CHECKOUT, "src", "bin.ts"), "ticket:serve"], { env, stdio: ["ignore", "ignore", "pipe"] });
   let stderr = "";
   instance.stderr?.on("data", (chunk: Buffer) => { stderr += chunk.toString(); });
-  const stop = () => { releaseGh(); instance.kill("SIGTERM"); };
+  const stop = (): Promise<void> => { releaseGh(); return stopChild(instance, STOP_GRACE_MS); };
   try {
     await waitFor("the instance answering", async () => (await timedRead(port, "/api/queue")).status === 200 || instance.exitCode !== null);
   } catch (err) {
-    stop();
+    await stop();
     throw err;
   }
   if (instance.exitCode !== null) throw new Error(`the instance exited ${instance.exitCode}: ${stderr.trim()}`);
@@ -252,7 +258,7 @@ async function measure(dir: string): Promise<Result> {
     const ghCalls = readFileSync(ghLog, "utf8").split("\n").filter(Boolean).length;
     return { routes, health, rounds, ghCalls, pass: passes(routes, health, rounds) };
   } finally {
-    stop();
+    await stop();
   }
 }
 

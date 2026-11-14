@@ -14,6 +14,7 @@
 // THE KEY NEVER LEAVES THIS MODULE. It is read once, from the macOS Keychain or a file the host file names, and sent only to api.linear.app and uploads.linear.app.
 import { readFileSync, writeFileSync } from "node:fs";
 import { basename, extname, join } from "node:path";
+import type { ServiceCall } from "../../src/plugins/manifest.ts";
 import type { PickScope } from "../../src/ticket-mode/settings.ts";
 import { callLog, describeCounts, type CallLog } from "./call-log.ts";
 import type { Assignee, AutomaticCompletionUndo, Blocker, People, ScopePage, Keywords, PullState, StateMove, Ticket, TicketLabel, TicketSource, TicketText, TrackerProject, TicketComment, TicketComments } from "../../src/plugins/contracts/tracker.ts";
@@ -193,81 +194,50 @@ export function scopedQuery(scope: string): { text: string; variables: Record<st
 
 /**
  * The seams every call to Linear goes through: the key, which goes only to Linear, the `fetch` that sends it (the board gives one that opens a connection for each call, so none can be stale: A11-359), the
- * `fetch` that sends a retry of a call whose attempt failed (the board gives one that is not counted as a call of its own: A11-345), the `sleep` between a failed attempt and the next, the time one attempt may take, and where each attempt is counted.
+ * board's outside client (`outside`), which times, retries, holds off and counts each call (A11-436), the log of attempts kept for doctor, and where a failed attempt is said.
  */
-type Client = Readonly<{ key: string; request: Fetch; retryRequest: Fetch; sleep: (ms: number) => Promise<void>; attemptMs: number; calls: CallLog; log: (line: string) => void }>;
+type Client = Readonly<{ key: string; request: Fetch; outside: ServiceCall; calls: CallLog; log: (line: string) => void }>;
 
 /** An error that carries the HTTP `status` the server answered with, as data, so the board tries a 5xx again without reading the message (tracker contract 1.7). */
 const answered = (message: string, status: number): Error => Object.assign(new Error(message), { status });
 
-/** The waits before the first, second and third retry of a failed call, in milliseconds: a call is made at most four times. */
-export const RETRY_WAITS_MS: readonly number[] = [200, 800, 2_000];
-/** How long one attempt may take before its connection is dropped and the call is tried on a new one. A fresh process reaches Linear in about 150 ms; the largest read the board makes in a pass answers in a few seconds. */
-export const ATTEMPT_MS = 10_000;
-const MS_PER_SECOND = 1_000;
+/**
+ * A call made once, with nothing to time, retry or class it: what a source made without the board's client does (onboard's key check, which has its own time, and a process that is not the board). The attempt
+ * is still told, so the log doctor reads counts it: a throw as a failed attempt, an answer as a good one.
+ */
+const once: ServiceCall = async (attempt, options = {}) => {
+  try {
+    const value = await attempt(new AbortController().signal);
+    options.onAttempt?.({ failed: false, failure: null, kind: null, threw: false, retryInMs: null });
+    return value;
+  } catch (err) {
+    options.onAttempt?.({ failed: true, failure: err, kind: null, threw: true, retryInMs: null });
+    throw err;
+  }
+};
 
-/** Linear answers these when it asks to be called again later, or when it fails itself: the call is tried again on a new connection. */
-const retryableStatus = (status: number): boolean => status === 429 || (status >= 500 && status <= 599);
-
-/** The reason an attempt that did not answer failed, such as `ECONNRESET`: the code `fetch failed` carries in its cause, or the error's own name. */
+/** The reason an attempt that did not answer failed, such as `ECONNRESET`: the code `fetch failed` carries in its cause, the status Linear answered with, or the error's own message. */
 const reasonOf = (err: unknown): string => {
   const code = ((err as { cause?: { code?: unknown } } | null)?.cause)?.code;
   return typeof code === "string" ? code : String((err as Error)?.message ?? err);
 };
 
 /**
- * Whether `err` is a failure to reach Linear or to hear its answer, which a new connection may get past: Node's `fetch` failing (`TypeError("fetch failed")`, the reason in its cause: `ECONNRESET`, undici's
- * `UND_ERR_SOCKET`) or an attempt that ran past its time ({@link attemptTimedOut}).
+ * Send one call to Linear through the board's outside client (A11-436), which owns when it is tried again: a call that fails to reach Linear, runs past its time, or is answered with a 429 or a 5xx is tried again
+ * on a new connection, and a refusal (a 4xx, an error in a 200) is not. A mutation is tried again too: the board's mutations are each made safe to repeat by the caller that makes them (a state set twice is the
+ * same state; a comment that was applied before its answer was lost may be posted twice, which is the lesser harm against a result or an After-merge comment that is never posted). Every attempt is counted
+ * in the call log doctor reads (but an error thrown before Linear was asked), and a failed one that is tried again is logged with the rate (A11-359); the board's own figure counts the call once, in the client (A11-345).
  */
-const isConnectionFailure = (err: unknown): boolean => (err instanceof TypeError && err.message === "fetch failed") || (err as Error | null)?.name === "TimeoutError";
-
-/** The error an attempt that ran past {@link ATTEMPT_MS} fails with. */
-const attemptTimedOut = (ms: number): Error => Object.assign(new Error(`Linear did not answer within ${ms / MS_PER_SECOND} s`), { name: "TimeoutError" });
-
-/** One attempt, given `ms`: the call is aborted when it runs past, and the attempt fails even where `request` ignores the abort, so a connection that went silent never holds the caller. */
-async function attempt(client: Client, url: string, init: RequestInit): Promise<Response> {
-  const controller = new AbortController();
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  const late = new Promise<never>((_, reject) => {
-    timer = setTimeout(() => { controller.abort(); reject(attemptTimedOut(client.attemptMs)); }, client.attemptMs);
-  });
-  try {
-    return await Promise.race([client.request(url, { ...init, signal: controller.signal }), late]);
-  } finally {
-    clearTimeout(timer);
-  }
-}
-
-/**
- * Send one call to Linear, on a connection that is made for it. A call that fails to reach Linear, runs past {@link ATTEMPT_MS}, or is answered with a 429 or a 5xx is tried again on a new connection, after a wait that
- * grows ({@link RETRY_WAITS_MS}), up to three times; the last answer, or the last failure, is the caller's. A refusal (a 4xx, an error in a 200) is never tried again. A mutation is tried again too: the board's
- * mutations are each made safe to repeat by the caller that makes them (a state set twice is the same state; a comment that was applied before its answer was lost may be posted twice, which is the lesser harm
- * against a result or an After-merge comment that is never posted). Every attempt is counted in the call log, and a failed one is logged with the rate (A11-359). The first attempt goes through `fetch` and each retry through `retryFetch`, so the board counts the call once, as failed if its
- * first attempt failed, however many times it is tried (A11-345): a host that loses its network for half a minute fails one call four times, and that is one failed call.
- */
-async function send(client: Client, url: string, init: RequestInit): Promise<Response> {
-  for (let tried = 0; ; tried += 1) {
-    const last = tried >= RETRY_WAITS_MS.length;
-    let failure: unknown;
-    try {
-      const response = await attempt(tried === 0 ? client : { ...client, request: client.retryRequest }, url, init);
-      if (!retryableStatus(response.status) || last) {
-        client.calls.record(retryableStatus(response.status));
-        return response;
-      }
-      // The body of an answer that is not used is let go, so its connection closes now.
-      await response.arrayBuffer().catch(() => undefined);
-      failure = answered(`Linear answered ${response.status}`, response.status);
-    } catch (err) {
-      failure = err;
-      if (!isConnectionFailure(err)) throw err;
-    }
-    const counts = client.calls.record(true);
-    if (last) throw failure;
-    client.log(`Linear: a call failed (${reasonOf(failure)}), trying again on a new connection in ${RETRY_WAITS_MS[tried]} ms; ${describeCounts(counts)}`);
-    await client.sleep(RETRY_WAITS_MS[tried]);
-  }
-}
+const send = (client: Client, url: string, init: RequestInit): Promise<Response> => client.outside((signal) => client.request(url, { ...init, signal }), {
+  statusOf: (response) => response.status,
+  release: (response) => response.arrayBuffer(),
+  onAttempt: ({ failed, failure, kind, threw, retryInMs }) => {
+    // An error of this process's own (a bad body, a programming error) is not a call that Linear failed: it is thrown on, and doctor's rate does not count it (A11-359).
+    if (threw && kind === "refused") return;
+    const counts = client.calls.record(failed);
+    if (retryInMs !== null) client.log(`Linear: a call failed (${reasonOf(failure)}), trying again on a new connection in ${retryInMs} ms; ${describeCounts(counts)}`);
+  },
+});
 
 /** A GraphQL call: `text` and its `variables` posted to Linear with the key. */
 const post = (client: Client, text: string, variables: Record<string, unknown>): Promise<Response> => send(client, LINEAR_API, {
@@ -698,13 +668,13 @@ async function searchOf(client: Client, text: string): Promise<Ticket[]> {
 }
 
 /**
- * The Linear source. `fetch` is the transport every call goes through: the board gives one that opens a connection for each call (`src/fresh-fetch.ts`). `retryFetch` sends the attempts after a failed one, and is `fetch`
- * where none is given. `stateDir` is where the rate of failed calls is written for doctor,
- * and `log` is where a failed call is said (A11-359). `sleep`, `attemptMs` and `now` are seams for a test.
+ * The Linear source. `fetch` is the transport every call goes through: the board gives one that opens a connection for each call (`src/fresh-fetch.ts`). `outside` is the board's outside client, which times,
+ * retries and counts each call (A11-436); a source made without it makes each call once. `stateDir` is where the rate of failed attempts is written for doctor, and `log` is where a failed attempt is said
+ * (A11-359). `now` is a seam for a test.
  */
-export function linearSource({ key, fetch: request = fetch, retryFetch: retryRequest = request, pick = "assigned", stateDir = "", log = () => undefined, sleep = (ms) => new Promise((done) => { setTimeout(done, ms); }), attemptMs = ATTEMPT_MS, now = Date.now }:
-  { key: string; fetch?: Fetch; retryFetch?: Fetch; pick?: PickScope; stateDir?: string; log?: (line: string) => void; sleep?: (ms: number) => Promise<void>; attemptMs?: number; now?: () => number }): TicketSource {
-  const client: Client = { key, request, retryRequest, sleep, attemptMs, log, calls: callLog({ stateDir, now }) };
+export function linearSource({ key, fetch: request = fetch, outside = once, pick = "assigned", stateDir = "", log = () => undefined, now = Date.now }:
+  { key: string; fetch?: Fetch; outside?: ServiceCall; pick?: PickScope; stateDir?: string; log?: (line: string) => void; now?: () => number }): TicketSource {
+  const client: Client = { key, request, outside, log, calls: callLog({ stateDir, now }) };
   return {
     keywords: KEYWORDS,
 

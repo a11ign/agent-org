@@ -1,4 +1,4 @@
-import type { ReactNode } from "react";
+import { type ReactNode, useState } from "react";
 import { SECRET_WORDS, CONTROL_LABEL } from "../../../src/ticket-mode/plugins-section.ts";
 import { ConcernSettings } from "./ConcernSettings.tsx";
 import { CommandLine } from "./CopyButton.tsx";
@@ -40,14 +40,55 @@ function Check({ row }: Readonly<{ row: CheckRow }>) {
   );
 }
 
-/** The commands that set a plugin's secrets, and that install it where it is not: a secret is only ever a command, never a field. */
-function Secrets({ plugin }: Readonly<{ plugin: Plugin }>) {
+type Secret = Plugin["secrets"][number];
+
+/**
+ * A secret's write-only field (A11-445): a password input, which the browser never shows, with the place the value is stored and the key a save also points at it. The value is cleared as
+ * it is sent, and nothing the page reads afterwards holds it, so a reload shows the field empty.
+ */
+function SecretField({ concern, plugin, secret }: Readonly<{ concern: Concern; plugin: Plugin; secret: Secret & Readonly<{ field: NonNullable<Secret["field"]> }> }>) {
+  const { answer, changes } = usePage();
+  const [value, setValue] = useState("");
+  const ready = !changes.busy && value.trim() !== "";
+  const save = () => {
+    if (!ready) return;
+    changes.storeSecret(plugin, concern, secret.setting, value, answer);
+    setValue("");
+  };
+  const { place, sets } = secret.field;
+  return (
+    <form className="plugin-add" onSubmit={(event) => { event.preventDefault(); save(); }}>
+      <label className="plugin-add-field">
+        <span className="plugin-command-label">Set {secret.setting}:</span>
+        <input type="password" className="plugin-add-input" autoComplete="off" spellCheck={false} placeholder="Paste it here: it is not shown again" value={value}
+          onChange={(event) => setValue(event.target.value)} />
+      </label>
+      <button type="submit" className="primary primary-small" disabled={!ready}>Save {secret.setting}</button>
+      <span className="plugin-lock">Stored in {place}{sets === null ? "" : `, and ${sets} is set to point at it`}, then {plugin.name}'s check runs.</span>
+    </form>
+  );
+}
+
+/**
+ * A plugin's secrets: a write-only field for each the page takes once the plugin is installed, on this machine's own instance (A11-445), and the command that sets each, which a person may
+ * run on the host instead. A plugin not installed shows its install command too.
+ */
+function Secrets({ concern, plugin }: Readonly<{ concern: Concern; plugin: Plugin }>) {
+  const { controls } = usePage();
   if (plugin.secrets.length === 0) return null;
   return (
     <div className="plugin-panel">
       <p className="plugin-panel-words">{SECRET_WORDS}</p>
       {plugin.installed ? null : <CommandLine label="Install:" text={plugin.installCommand} />}
-      {plugin.secrets.map((secret) => <CommandLine key={secret.setting} label={`Set ${secret.setting}:`} text={secret.command} />)}
+      {plugin.secrets.map((secret) => {
+        const drawn = controls && plugin.installed && secret.field !== null;
+        return (
+          <div key={secret.setting} className="plugin-panel">
+            {drawn && secret.field !== null ? <SecretField concern={concern} plugin={plugin} secret={{ ...secret, field: secret.field }} /> : null}
+            <CommandLine label={drawn ? "Or on the host:" : `Set ${secret.setting}:`} text={secret.command} />
+          </div>
+        );
+      })}
     </div>
   );
 }
@@ -134,7 +175,7 @@ function Body({ concern }: Readonly<{ concern: Concern }>) {
     <div className="plugin-body">
       {checkRowsOf(concern, unchecked).map((row) => <Check key={`${row.name}|${row.detail}`} row={row} />)}
       {target === null || hasChoice(concern) ? null : <p className="plugin-note">{placeOf(target)}</p>}
-      {target === null ? null : <Secrets plugin={target} />}
+      {target === null ? null : <Secrets concern={concern} plugin={target} />}
       {hasChoice(concern) ? <ActivePlugin concern={concern} /> : null}
       {concern.concern === "publisher" && groups.length > 0 ? <p className="plugin-warning">{PUBLISHER_WARNING}</p> : null}
       <ConcernSettings groups={groups} />
