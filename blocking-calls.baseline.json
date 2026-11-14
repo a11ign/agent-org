@@ -8,7 +8,6 @@
     "src/ticket-mode/plugin-contract.ts",
     "src/ticket-mode/pool-herdr.ts",
     "src/ticket-mode/pool-resume.ts",
-    "src/ticket-mode/reviewer-port.ts",
     "src/ticket-mode/ui-server.ts"
   ],
   "commands": {

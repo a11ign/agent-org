@@ -6,7 +6,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { poolFixture } from "./pool-fixture.ts";
 import { ticketDir } from "./ticket-paths.ts";
-import { loadReviewerGate, reviewedRepositoriesOf } from "./reviewer-port.ts";
+import { loadReviewerGate, reviewedRepositoriesOf, warmOrigins } from "./reviewer-port.ts";
 import { createFakeCodeHost } from "../plugins/fakes/code-host.ts";
 import { replace, type Entry } from "./queue/queue-entries-and-outcomes.ts";
 import { finish } from "./queue/queue-transitions.ts";
@@ -21,8 +21,9 @@ type Host = ReturnType<typeof createFakeCodeHost>;
 async function hostOf(made: Fixture): Promise<{ host: Host; repo: string }> {
   await loadReviewerGate();
   const host = createFakeCodeHost("worker-bot");
-  const [repo] = reviewedRepositoriesOf(made.settings.clones);
-  for (const repository of reviewedRepositoriesOf(made.settings.clones)) host.seedRepository(repository);
+  const remote = await warmOrigins(made.settings.clones);
+  const [repo] = reviewedRepositoriesOf(made.settings.clones, remote);
+  for (const repository of reviewedRepositoriesOf(made.settings.clones, remote)) host.seedRepository(repository);
   return { host, repo };
 }
 

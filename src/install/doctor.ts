@@ -35,7 +35,7 @@ import { defaultCatalog, trackerWritingOf } from "../plugins/registry.ts";
 import { publishingHelpers } from "../plugins/publishing-helpers.ts";
 import { gateHelpers } from "../plugins/reviewing-gate.ts";
 import { enableReviewerCommand } from "../ticket-mode/concern-states.ts";
-import { readReviewerMemory, reviewerMemoryPath, originOf, splitHeadKey } from "../ticket-mode/reviewer-port.ts";
+import { readReviewerMemory, reviewerMemoryPath, splitHeadKey, warmOrigins } from "../ticket-mode/reviewer-port.ts";
 import { type FlakesView, flakesPath, flakesViewOf } from "../ticket-mode/flakes.ts";
 import { pullLabel } from "../ticket-mode/board-view/pull-label.ts";
 import { longWaits, longWaitSentence, type LongWait } from "../ticket-mode/board-view/long-waits.ts";
@@ -175,8 +175,11 @@ export type DoctorDeps = Readonly<{
    * The default asks the code host, as the account doctor runs as.
    */
   unclonedRepositories?: (clones: Readonly<Record<string, string>>) => Readonly<{ uncloned: readonly string[] }> | Readonly<{ unreadable: string }>;
-  /** The `origin` URL of the clone at a path, or undefined (A11-360). When it is given, a `clones` entry that names no real repository is a failing row; a test that does not give it is not asked. */
-  cloneRemote?: (path: string) => string | undefined;
+  /**
+   * Reads the `origin` of each of `clones` and answers the reader of a clone's `origin` URL, undefined for none (A11-360). When it is given, a `clones` entry that names no real repository is a failing row; a test that does not
+   * give it is not asked. The default reads them together without holding the process still, as the board's sweeps do (A11-433).
+   */
+  cloneRemotes?: (clones: Readonly<Record<string, string>>) => Promise<(path: string) => string | undefined>;
   /** The starts of a reviewer herdr has refused, as the pool's reviewer memory in `stateDir` holds them (A11-241). A test injects them, so no file is read. */
   reviewerRefusals: (stateDir: string) => readonly RefusedStart[];
   /** The tests the flake log in `stateDir` lists as needing a fix (A11-300): flaked three times in seven days. A test injects them, so no file is read. */
@@ -546,10 +549,10 @@ async function repositoryCloneChecks(settings: TicketSettings | null, deps: Doct
  * pull requests, and a name that is no repository is a listing that always fails. A host whose declaration cannot be read is told by {@link repositoryCloneChecks}, so it has none here.
  */
 async function cloneKeyChecks(settings: TicketSettings | null, deps: DoctorDeps): Promise<Check[]> {
-  const { cloneRemote } = deps;
-  if (settings === null || cloneRemote === undefined) return [];
+  if (settings === null || deps.cloneRemotes === undefined) return [];
   const code = await deps.declaredRepositories().catch(() => null);
   if (code === null) return [];
+  const cloneRemote = await deps.cloneRemotes(settings.clones);
   return Object.entries(settings.clones).filter(([key, path]) => repositoryOfClone(key, path, { code, remote: cloneRemote }) === undefined).map(([key, path]) =>
     failed(`clone ${key}`, `\`${key}\` in \`clones\` is no repository: it is no declared key or name, and the origin of ${path} names none`, `remove \`${key}\` from \`clones\` in the host file, or list the clone under its repository's name`));
 }
@@ -1163,7 +1166,7 @@ export function defaultDoctorDeps(): DoctorDeps {
       const organisation = readOrganisation(clones, codeHost);
       return "unreadable" in organisation ? organisation : { uncloned: unclonedOf(organisation.repositories, clones, codeHost).map(({ fullName }) => fullName) };
     },
-    declaredRepositories: async () => (await import("../project-config.ts")).homeProjectDeclaration().code, cloneRemote: originOf,
+    declaredRepositories: async () => (await import("../project-config.ts")).homeProjectDeclaration().code, cloneRemotes: (clones) => warmOrigins(clones),
     reviewerRefusals: (stateDir) => [...readReviewerMemory(reviewerMemoryPath(stateDir)).memory.refusals].map(([key, { count, reason }]) => ({ ...splitHeadKey(key), count, reason })),
     flakes: (stateDir) => flakesViewOf(flakesPath(stateDir), Date.now()),
     chromium: () => chromiumReport(), ...boardHealthReaders(), reliabilityWatches: reliabilityWatchesOf,
