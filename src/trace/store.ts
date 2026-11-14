@@ -33,6 +33,10 @@ import type { LedgerEntry } from "../wakes-per-row.ts";
 import type { EndedDeferral } from "../deferral-log.ts";
 import type { GithubKind } from "./github-events.ts";
 import { restampStoreBytes } from "./ingest-state.ts";
+import { type Tokens, tokensOf } from "./tokens.ts";
+
+// A turn's usage, split as it is priced, lives in `tokens.ts`, a leaf module that imports nothing, so ticket mode reads it without this module's row-mode imports (A11-430).
+export { type Tokens, tokensOf };
 import type { Carry, Previous } from "./ingest-state.ts";
 
 export const DEFINITIONS = [
@@ -94,7 +98,6 @@ export const PRICES: (Rates & { prefix?: string; model?: string; source?: string
   { model: "gpt-5.6-luna", input: 0.2, output: 1.2, cacheRead: 0.02, verified: false, source: "https://developers.openai.com/api/docs/models/gpt-5.6-luna.md", fetched: "2026-10-08", maxPrompt: 272_000 },
 ];
 
-export type Tokens = { input: number; output: number; cacheRead: number; cacheWrite5m: number; cacheWrite1h: number };
 export type TraceEvent = {
   id: string; kind: "turn" | "wake" | "compaction" | "gh_call" | "deferral" | GithubKind; source: "transcript" | "wake-ledger" | "github" | "gh-ledger" | "deferral-log"; at: number; session: string; row: number | null;
   pr: number | null; repo: string | null; cause: string | null; causeKey: string | null; wakeId: string | null; model?: string; tokens?: Tokens;
@@ -141,17 +144,6 @@ export function repriceEvents(events: TraceEvent[]): TraceEvent[] {
   });
 }
 
-export function tokensOf(usage: any): Tokens {
-  const split = usage?.cache_creation;
-  const written = usage?.cache_creation_input_tokens ?? 0;
-  return {
-    input: usage?.input_tokens ?? 0,
-    output: usage?.output_tokens ?? 0,
-    cacheRead: usage?.cache_read_input_tokens ?? 0,
-    cacheWrite5m: split ? (split.ephemeral_5m_input_tokens ?? 0) : 0,
-    cacheWrite1h: split ? (split.ephemeral_1h_input_tokens ?? 0) : written,
-  };
-}
 
 // ---------------------------------------------------------------------------------------------------------------------------------------------------------
 // The order's subject: which row or pull request a ledger cause key is about

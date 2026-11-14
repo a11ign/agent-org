@@ -2,7 +2,8 @@
 // module: how many calls the board made to Linear and to GitHub in the last hour, and how many failed (A11-363) -- the figure `/api/health` calls failures per 100 calls
 //
 // THE CALLS ARE COUNTED WHERE THEY LEAVE THE PROCESS, not where they are written: `realExec` and `realExecAsync` count each `gh` program, the `fetch` core hands every plugin counts each request to `api.github.com`
-// (which the GitHub plugin never calls today), and the loader hands the TRACKER plugin a `fetch` and `freshFetch` that count every call it makes as the `linear` figure (`depsFor` in `src/plugins/loader.ts`; the attempts that retry a call are `observedFetch`'s, which count nothing: A11-345).
+// (which the GitHub plugin never calls today), and the TRACKER plugin's calls are counted as the `linear` figure by the outside client the loader hands it (`depsFor` in `src/plugins/loader.ts`, `outside-client.ts`: a call
+// is counted once however often it is tried, and each retry is only observed: A11-345, A11-436).
 // Core names no tracker's address (`src/plugins/boundary.test.ts`): the figure is the tracker's, whichever plugin that is. Nothing at a call site changes, and a call that no seam sees is not counted.
 //
 // A FAILURE IS A CALL THAT DID NOT REACH THE SERVICE, OR THE SERVICE FAILED IT: a `fetch` that threw (a reset socket, a timeout), a 429 or a 5xx; a `gh` that could not start, was cut at its limit, or exited non-zero
@@ -90,23 +91,6 @@ export function countedFetch<F extends typeof fetch>(fetchImpl: F, ledger: CallL
       return response;
     } catch (err) {
       ledger.record(service, true);
-      throw err;
-    }
-  }) as F;
-}
-
-/**
- * `fetchImpl` for the attempts that retry a call already counted by {@link countedFetch} (A11-345): a call tried four times is one call in the figure, but the board still learns from each attempt whether the service
- * answers, so `networkUpSince` sees a retry that got through. Nothing is counted; the answer, or the throw, is passed on unchanged.
- */
-export function observedFetch<F extends typeof fetch>(fetchImpl: F, ledger: CallLedger, service: CallService): F {
-  return (async (input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
-    try {
-      const response = await fetchImpl(input, init);
-      ledger.observe(service, statusFailed(response.status));
-      return response;
-    } catch (err) {
-      ledger.observe(service, true);
       throw err;
     }
   }) as F;
