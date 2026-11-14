@@ -179,7 +179,7 @@ test("A11-399: a retry that got through is not a call of its own, but it shows t
 const ghExit = (status: number | null, stderr = "") => ({ status, stdout: "", stderr });
 
 test("The one rule reads a program's exit: a gh that could not start or was cut, or printed that the network or GitHub failed, is transient; one that exited non-zero for an answer is refused", () => {
-  const kinds = [ghExit(0), ghExit(null, "spawn gh ETIMEDOUT"), ghExit(1, "read tcp 10.0.0.2:443: connection reset by peer"), ghExit(1, "Post \"https://api.github.com/graphql\": dial tcp: lookup api.github.com: no such host"),
+  const kinds = [ghExit(0), ghExit(null, "spawn gh ETIMEDOUT"), ghExit(1, "read tcp 192.0.2.10:443: connection reset by peer"), ghExit(1, "Post \"https://api.github.com/graphql\": dial tcp: lookup api.github.com: no such host"),
     ghExit(1, "HTTP 502: Bad Gateway"), ghExit(1, "HTTP 429: API rate limit exceeded"), ghExit(1, "gh: Not Found (HTTP 404)"), ghExit(8, ""), ghExit(1, "no pull requests found for branch"),
     ghExit(null, "spawn gh ENOENT"), ghExit(null, "spawn gh ENOBUFS")].map(programKindOf);
   assert.deepEqual(kinds, [null, "network", "network", "network", "server", "rate-limit", "refused", "refused", "refused", "refused", "refused"],
