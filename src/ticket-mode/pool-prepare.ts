@@ -21,6 +21,7 @@ import { ticketDir, ticketFolder } from "./ticket-paths.ts";
 import { DEFAULT_KEYWORDS, type Ticket, type TrackerWriting } from "./source.ts";
 import { batchPlanBriefText, type BatchTicket, BRIEF_FILE, briefText, CONNECTORS_FILE, DENY_FILE, FINDINGS_GIVEN_FILE, FINDINGS_RETRIED_FILE, OUTCOME_FILE, type ParentTicket, PLAN_DIR, planBriefText, PLANNING_DENY, PR_REVIEW_FILE, PR_REVIEW_LOG_FILE, PROTECTED_FILE, protectedPaths, OPENED_FILE, PUBLISH_FILE, READY_FILE, REVIEW_FILE, reviewBriefText, STOP_COUNT_FILE, TALK_FILE, workerSettings, WORKING_STOP_FILE } from "./worker-files.ts";
 import { join } from "node:path";
+import { LOCAL_REVIEW_FILE } from "./local-review-record.ts";
 import { unclonedNames } from "./pool-org-repos.ts";
 import { isPlanning, runChoice, runPlace, update } from "./pool-state.ts";
 import { heldClaims } from "./board-view/overlap-hold.ts";
@@ -151,10 +152,12 @@ export async function prepare(ctx: PoolContext, entry: Entry): Promise<{ folder:
   } else {
     const worktreeCommand = `${hook.node} ${hook.bin} ticket:worktree`;
     const prOpenCommand = `${hook.node} ${hook.bin} pr:open`;
+    // The review of the worker's local diff before its pull request opens (A11-440): asked for only on a machine that turns it on.
+    const localReviewCommand = settings.localReview === true ? { localReviewCommand: `${hook.node} ${hook.bin} ticket:review-local` } : {};
     writeFileSync(join(dir, BRIEF_FILE), briefText({ ticket, folder, ticketDir: dir, attachments, parent, blockers: entry.blockers,
       stackedOn: stackedOn(entry, store.get().entries), ...(entry.overlapStack === undefined ? {} : { overlapStack: entry.overlapStack }), steps: entry.steps, clones: settings.clones, worktreeCommand, prOpenCommand, repo: repoOf(entry),
       notes, connectors, planned: entry.planned === true, drafts: settings.drafts, designTools: settings.designTools, capture: settings.capture, prReview: settings.prReview, keywords: source.keywords ?? DEFAULT_KEYWORDS,
-      read, comments: await readTicketComments(source, ticket.key), findings, closed, numberedSteps: startedSteps(store.get().entries, entry), opened: await openedPullsOf(ctx, entry), held: entry.ciHold?.reason ?? entry.ciTold, lost: lostBeforeThisStart(entry) }));
+      read, comments: await readTicketComments(source, ticket.key), findings, closed, numberedSteps: startedSteps(store.get().entries, entry), opened: await openedPullsOf(ctx, entry), held: entry.ciHold?.reason ?? entry.ciTold, lost: lostBeforeThisStart(entry), ...localReviewCommand }));
   }
   update(ctx, (queue) => recordBriefed(queue, [ticket.key], read));
   await writeRunFiles(ctx, entry, folder, dir);
@@ -296,6 +299,10 @@ export async function writeRunFiles(ctx: PoolContext, entry: Entry, folder: stri
   // A ticket run on a machine with `tickets.drafts: false` may open its pull request ready, and mark its own ready, in a round that answers feedback too (A11-358): A11-254's worker opened toolchain#60 in one, and the hook made it a draft. No planning run, and no machine that keeps drafts, may.
   if (!settings.drafts && opensPullRequests(ctx, entry)) writeFileSync(join(dir, READY_FILE), "\n");
   else rmSync(join(dir, READY_FILE), { force: true });
+  // `pr:open` refuses a create until the reviewer ran on the local diff at the current commit, on a machine that turns that review on (A11-440). Only a worker's first start is briefed to run it
+  // (step 5b of `briefText`), so a feedback round, whose brief says nothing of it, is not held to it.
+  if (settings.localReview === true && entry.review === undefined && opensPullRequests(ctx, entry)) writeFileSync(join(dir, LOCAL_REVIEW_FILE), "\n");
+  else rmSync(join(dir, LOCAL_REVIEW_FILE), { force: true });
   // The record of the pull requests the run opened is the run's own: what the entry holds, which a round carries, and not an earlier run's (a plan's next step starts with none) (A11-358).
   if (entry.opened === undefined || entry.opened.length === 0) rmSync(join(dir, OPENED_FILE), { force: true });
   else writeFileSync(join(dir, OPENED_FILE), entry.opened.map((pull) => `${JSON.stringify(pull)}\n`).join(""));

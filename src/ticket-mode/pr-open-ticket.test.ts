@@ -19,6 +19,7 @@ import { DEFAULT_KEYWORDS, type Ticket, type TicketSource } from "./source.ts";
 import { createFakeTracker, fakeTicket } from "../plugins/fakes/tracker.ts";
 import { preReviewReport, readTicketContext, ticketBodyReports, ticketClosesReport, treeKeyUnder, type TicketContext } from "./pr-open-ticket.ts";
 import { READY_FILE } from "./worker-files.ts";
+import { LOCAL_REVIEW_FILE, LOCAL_REVIEW_RECORD_FILE } from "./local-review-record.ts";
 import { declarationOf } from "./ticket-references.ts";
 import { CI_BODY_REPORTS } from "../acceptance-commands/acceptance-report-and-closure.ts";
 import { main, runFromCli, EXIT_NOTHING_SENT, sendToGitHub } from "../pr-open.ts";
@@ -485,4 +486,44 @@ test("A11-74 control: a GitHub-row create with Closes #N still reads its row's R
   assert.equal(code, 0);
   assert.ok(sent.some((argv) => argv[0] === "fake-arm" && argv.includes("agent/x")), "the ready row create is armed to merge");
   assert.ok(sent.some((argv) => argv[0] === "fake-label" && argv.includes("session:ceo")), "and labelled with its session");
+});
+
+/** A local review recorded at `head` with `verdict`, as `ticket:review-local` writes one. */
+const localReviewAt = (head: string, verdict: "convinced" | "not convinced" | null = "convinced") => ({ record: { head, base: "origin/main", verdict, at: "2026-11-14T00:00:00.000Z", review: "/r.md" } });
+
+test("A11-440: with the local review on, a create with no review, or a review of an earlier commit, is refused and nothing is sent", () => {
+  const none = open(["--body", BODY], { ticket: ticket({ localReview: { record: null } }) });
+  assert.equal(none.code, EXIT_NOTHING_SENT);
+  assert.deepEqual(none.sent, [], "nothing reached GitHub");
+  assert.match(none.refused, /no review of this tree ran for A11-74\. Run `agent-org ticket:review-local`/);
+  const stale = open(["--body", BODY], { ticket: ticket({ localReview: localReviewAt("0123456789") }) });
+  assert.equal(stale.code, EXIT_NOTHING_SENT);
+  assert.match(stale.refused, /last local review of this tree was at 01234567, and it is now at abc1234/);
+});
+
+test("A11-440: a create reviewed at its current commit is sent and says so; one not convinced is sent only with a ## Local review section; an edit and a run with the review off are not checked", () => {
+  const convinced = open(["--body", BODY], { ticket: ticket({ localReview: localReviewAt("abc1234") }) });
+  assert.equal(convinced.code, 0, convinced.refused);
+  assert.equal(convinced.sent.length, 1);
+  assert.match(convinced.said, /LOCAL-REVIEW: convinced at abc1234/);
+  const blocked = open(["--body", BODY], { ticket: ticket({ localReview: localReviewAt("abc1234", "not convinced") }) });
+  assert.equal(blocked.code, EXIT_NOTHING_SENT);
+  const answered = open(["--body", `${BODY}\n## Local review\n\nFinding 1 is wrong: the case is tested in x.test.ts.\n`], { ticket: ticket({ localReview: localReviewAt("abc1234", "not convinced") }) });
+  assert.equal(answered.code, 0, answered.refused);
+  const off = open(["--body", BODY]);
+  assert.equal(off.code, 0, off.refused);
+  assert.doesNotMatch(off.said, /LOCAL-REVIEW/, "POSITIVE CONTROL: off, nothing is said");
+});
+
+test("A11-440: the run's context carries the local review only when the pool marked the run, with the record of this tree and not another's", async () => {
+  const tracker: TicketSource = createFakeTracker([fakeTicket(KEY, { title: "t", description: "", url: "", branch: BRANCH, status: "", statusOrder: 0, team: "A11", priority: 3 })]);
+  const env = { AGENT_ORG_TICKET: KEY, AGENT_ORG_TICKET_BRANCH: BRANCH };
+  const settings = () => parseTicketSettings({ clones: { "agent-org": TREE }, stateDir: "/state" });
+  const runDir = join("/state", "tickets", KEY);
+  const records = JSON.stringify({ [TREE]: localReviewAt("abc1234").record, "/elsewhere": localReviewAt("ffff").record });
+  const context = (marked: boolean, read: (path: string) => string) => readTicketContext(env, { settings, source: () => tracker, git: gitFor(),
+    exists: (path) => marked && path === join(runDir, LOCAL_REVIEW_FILE), read });
+  assert.equal((await context(false, () => records)).localReview, undefined, "unmarked: off");
+  assert.equal((await context(true, (path) => { assert.equal(path, join(runDir, LOCAL_REVIEW_RECORD_FILE)); return records; })).localReview?.record?.head, "abc1234");
+  assert.deepEqual((await context(true, () => { throw new Error("ENOENT"); })).localReview, { record: null }, "marked with no record: a review is owed");
 });

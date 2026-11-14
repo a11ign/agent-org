@@ -111,6 +111,12 @@ export type TicketSettings = Readonly<{
    */
   lessons?: boolean;
   /**
+   * Whether a worker runs the reviewer on its local diff before it opens a pull request (A11-440, `local-review.ts`), and `pr:open` refuses a create until that review ran at the
+   * worker's current commit. The board's own review of each new head still runs. False by default: the feature turns on only once the offline eval shows a better first-pass verdict
+   * at no more tokens than the rounds it saves. Optional, so a settings object made by hand (a test's) leaves it off.
+   */
+  localReview?: boolean;
+  /**
    * Whether this machine can capture the board for a worker (`ticket:capture`): both Chromium builds start, so the worker brief asks for a capture of a page a
    * change alters, and the pull request shows it. False by default: a worker is then not told to capture. Onboard sets it when both builds start.
    */
@@ -448,6 +454,13 @@ function lessonsOf(value: unknown): boolean {
   return value;
 }
 
+/** `tickets.localReview`: true for a worker to run the reviewer on its local diff before it opens a pull request (A11-440). Absent is false. Any other value is refused by name. */
+function localReviewOf(value: unknown): boolean {
+  if (value === undefined) return false;
+  if (typeof value !== "boolean") throw new TicketSettingsRefusal("tickets.localReview", `must be true or false, not ${JSON.stringify(value)}`);
+  return value;
+}
+
 /** `tickets.capture`: true when this machine can capture the board for a worker. Absent is false. Any other value is refused by name. */
 function captureOf(value: unknown): boolean {
   if (value === undefined) return false;
@@ -646,6 +659,7 @@ export function parseTicketSettings(host: unknown, home: string = homedir(), mac
     designTools: designToolsOf(tickets.designTools),
     fixRedMain: fixRedMainOf(tickets.fixRedMain),
     lessons: lessonsOf(tickets.lessons),
+    localReview: localReviewOf(tickets.localReview),
     capture: captureOf(tickets.capture),
     prReview: prReviewOf(tickets.prReview),
     reviewer: isActive(reviewer) ? reviewer.provider : null,
