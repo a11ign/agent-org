@@ -1,5 +1,0 @@
----
-"agent-org": minor
----
-
-`host:install` puts a `claude` wrapper in the first directory on a pane's PATH (`~/.opencode/bin`, never `binDir`, since `~/.local/bin/claude` is a symlink the CLI's self-update rewrites), and it adds `--settings '{"autoMemoryEnabled":false}'` to a `claude` started in a standing seat's workspace other than `ceo`'s. herdr restores a seat as a bare `claude --resume <id>`, so a launch flag typed into a pane did not survive a restart (all four seats came back without it on 2026-10-09). The seat is the workspace's herdr label, matched against a list `host:install` renders from the roster's live entries that are not `spare` and not a family, minus `ceo`, so a roster change reads DIVERGED until it is installed again. A call that already names `--settings` (a spawned worker's), one that does not open with a flag, one holding `--`, and a herdr that does not answer all exec the real binary unchanged. `host:check` notes a pane whose shell resolves `claude` to anything but the wrapper. a11ign/a11ign#4823, follow-up of a11ign/a11ign#3663.

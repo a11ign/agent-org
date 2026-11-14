@@ -1,5 +1,0 @@
----
-"agent-org": patch
----
-
-A closed row now ends its claim and its pane for a `worker-<key>-<n>` holder (`worker-agent-org-730`) as it already did for `worker-<n>` (a11ign/agent-org#757). The closed-claim pass named the rows it asked about with `familyNumber`, which is `null` for a keyed label by design (730 alone would name the home tracker's row 730), so a keyed pane's row was never read, open or closed, and `session:`, `in-progress` and `started` stayed on it until someone took them off by hand. The pass now asks each declared tracker for the rows of the instances listed in it, once per tracker, and the release carries the tracker's key, so the claim is read, commented on and declined in that tracker. A keyed pane is also counted as the worker pane it is when a closed row's leftover labels are judged (ten minutes after the close, as a bare-number one, and no longer the day a standing seat is given). A keyed label naming a tracker the project does not declare is said and read as no row's, and one tracker's refused read is said and does not hold another's closed rows.
