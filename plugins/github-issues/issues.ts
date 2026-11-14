@@ -54,13 +54,19 @@ export function ticketOf(at: Repository, issue: IssueJson, extra: Readonly<{ chi
   });
 }
 
+/** GitHub answers these for an issue it has none of: never made, or deleted or moved. */
+const NOT_FOUND = 404;
+const GONE = 410;
+/** How many issues are read at once by key. */
+const READ_BATCH = 10;
+
 /** The issue numbered `number`, or null when the repository has none by it or it is a pull request. Throws on any other failure. */
 export async function fetchIssue(at: Repository, number: number): Promise<IssueJson | null> {
   try {
     const issue = await callGitHub<IssueJson>(at.client, "GET", `${repoPath(at)}/issues/${number}`);
     return issue.pull_request === undefined ? issue : null;
   } catch (err) {
-    if (isStatus(err, 404) || isStatus(err, 410)) return null;
+    if (isStatus(err, NOT_FOUND) || isStatus(err, GONE)) return null;
     throw err;
   }
 }
@@ -85,6 +91,9 @@ export async function fetchTicketsOf(at: Repository, issues: readonly IssueJson[
 /** One event of an issue's timeline, as far as a cross-reference from a pull request goes. */
 type TimelineEvent = Readonly<{ event: string; source?: { issue?: { html_url: string; title: string; state: string; pull_request?: { merged_at: string | null } } } }>;
 
+/** A pull request's state: merged once it has a merge time, closed when closed without one, and open otherwise, a draft included. */
+const pullStateOf = (state: string, mergedAt: string | null): PullState => (mergedAt !== null ? "merged" : state === "closed" ? "closed" : "open");
+
 /** The state and the title of each pull request that cross-references the issue, by its address: a pull request links an issue on GitHub by naming it. */
 export async function fetchLinkedPulls(at: Repository, number: number): Promise<{ pulls: Record<string, PullState>; titles: Record<string, string> }> {
   const events = await fetchAllPages<TimelineEvent>(at.client, `${repoPath(at)}/issues/${number}/timeline`);
@@ -93,7 +102,7 @@ export async function fetchLinkedPulls(at: Repository, number: number): Promise<
   for (const { event, source } of events) {
     const pull = source?.issue;
     if (event !== "cross-referenced" || pull?.pull_request === undefined) continue;
-    pulls[pull.html_url] = pull.pull_request.merged_at !== null ? "merged" : pull.state === "closed" ? "closed" : "open";
+    pulls[pull.html_url] = pullStateOf(pull.state, pull.pull_request.merged_at);
     if (pull.title.trim() !== "") titles[pull.html_url] = pull.title.trim();
   }
   return { pulls, titles };
@@ -106,9 +115,8 @@ export async function fetchEachIssue(at: Repository, keys: readonly string[], nu
     const number = numberOfKey(key);
     return number === null ? [] : [[key, number] as const];
   });
-  const BATCH = 10;
-  for (let start = 0; start < wanted.length; start += BATCH) {
-    const batch = wanted.slice(start, start + BATCH);
+  for (let start = 0; start < wanted.length; start += READ_BATCH) {
+    const batch = wanted.slice(start, start + READ_BATCH);
     const issues = await Promise.all(batch.map(([, number]) => fetchIssue(at, number)));
     batch.forEach(([key], index) => {
       const issue = issues[index];

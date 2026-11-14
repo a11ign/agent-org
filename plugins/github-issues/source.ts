@@ -13,7 +13,7 @@ import type { PickScope } from "../../src/ticket-mode/settings.ts";
 import type { AutomaticCompletionUndo, Blocker, Keywords, PullState, ScopePage, Ticket, TicketComments, TicketSource, TicketText } from "../../src/plugins/contracts/tracker.ts";
 import { type Client, PAGE_SIZE, callGitHub, fetchAllPages } from "./client.ts";
 import { type IssueJson, type Repository, CLAIM_PREFIX, attachmentBody, attachmentIn, fetchComments, fetchEachIssue, fetchIssue, fetchLinkedPulls, fetchOpenChildren, fetchTicketsOf, repoPath, ticketOf } from "./issues.ts";
-import { branchOf, keyOf, numberOf, stateNamed } from "./mapping.ts";
+import { branchOf, isOpenType, keyOf, numberOf, stateNamed } from "./mapping.ts";
 import { BEFORE_PLANNING, BEFORE_WORK, currentState, fetchIssueOrThrow, moveIssueFrom, restoreIssueState, writeState } from "./moves.ts";
 
 /**
@@ -51,7 +51,7 @@ function scopeOf(options: IssuesSourceOptions) {
       const claims = (await fetchComments(at, number)).filter((comment) => (comment.body ?? "").startsWith(CLAIM_PREFIX));
       return claims.length === 0 ? null : claims[claims.length - 1].body!.slice(CLAIM_PREFIX.length).trim();
     },
-    async byKey<T>(keys: readonly string[], value: (issue: IssueJson) => T | Promise<T>): Promise<Map<string, T>> {
+    async fetchByKey<T>(keys: readonly string[], value: (issue: IssueJson) => T | Promise<T>): Promise<Map<string, T>> {
       const issues = await fetchEachIssue(at, keys, numberFor);
       return new Map(await Promise.all([...issues].map(async ([key, issue]) => [key, await value(issue)] as const)));
     },
@@ -114,8 +114,6 @@ function pickOperations(scope: Scope): Pick<TicketSource, "assigned" | "viewer" 
   };
 }
 
-const isOpenType = (type: string | undefined): boolean => !["completed", "canceled", "duplicate"].includes(type ?? "");
-
 /** The reads of a ticket and of several by key, and the download of its plans. */
 function ticketOperations(scope: Scope): Pick<TicketSource, "read" | "download" | "stateTypes" | "texts" | "pullStates" | "blockers" | "projectSummaries" | "readComments"> {
   return {
@@ -128,10 +126,10 @@ function ticketOperations(scope: Scope): Pick<TicketSource, "read" | "download" 
         return path;
       });
     },
-    stateTypes: (keys) => scope.byKey(keys, (issue) => currentState(issue).type),
-    texts: (keys) => scope.byKey(keys, (issue): TicketText => ({ description: issue.body ?? "", updatedAt: issue.updated_at })),
-    pullStates: (keys) => scope.byKey(keys, async (issue): Promise<Readonly<Record<string, PullState>>> => (await fetchLinkedPulls(scope.at, issue.number)).pulls),
-    blockers: (keys) => scope.byKey(keys, async (issue) => Promise.all((await scope.fetchBlockedBy(issue.number)).map((blocker) => fetchBlocker(scope, blocker)))),
+    stateTypes: (keys) => scope.fetchByKey(keys, (issue) => currentState(issue).type),
+    texts: (keys) => scope.fetchByKey(keys, (issue): TicketText => ({ description: issue.body ?? "", updatedAt: issue.updated_at })),
+    pullStates: (keys) => scope.fetchByKey(keys, async (issue): Promise<Readonly<Record<string, PullState>>> => (await fetchLinkedPulls(scope.at, issue.number)).pulls),
+    blockers: (keys) => scope.fetchByKey(keys, async (issue) => Promise.all((await scope.fetchBlockedBy(issue.number)).map((blocker) => fetchBlocker(scope, blocker)))),
     async projectSummaries(keys) {
       const issues = await fetchEachIssue(scope.at, keys, scope.numberFor);
       return new Map([...issues].flatMap(([key, issue]) => (issue.milestone === null ? [] : [[key, issue.milestone.description] as const])));
@@ -210,7 +208,7 @@ function writeOperations(scope: Scope): Pick<TicketSource, "comment" | "updateTi
       if ((await scope.fetchClaimant(issue.number)) !== claimant) await scope.postComment(issue.number, `${CLAIM_PREFIX}${claimant}`);
     },
     async claims(keys) {
-      const claimants = await scope.byKey(keys, (issue) => scope.fetchClaimant(issue.number));
+      const claimants = await scope.fetchByKey(keys, (issue) => scope.fetchClaimant(issue.number));
       return new Map([...claimants].flatMap(([key, claimant]) => (claimant === null ? [] : [[key, claimant] as const])));
     },
     async addBlockers(key, blockerKeys) {

@@ -36,8 +36,14 @@ const CLOSED_BY_REASON: Readonly<Record<string, string>> = Object.freeze({ not_p
 /** The workflow state named `name`, whatever its case, or undefined for a name the workflow lacks. */
 export const stateNamed = (name: string): WorkflowState | undefined => WORKFLOW.find((state) => state.name.toLowerCase() === name.trim().toLowerCase());
 
+/** The state types of a closed issue: a ticket in one of them is finished. */
+const FINISHED_TYPES: ReadonlySet<string> = new Set(["completed", "canceled", "duplicate"]);
+
+/** Whether a state type is one an open issue is in: every type but the finished ones. An absent type is not open. */
+export const isOpenType = (type: string | undefined): boolean => type !== undefined && !FINISHED_TYPES.has(type);
+
 /** Whether a state is one an open issue is in: every state before the closed ones. */
-export const isOpenState = (state: WorkflowState): boolean => !["completed", "canceled", "duplicate"].includes(state.type);
+export const isOpenState = (state: WorkflowState): boolean => isOpenType(state.type);
 
 /** The label that puts an open issue in `state`, or null for Backlog, which is the absence of one. */
 export const labelOfState = (state: WorkflowState): string | null => (state.name === UNLABELED_STATE ? null : `state: ${state.name}`);

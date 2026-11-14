@@ -21,7 +21,10 @@ export const answered = (message: string, status: number): Error => Object.assig
 /** Whether `error` is an answer of `status`. */
 export const isStatus = (error: unknown, status: number): boolean => (error as { status?: unknown } | null)?.status === status;
 
-const retryableStatus = (status: number): boolean => status === 429 || (status >= 500 && status <= 599);
+/** GitHub asks to be called again later with a 429, and fails itself with a 5xx. */
+const TOO_MANY_REQUESTS = 429;
+const SERVER_ERRORS = { from: 500, to: 599 } as const;
+const retryableStatus = (status: number): boolean => status === TOO_MANY_REQUESTS || (status >= SERVER_ERRORS.from && status <= SERVER_ERRORS.to);
 const isConnectionFailure = (err: unknown): boolean => (err instanceof TypeError && err.message === "fetch failed") || (err as Error | null)?.name === "TimeoutError";
 
 /** One call, tried again on a retryable answer or a lost connection, up to three times; the last answer or failure is the caller's. */
@@ -54,9 +57,12 @@ export async function callGitHub<T>(client: Client, method: string, path: string
     ...(body === undefined ? {} : { body: JSON.stringify(body) }),
   });
   const text = await response.text();
-  if (!response.ok) throw answered(`GitHub answered ${response.status} to ${method} ${path}: ${text.slice(0, 200)}`, response.status);
+  if (!response.ok) throw answered(`GitHub answered ${response.status} to ${method} ${path}: ${text.slice(0, MESSAGE_CHARS)}`, response.status);
   return (text === "" ? null : JSON.parse(text)) as T;
 }
+
+/** How much of a refusal's body its error carries. */
+const MESSAGE_CHARS = 200;
 
 /** The size of a page GitHub lists: its largest. */
 export const PAGE_SIZE = 100;
