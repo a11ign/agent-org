@@ -4,6 +4,7 @@ import assert from "node:assert/strict";
 import { GROUPS, type SchemaEntry } from "./config-schema.ts";
 import { defaultSchema } from "../plugins/schema.ts";
 import { keySource } from "../../plugins/linear/key.ts";
+import { issuesSettings } from "../../plugins/github-issues/settings.ts";
 
 /** The schema the page and the readers use: core's entries and the bundled plugins' settings (A11-159). */
 const SCHEMA = defaultSchema();
@@ -119,6 +120,9 @@ function readsOf(into: Set<string>, run: () => void, path = ""): void {
 }
 
 /** The keys one file's readers read, in the notation the schema uses. */
+/** A tracker block that names GitHub Issues (A11-447), whose settings only its plugin reads. */
+const GITHUB_ISSUES_TRACKER = { provider: "github-issues", repo: "acme/tracker", prefix: "GH", token: { path: "/home/a/.config/github-issues.token" } };
+
 function hostReads(): Set<string> {
   const reads = new Set<string>();
   const text = JSON.stringify(HOST);
@@ -128,6 +132,8 @@ function hostReads(): Set<string> {
   parseTicketSettings(recording(HOST, "", reads) as typeof HOST, "/home/a");
   // The tracker's key is the Linear plugin's to read (A11-159): core hands the block's value over, and the plugin's own reader is what asks it for `keychain` and `path`.
   keySource(recording(HOST.tickets.providers.tracker.key, "tickets.providers.tracker.key", reads));
+  // A11-447: the GitHub Issues tracker's own settings are its plugin's to read, from a block that names it.
+  issuesSettings(recording(GITHUB_ISSUES_TRACKER, "tickets.providers.tracker", reads) as typeof GITHUB_ISSUES_TRACKER);
   readsOf(reads, () => haikuBriefEnabled({ ...quiet, read: () => text }));
   readsOf(reads, () => ceoOneShotEnabled({ ...quiet, read: () => text }));
   readsOf(reads, () => orchestratorOneShotEnabled({ ...quiet, read: () => text }));
@@ -209,7 +215,8 @@ test("A11-132: every editable entry says when a change is in force, every entry 
     "host.json tickets.plugins", "host.json tickets.preflight", "host.json tickets.providers.codeHost.identity.<role>.keyPath",
     "host.json tickets.providers.codeHost.identity.<role>.mode", "host.json tickets.providers.exposure.port", "host.json tickets.providers.exposure.tailnetPorts",
     "host.json tickets.providers.exposure.uiPort", "host.json tickets.providers.publish.connectors", "host.json tickets.providers.publish.run",
-    "host.json tickets.providers.tracker.connectors", "host.json tickets.providers.tracker.key.path", "host.json tickets.worktreeRoot", "host.json triage.keyPath",
+    "host.json tickets.providers.tracker.connectors", "host.json tickets.providers.tracker.key.path", "host.json tickets.providers.tracker.prefix",
+    "host.json tickets.providers.tracker.repo", "host.json tickets.providers.tracker.token.path", "host.json tickets.worktreeRoot", "host.json triage.keyPath",
     "project.json beforeTick",
   ].sort(), "the set is pinned: change this test with the flags in config-schema.ts");
   for (const entry of editable) {

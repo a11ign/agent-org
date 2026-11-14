@@ -908,7 +908,7 @@ test("A11-163 done-when: a fresh machine's onboard enables the Linear and GitHub
   const said: string[] = [];
   const run = async (...argv: string[]) => ({ status: await runPlugin(argv, { hostPath, catalog: defaultCatalog(), log: (line) => said.push(line), error: (line) => said.push(line) }), said: said.splice(0).join("\n") });
   const list = await run("list");
-  assert.match(list.said, /tracker: linear \(from tickets\.providers\.tracker\)\n {2}linear +enabled/);
+  assert.match(list.said, /tracker: linear \(from tickets\.providers\.tracker\)\n(?: {2}\S+ +available .*\n)* {2}linear +enabled/);
   assert.match(list.said, /code host: github \(from tickets\.providers\.codeHost\)\n {2}github +enabled/);
   const disable = await run("disable", "github");
   assert.equal(disable.status, 1);
