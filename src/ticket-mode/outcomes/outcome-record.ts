@@ -22,8 +22,17 @@ export type OutcomeRound = Readonly<{
   unread?: string;
 }>;
 
-/** What a run carries from round to round: when it first started, and its rounds so far. */
-export type OutcomeRun = Readonly<{ since: number; rounds: readonly OutcomeRound[] }>;
+/**
+ * One review the reviewer posted on a pull request of the run (A11-430): the pull request and head it reviewed, its verdict, when it was posted, when the board recorded it, and the Codex tokens it spent,
+ * by model, or why they could not be read (`unread`, never 0). A review owns the reviewer's turns made since the review of the same pull request before it, so none is counted twice.
+ */
+export type OutcomeReview = Readonly<{ pr: string; head: string; verdict: string; posted: number; at: number; tokens?: ModelTokens; unread?: string }>;
+
+/**
+ * What a run carries from round to round: when it first started, its rounds so far, the reviews of its pull requests so far, and the batch it was planned in, when its latest round was a
+ * batch's, so a record a review appends keeps it.
+ */
+export type OutcomeRun = Readonly<{ since: number; rounds: readonly OutcomeRound[]; reviews?: readonly OutcomeReview[]; batch?: OutcomeBatch }>;
 
 /** The batch a ticket's run planned it in: the batch's name, the ticket's place in it (from 1) and how many tickets shared the run's tokens. */
 export type OutcomeBatch = Readonly<{ id: string; share: number; of: number }>;
@@ -40,7 +49,11 @@ export type OutcomeRecord = Readonly<{
   repos: readonly string[];
   labels: readonly string[];
   batch?: OutcomeBatch;
+  /** The run's pull requests by address; absent on a record written before step 2 of A11-430, which is read as none. */
+  prs?: readonly string[];
   rounds: readonly OutcomeRound[];
+  /** The reviews the reviewer posted on its pull requests; absent when none has been. */
+  reviews?: readonly OutcomeReview[];
   /** How the run's latest round ended. */
   final: string;
   /** How many of its rounds ended handing it to a person. */
@@ -49,21 +62,25 @@ export type OutcomeRecord = Readonly<{
   wallMs: number;
   /** The tokens of every round that could be read, by model. */
   tokens: ModelTokens;
+  /** The reviewer's tokens of every review that could be read, by model; absent when no review has been. */
+  reviewerTokens?: ModelTokens;
 }>;
 
 /** The outcome log in `stateDir`. */
 export const outcomesPath = (stateDir: string): string => join(stateDir, "tickets", "outcomes.jsonl");
 
 /** What a run is known by apart from its rounds. */
-export type OutcomeSubject = Readonly<{ ticket: string; model: string; effort: string; repos: readonly string[]; labels: readonly string[]; batch?: OutcomeBatch }>;
+export type OutcomeSubject = Readonly<{ ticket: string; model: string; effort: string; repos: readonly string[]; labels: readonly string[]; prs: readonly string[] }>;
 
 /** The record of a run with `rounds`, as it stands after its latest round. PURE. */
 export function outcomeRecordOf(subject: OutcomeSubject, run: OutcomeRun): OutcomeRecord {
   const last = run.rounds.at(-1);
   if (last === undefined) throw new Error(`${subject.ticket}'s run has no round to record`);
-  const { batch, ...rest } = subject;
+  const { batch } = run;
+  const reviews = run.reviews ?? [];
+  const reviewed = reviews.length === 0 ? {} : { reviews, reviewerTokens: addModelTokens(reviews.flatMap(({ tokens }) => (tokens === undefined ? [] : [tokens]))) };
   return {
-    v: 1, run: `${subject.ticket}@${run.since}`, ...rest, ...(batch === undefined ? {} : { batch }), at: last.endedAt, rounds: run.rounds, final: last.outcome,
+    v: 1, run: `${subject.ticket}@${run.since}`, ...subject, ...(batch === undefined ? {} : { batch }), at: last.endedAt, rounds: run.rounds, ...reviewed, final: last.outcome,
     needsYou: run.rounds.filter(({ outcome }) => outcome === "needs-human").length,
     wallMs: run.rounds.reduce((sum, { startedAt, endedAt }) => sum + (startedAt === null ? 0 : Math.max(0, endedAt - startedAt)), 0),
     tokens: addModelTokens(run.rounds.flatMap(({ tokens }) => (tokens === undefined ? [] : [tokens]))),
