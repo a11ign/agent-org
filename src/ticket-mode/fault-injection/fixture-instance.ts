@@ -6,7 +6,7 @@
 // so a key renamed in either breaks the fixture and not a scenario. Its state folder, its one clone and its key path are inside a fresh throwaway directory, which `dispose` removes. The pool is the board's own (`createPool`),
 // with every seam that would reach the machine given a fake: the tracker contract's in-memory fake behind `faultyTracker`, the code host contract's in-memory fake, the pool tests' herdr behind `faultyHerdr`, an update drain held in memory,
 // a herdr service that only records that it was asked to start, and a `deps.git` that refuses. Nothing reaches a real tracker, a real code host, a real account, the machine's services or its herdr. The one process the pool
-// still starts is a read-only `git remote get-url origin` in the throwaway clone (`reviewer-port.ts`'s `originOf` runs git itself, not through `deps.git`), which answers that the folder is no repository.
+// still starts is a read-only `git remote get-url origin` in the throwaway clone (`reviewer-port.ts`'s `warmOrigins` runs git itself, asynchronously, not through `deps.git`), which answers that the folder is no repository.
 //
 // THE CLOCK IS THE FIXTURE'S. `pass(ms)` moves it and runs one pass of the board, then the reads that pass began (`startReadsSettled`), so a scenario reads the board as a person would see it after that pass.
 //

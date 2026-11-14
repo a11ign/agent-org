@@ -41,8 +41,6 @@ const ALLOWED: Readonly<Record<string, readonly Allowed[]>> = {
     reason: "`open` the browser as the page service starts listening; `request-thread-guard.test.ts` lists the same call, and this host runs Linux" }],
   "src/ticket-mode/plugin-contract.ts": [{ call: "execFileSync(\"sh\"", loop: "the contract check of the plugins, at the instance's start and on a Plugins read of the board thread", perHour: 1,
     reason: "`command -v` for each command a plugin's contract names, about 5 ms; the request thread hands the Plugins and Settings reads its own (`request-thread-guard.test.ts`), so only an instance's start asks" }],
-  "src/ticket-mode/reviewer-port.ts": [{ call: "execFileSync(\"git\"", loop: "`originOf`, the fallback for a clone no sweep has warmed (`doctor`, a command, a clone added in the last 5 minutes)", perHour: 2,
-    reason: "the sweeps call `warmOrigins` first and read the cache, which holds each clone's origin for 5 minutes; a miss is a clone the host file gained since, at most a couple an hour" }],
   "src/ticket-mode/pool-herdr.ts": [{ call: "herdrRun(args, timeoutMs)", loop: "the default of the synchronous `ctx.herdr`, which the two calls listed under pool-resume.ts alone use", perHour: 0,
     reason: "the seam itself, not a call: nothing else on the board thread asks `ctx.herdr`, and a test hands the context its own" }],
   "src/ticket-mode/pool-resume.ts": [

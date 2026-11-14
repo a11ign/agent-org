@@ -29,8 +29,7 @@ async function ticketPullsOf(ctx: PoolContext, key: string): Promise<readonly Na
   const { codeHost, settings } = ctx;
   if (codeHost.pullsNaming === undefined) return [];
   try {
-    await warmOrigins(settings.clones);
-    const found = await codeHost.pullsNaming(key, reviewedRepositoriesOf(settings.clones));
+    const found = await codeHost.pullsNaming(key, reviewedRepositoriesOf(settings.clones, await warmOrigins(settings.clones)));
     if (found === null) {
       log(`${key}: the pull requests that name it could not be listed, so none is told to its worker or answered by Respond`);
       return [];

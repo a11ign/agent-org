@@ -13,7 +13,7 @@ import { createFakeReviewer } from "../plugins/fakes/reviewer.ts";
 import { poolFixture } from "./pool-fixture.ts";
 import type { Outcome } from "./queue/queue-entries-and-outcomes.ts";
 import { logOf } from "./queue/run-log.ts";
-import { loadReviewerGate, noReviewerMemory, REVIEWER_LOGIN, readReviewerMemory, reviewedRepositoriesOf, reviewerMemoryPath, writeReviewerMemory } from "./reviewer-port.ts";
+import { loadReviewerGate, noReviewerMemory, REVIEWER_LOGIN, readReviewerMemory, reviewedRepositoriesOf, reviewerMemoryPath, warmOrigins, writeReviewerMemory } from "./reviewer-port.ts";
 import { recordReviewerRefusal } from "./queue/queue-reviewer-refusal.ts";
 import { isWatched, publishable, runActions, runStatus, workStatus } from "./board-view/pull-status-and-notes.ts";
 import { reasonOf } from "./board-view/run-reason.ts";
@@ -148,7 +148,7 @@ test("A11-241: a new head is a new review, so the old head's refusals are forgot
 test("A11-241: a pull request that is no longer open takes its refusal, and the Needs you, with it", async () => {
   const run = await refusedRun();
   // Every repository the sweep lists has to be listable, or the sweep does not know which pull requests are gone.
-  for (const repository of reviewedRepositoriesOf(run.fixture.settings.clones)) run.host.seedRepository(repository);
+  for (const repository of reviewedRepositoriesOf(run.fixture.settings.clones, await warmOrigins(run.fixture.settings.clones))) run.host.seedRepository(repository);
   await sweepRefused(run);
   await sweepRefused(run);
   assert.equal(run.entry().reviewerRefused !== undefined, true);
