@@ -501,7 +501,7 @@ test("A11-440: with the local review on, a create with no review, or a review of
   assert.match(stale.refused, /last local review of this tree was at 01234567, and it is now at abc1234/);
 });
 
-test("A11-440: a create reviewed at its current commit is sent and says so; one not convinced is sent only with a ## Local review section; an edit and a run with the review off are not checked", () => {
+test("A11-440: a create reviewed at its current commit is sent and says so; one not convinced is refused even with a ## Local review section; a run with the review off is not checked", () => {
   const convinced = open(["--body", BODY], { ticket: ticket({ localReview: localReviewAt("abc1234") }) });
   assert.equal(convinced.code, 0, convinced.refused);
   assert.equal(convinced.sent.length, 1);
@@ -509,7 +509,10 @@ test("A11-440: a create reviewed at its current commit is sent and says so; one 
   const blocked = open(["--body", BODY], { ticket: ticket({ localReview: localReviewAt("abc1234", "not convinced") }) });
   assert.equal(blocked.code, EXIT_NOTHING_SENT);
   const answered = open(["--body", `${BODY}\n## Local review\n\nFinding 1 is wrong: the case is tested in x.test.ts.\n`], { ticket: ticket({ localReview: localReviewAt("abc1234", "not convinced") }) });
-  assert.equal(answered.code, 0, answered.refused);
+  assert.equal(answered.code, EXIT_NOTHING_SENT);
+  assert.deepEqual(answered.sent, []);
+  const down = open(["--body", `${BODY}\n## Local review\n\nCodex could not run on this host.\n`], { ticket: ticket({ localReview: localReviewAt("abc1234", null) }) });
+  assert.equal(down.code, 0, down.refused);
   const off = open(["--body", BODY]);
   assert.equal(off.code, 0, off.refused);
   assert.doesNotMatch(off.said, /LOCAL-REVIEW/, "POSITIVE CONTROL: off, nothing is said");

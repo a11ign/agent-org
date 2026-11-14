@@ -3,8 +3,9 @@
 //
 // `ticket:review-local` runs the reviewer on a worker's committed diff before its pull request opens and records, per worktree, the commit it reviewed and the verdict, beside the run's
 // outcome file. On a machine with `tickets.localReview: true`, `pr:open` reads that record and refuses a create until a review ran at the tree's current commit, so a blocking finding is
-// fixed before the pull request opens rather than in one of its feedback rounds. A verdict other than `convinced` does not refuse on its own: the worker may judge a finding wrong, or the
-// reviewer may not have run, and the body says so under `## Local review`. The board's own review of each new head still runs after the pull request opens.
+// fixed before the pull request opens rather than in one of its feedback rounds. A `not convinced` review refuses: the worker fixes its blocking findings and reviews again. Only a review with
+// no verdict (the reviewer could not run, or its reply had no verdict line) lets the create go on, when the body says so under `## Local review`, so a host whose reviewer is down does not
+// hold every worker. The board's own review of each new head still runs after the pull request opens.
 import { readFileSync, writeFileSync } from "node:fs";
 
 /**
@@ -23,7 +24,7 @@ export const LOCAL_REVIEW_RECORD_FILE = "local-review.json";
  * finding is fixed before the pull request opens, rather than costing one of its feedback rounds. `pr:open` refuses a create until a review ran at the current commit, so a fix is reviewed again.
  */
 export function localReviewStep(command: string): string {
-  return `5b. Before you open a pull request, have the reviewer review your local diff: in each worktree you changed, after your last commit, run \`${command}\`, with \`--base <branch>\` when your pull request will be stacked on a branch other than the default one. It runs the board's reviewer, read-only, on \`git diff <base>...HEAD\` against this ticket, prints its findings and ends with its verdict: exit 0 is convinced, 1 is not convinced, 2 is no verdict. Fix each blocking finding with a test that fails without the fix, re-run the repository's checks, commit, and run it again. \`pr:open\` refuses to open the pull request until a review ran at your current commit, so run it again after every commit. When you judge a finding that is still raised to be wrong, say so with your reason under \`## Local review\` in the pull request body; the board's own review still runs once the pull request is open. When it exits 2 because the reviewer could not run, say so in the body and go on.`;
+  return `5b. Before you open a pull request, have the reviewer review your local diff: in each worktree you changed, after your last commit, run \`${command}\`, with \`--base <branch>\` when your pull request will be stacked on a branch other than the default one. It runs the board's reviewer, read-only, on \`git diff <base>...HEAD\` against this ticket, prints its findings and ends with its verdict: exit 0 is convinced, 1 is not convinced, 2 is no verdict. Fix each blocking finding with a test that fails without the fix, re-run the repository's checks, commit, and run it again. \`pr:open\` refuses to open the pull request until a review of your current commit is convinced, so run it again after every commit; the board's own review still runs once the pull request is open. When it exits 2 because the reviewer could not run, run it once more, and if it still cannot, say so under \`## Local review\` in the pull request body and go on.`;
 }
 
 /** The reviewer's verdict on a local diff: `convinced`, `not convinced`, or null when it gave none (it could not run, or its reply had no verdict line). */
@@ -39,10 +40,20 @@ export type LocalReviewRecords = Readonly<Record<string, LocalReviewRecord>>;
 export function readLocalReviews(path: string, read: (path: string) => string = (p) => readFileSync(p, "utf8")): LocalReviewRecords {
   try {
     const parsed: unknown = JSON.parse(read(path));
-    return parsed !== null && typeof parsed === "object" && !Array.isArray(parsed) ? parsed as LocalReviewRecords : {};
+    if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+    return Object.fromEntries(Object.entries(parsed).filter(([, record]) => isRecord(record)));
   } catch {
     return {};
   }
+}
+
+const VERDICTS: readonly unknown[] = ["convinced", "not convinced", null];
+
+/** Whether `value` has a record's shape: a commit and a base, and a verdict the check knows. A record of another shape is no review, so the check asks for one rather than crashing on it. */
+function isRecord(value: unknown): value is LocalReviewRecord {
+  if (value === null || typeof value !== "object") return false;
+  const { head, base, verdict } = value as Record<string, unknown>;
+  return typeof head === "string" && head !== "" && typeof base === "string" && VERDICTS.includes(verdict);
 }
 
 /** Write `record` for `tree` into `path`, keeping every other tree's. */
@@ -60,8 +71,8 @@ export type LocalReviewVerdict = Readonly<{ refusal: string | null; note: string
 export const short = (sha: string): string => sha.slice(0, 8);
 
 /**
- * THE CHECK (PURE), made only on a run the pool marked with the local review on: a create needs a review of this tree at `head`, its current commit. A convinced one passes. Any other
- * passes only when the body has a `## Local review` section that answers it.
+ * THE CHECK (PURE), made only on a run the pool marked with the local review on: a create needs a review of this tree at `head`, its current commit. A convinced one passes, and a not convinced
+ * one refuses: its blocking findings are fixed before the pull request opens. One with no verdict passes only when the body has a `## Local review` section that says the reviewer could not run.
  * @param {{ record: LocalReviewRecord | null, head: string | null, body: string, key: string }} facts
  * @returns {LocalReviewVerdict}
  */
@@ -77,10 +88,14 @@ export function localReviewCheck({ record, head, body, key }: { record: LocalRev
       + `${how}. Nothing was sent to GitHub (A11-440).`, note: null };
   }
   if (record.verdict === "convinced") return { refusal: null, note: `LOCAL-REVIEW: convinced at ${short(head)}` };
-  const said = record.verdict === null ? `gave no verdict${record.problem === undefined ? "" : ` (${record.problem})`}` : "was not convinced";
-  if (!LOCAL_REVIEW_SECTION.test(body)) {
-    return { refusal: `pr-open: REFUSED -- the local review at ${short(head)} ${said}, and the body has no \`## Local review\` section. Fix the blocking findings and review again, or say there `
-      + `why each one still raised stands${record.verdict === null ? ", or that the reviewer could not run" : ""}. Nothing was sent to GitHub (A11-440).`, note: null };
+  if (record.verdict === "not convinced") {
+    return { refusal: `pr-open: REFUSED -- the local review at ${short(head)} was not convinced${record.review === null ? "" : ` (its findings: ${record.review})`}. Fix each blocking finding with a test, `
+      + `commit, and run \`agent-org ticket:review-local\` again: the pull request opens once a review of the current commit is convinced. Nothing was sent to GitHub (A11-440).`, note: null };
   }
-  return { refusal: null, note: `LOCAL-REVIEW: ${record.verdict ?? "no verdict"} at ${short(head)}; the body's \`## Local review\` section answers it` };
+  const why = record.problem === undefined ? "" : ` (${record.problem})`;
+  if (!LOCAL_REVIEW_SECTION.test(body)) {
+    return { refusal: `pr-open: REFUSED -- the local review at ${short(head)} gave no verdict${why}, and the body has no \`## Local review\` section. Run it again, or say there that the reviewer `
+      + "could not run. Nothing was sent to GitHub (A11-440).", note: null };
+  }
+  return { refusal: null, note: `LOCAL-REVIEW: no verdict at ${short(head)}${why}; the body's \`## Local review\` section says so` };
 }

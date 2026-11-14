@@ -44,14 +44,15 @@ test("A11-440: pr:open's check refuses a create with no review or a review of an
   assert.match(localReviewCheck({ ...facts, record: record(), head: null }).refusal ?? "", /commit could not be read/);
 });
 
-test("A11-440: a review that was not convinced, or gave no verdict, passes only when the body answers it under ## Local review", () => {
+test("A11-440: a review that was not convinced refuses the create whatever the body says; one with no verdict passes only when the body says so under ## Local review", () => {
   const facts = { head: HEAD, key: KEY };
   const blocked = record({ verdict: "not convinced" });
-  assert.match(localReviewCheck({ ...facts, record: blocked, body: "Closes A11-440\n" }).refusal ?? "", /was not convinced, and the body has no `## Local review` section/);
-  assert.equal(localReviewCheck({ ...facts, record: blocked, body: "Closes A11-440\n\n## Local review\n\nFinding 2 is wrong: the test exists.\n" }).refusal, null);
+  assert.match(localReviewCheck({ ...facts, record: blocked, body: "Closes A11-440\n" }).refusal ?? "", /was not convinced \(its findings: \/r\.md\)\. Fix each blocking finding/);
+  assert.match(localReviewCheck({ ...facts, record: blocked, body: "Closes A11-440\n\n## Local review\n\nFinding 2 is wrong: the test exists.\n" }).refusal ?? "", /was not convinced/,
+    "a section in the body does not lift a blocking finding: it is fixed before the pull request opens");
   const failed = record({ verdict: null, review: null, problem: "the reviewer could not run: codex: not found" });
-  assert.match(localReviewCheck({ ...facts, record: failed, body: "Closes A11-440\n" }).refusal ?? "", /gave no verdict \(the reviewer could not run: codex: not found\).*or that the reviewer could not run/);
-  assert.match(localReviewCheck({ ...facts, record: failed, body: "## Local review\n\nCodex was not on this host.\n" }).note ?? "", /no verdict at c0ffee12; the body's `## Local review` section answers it/);
+  assert.match(localReviewCheck({ ...facts, record: failed, body: "Closes A11-440\n" }).refusal ?? "", /gave no verdict \(the reviewer could not run: codex: not found\).*say there that the reviewer could not run/);
+  assert.match(localReviewCheck({ ...facts, record: failed, body: "## Local review\n\nCodex was not on this host.\n" }).note ?? "", /no verdict at c0ffee12 \(the reviewer could not run: codex: not found\); the body's `## Local review` section says so/);
 });
 
 /** A worktree's `git`, at `head`, with `status` its uncommitted tracked changes and `diff` its diff against the base, and the calls it was asked. */
@@ -174,6 +175,9 @@ test("A11-440: the record keeps each worktree's review, so a run that changes tw
     assert.deepEqual(readLocalReviews(path), {}, "an unreadable file is no review");
     writeFileSync(path, JSON.stringify({ "/a": record(), "/b": record({ verdict: "not convinced" }) }));
     assert.deepEqual(Object.keys(readLocalReviews(path)), ["/a", "/b"]);
+    writeFileSync(path, JSON.stringify({ "/a": record(), "/tree": {}, "/odd": { ...record(), verdict: "maybe" }, "/bare": "x" }));
+    assert.deepEqual(Object.keys(readLocalReviews(path)), ["/a"], "a record of another shape is no review, and the check asks for one rather than crashing on it");
+    assert.match(localReviewCheck({ record: readLocalReviews(path)["/tree"] ?? null, head: HEAD, body: "", key: KEY }).refusal ?? "", /no review of this tree ran/);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
