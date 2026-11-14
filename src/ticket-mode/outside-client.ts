@@ -5,7 +5,9 @@
 // (A11-345, A11-399), and Linear's retry needed two fixes of its own. Every outside call now goes through {@link createOutsideClient}: one attempt is cut at its service's time, a failed attempt is tried again
 // only when its KIND says another try can get past it ({@link failureKindOf}, the one place a failure is classed), each service has a circuit breaker that refuses calls at once while the service keeps failing,
 // and the call is counted ONCE in the board's call figure however often it is tried (A11-345's rule, now the client's). Services move onto it one per step: Linear first (the tracker plugin is handed it as
-// `deps.outside` by the loader, since a plugin imports core's types only), then `gh`, then herdr.
+// `deps.outside` by the loader, since a plugin imports core's types only), then `gh` (the code host plugin is handed it the same way, bound to GitHub, and its runners that the board's loop reads GitHub
+// through make each `gh` through it: step 2), then herdr.
+import { basename } from "node:path";
 import { callOutcomes, type CallLedger, type CallService } from "./call-outcomes.ts";
 
 /**
@@ -22,6 +24,40 @@ const UNDICI_CODE_PREFIX = "UND_ERR_";
 const TOO_MANY_REQUESTS = 429;
 const SERVER_ERRORS = { from: 500, to: 599 } as const;
 
+/**
+ * What a program that calls a service answered, as far as classing it needs: the status it exited with (null when it could not start or was cut at its time) and what it printed on stderr. A `gh` call is one:
+ * it prints GitHub's answer (`HTTP 502`) or the network's (`connection reset`) on stderr, and that text is all a program says of why it failed.
+ */
+export type ProgramExit = Readonly<{ status: number | null; stderr: string }>;
+
+/** What `gh` prints when the network failed the call, when GitHub failed it, and when GitHub asked to be called later. Anything else a `gh` that exited non-zero printed is GitHub answering the request. */
+const PROGRAM_SAYS: readonly (readonly [FailureKind, RegExp])[] = [
+  ["network", /timed? ?out|ECONN|ETIMEDOUT|ENOTFOUND|EAI_AGAIN|connection (?:reset|refused)|unexpected EOF|TLS|no such host|dial tcp/i],
+  ["server", /\bHTTP 5\d\d\b|temporarily unavailable/i],
+  ["rate-limit", /\bHTTP 429\b|rate limit/i],
+];
+
+/** What a program that never answered says when no try can get past it: it is not installed or not runnable, its arguments are too long, or it printed more than it may. */
+const CANNOT_RUN = /\b(?:ENOENT|EACCES|E2BIG|ENOBUFS)\b/;
+
+/**
+ * The kind of a program's answer, or null when it succeeded. One with no status did not answer: it was cut or stopped (`network`), unless it could never run or printed more than it may (`refused`, {@link CANNOT_RUN}:
+ * trying again re-runs the same failure). One that exited non-zero is classed by what it printed. PURE.
+ */
+export function programKindOf({ status, stderr }: ProgramExit): FailureKind | null {
+  if (status === 0) return null;
+  if (status === null) return CANNOT_RUN.test(stderr) ? "refused" : "network";
+  const said = new Set(PROGRAM_SAYS.filter(([, says]) => says.test(stderr)).map(([kind]) => kind));
+  return KIND_ORDER.find((kind) => said.has(kind)) ?? "refused";
+}
+
+/** Whether `exit` is a program's answer: an error a program runner throws carries it as `exit` (the GitHub plugin's `GhFailure`). PURE. */
+function isProgramExit(exit: unknown): exit is ProgramExit {
+  if (typeof exit !== "object" || exit === null) return false;
+  const { status, stderr } = exit as { status?: unknown; stderr?: unknown };
+  return typeof stderr === "string" && (status === null || typeof status === "number");
+}
+
 /** `err` and the error it names as its `cause`, one level down: Node's `fetch` throws `TypeError("fetch failed")` and puts the reason in the cause. PURE. */
 export const withCause = (err: unknown): unknown[] => [err, (err as { cause?: unknown } | null | undefined)?.cause];
 
@@ -32,7 +68,8 @@ const KIND_ORDER: readonly FailureKind[] = ["unavailable", "network", "server", 
 function kindOfOne(err: unknown): FailureKind {
   if (err instanceof ServiceUnavailable) return "unavailable";
   if (err instanceof TypeError && err.message === "fetch failed") return "network";
-  const { name, code, status } = (err ?? {}) as { name?: unknown; code?: unknown; status?: unknown };
+  const { name, code, status, exit } = (err ?? {}) as { name?: unknown; code?: unknown; status?: unknown; exit?: unknown };
+  if (isProgramExit(exit)) return programKindOf(exit) ?? "refused";
   if (typeof name === "string" && NETWORK_ERROR_NAMES.has(name)) return "network";
   if (typeof code === "string" && (NETWORK_ERROR_CODES.has(code) || code.startsWith(UNDICI_CODE_PREFIX))) return "network";
   if (status === TOO_MANY_REQUESTS) return "rate-limit";
@@ -41,8 +78,9 @@ function kindOfOne(err: unknown): FailureKind {
 }
 
 /**
- * THE ONE RULE for what a failure of an outside call is ({@link FailureKind}). It reads the error and its cause: their type, their `code`, and the numeric `status` a service's answer carries (an error a client
- * throws with the status on it, or `{ status }` for an answer that was not thrown), never the message text. Where the error and its cause differ, the kind earliest in {@link KIND_ORDER} wins, so an error
+ * THE ONE RULE for what a failure of an outside call is ({@link FailureKind}). It reads the error and its cause: their type, their `code`, the numeric `status` a service's answer carries (an error a client
+ * throws with the status on it, or `{ status }` for an answer that was not thrown), and the `exit` of a program that calls a service ({@link programKindOf}, the one place a program's stderr is read), never an
+ * error's message text. Where the error and its cause differ, the kind earliest in {@link KIND_ORDER} wins, so an error
  * that is transient on either level is transient, as the plan attach's rule always read it (A11-216). PURE.
  */
 export function failureKindOf(err: unknown): FailureKind {
@@ -103,6 +141,15 @@ export type CallOptions<T> = Readonly<{
   statusOf?: (value: T) => number | undefined;
   /** Lets go of an answer that is not used, because the call is tried again: a `fetch` answer's body is read so its connection closes now. */
   release?: (value: T) => Promise<unknown>;
+  /** The exit of a program's answer, which the rule classes as {@link programKindOf} does: a call that runs a program (`gh`) answers its exit and never throws for one. */
+  exitOf?: (value: T) => ProgramExit | undefined;
+  /** How long each attempt may take, in ms, where the call names its own time; else its service's {@link ATTEMPT_MS}. */
+  attemptMs?: number;
+  /**
+   * The call is made once: a write a second try could repeat (a comment GitHub posted before its answer was lost, a workflow dispatched twice). The breaker still refuses it and the figure still counts it; a
+   * failure is the caller's at once.
+   */
+  once?: boolean;
   /** Told of every attempt as it ends. */
   onAttempt?: (outcome: AttemptOutcome) => void;
 }>;
@@ -161,12 +208,21 @@ async function cut<T>(service: OutsideService, ms: number, attempt: (signal: Abo
 /** What an attempt came to: its answer, or what failed it (a throw, or an answer whose status the rule classes as failed), and that failure's kind. */
 type Tried<T> = Readonly<{ value?: T; failure: unknown; kind: FailureKind | null; threw: boolean }>;
 
+/** The failure an answer that was not thrown carries, as an error the rule classes: its HTTP status, or its program's exit when that did not succeed. Null for an answer that names neither. PURE. */
+function answerFailure<T>(service: OutsideService, value: T, options: CallOptions<T>): Error | null {
+  const status = options.statusOf?.(value);
+  if (status !== undefined) return Object.assign(new Error(`${SERVICE_NAMES[service]} answered ${status}`), { status });
+  const exit = options.exitOf?.(value);
+  if (exit === undefined || exit.status === 0) return null;
+  return Object.assign(new Error(`${SERVICE_NAMES[service]}: ${exit.stderr.trim().split("\n")[0] || `exit ${exit.status}`}`), { exit });
+}
+
 async function tryOnce<T>(service: OutsideService, ms: number, attempt: (signal: AbortSignal) => Promise<T>, options: CallOptions<T>): Promise<Tried<T>> {
   try {
     const value = await cut(service, ms, attempt);
-    const status = options.statusOf?.(value);
-    const kind = status === undefined ? null : failureKindOf({ status });
-    return kind === null || kind === "refused" ? { value, failure: null, kind: null, threw: false } : { value, failure: Object.assign(new Error(`${SERVICE_NAMES[service]} answered ${status}`), { status }), kind, threw: false };
+    const failure = answerFailure(service, value, options);
+    const kind = failure === null ? null : failureKindOf(failure);
+    return kind === null || kind === "refused" ? { value, failure: null, kind: null, threw: false } : { value, failure, kind, threw: false };
   } catch (err) {
     return { failure: err, kind: failureKindOf(err), threw: true };
   }
@@ -188,13 +244,13 @@ export function createOutsideClient(deps: OutsideClientDeps = {}): OutsideClient
     for (let tries = 0; ; tries += 1) {
       const refusal = breaker.refusal();
       if (refusal !== null) throw refusal;
-      const tried = await tryOnce(service, attemptMs[service], attempt, options);
+      const tried = await tryOnce(service, options.attemptMs ?? attemptMs[service], attempt, options);
       const failed = tried.failure !== null;
       breaker.note(tried.kind);
       // The first attempt is the call, counted once; each retry is only an observation (A11-345, A11-399).
       if (tries === 0) ledger.record(service, failed);
       else ledger.observe(service, failed);
-      const retry = tried.kind !== null && RETRIED.has(tried.kind) && tries < retryWaitsMs.length;
+      const retry = options.once !== true && tried.kind !== null && RETRIED.has(tried.kind) && tries < retryWaitsMs.length;
       options.onAttempt?.({ failed, failure: tried.failure, kind: tried.kind, threw: tried.threw, retryInMs: retry ? retryWaitsMs[tries] : null });
       if (!retry) {
         if (tried.threw) throw tried.failure;
@@ -205,6 +261,17 @@ export function createOutsideClient(deps: OutsideClientDeps = {}): OutsideClient
     }
   }
   return { call };
+}
+
+/**
+ * Counts a finished program into `ledger` when it is `gh`, by the one rule: a failure is an answer {@link programKindOf} classes as a kind another try could get past (it could not start, was cut, or printed
+ * that the network or GitHub failed it), and a refusal (`gh pr checks` while checks are pending, a 404) is GitHub answering. Any other program is not a call to GitHub. A `gh` call the client made is counted by
+ * the client, once, and not here (`ExecOptions.countedByCaller`).
+ */
+export function countProgram(file: string, answer: ProgramExit, ledger: CallLedger = callOutcomes): void {
+  if (basename(file) !== "gh") return;
+  const kind = programKindOf(answer);
+  ledger.record("github", kind !== null && RETRIED.has(kind));
 }
 
 /** This thread's client, which counts into this thread's ledger: one breaker per service for the whole thread. */

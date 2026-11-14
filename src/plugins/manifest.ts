@@ -70,9 +70,11 @@ export type ExecResult = Readonly<{ status: number | null; stdout: string; stder
  * What running a program may be asked: `inherit` gives it this process's terminal, `timeoutMs` bounds it, `env` is laid over this process's environment for that one run, and `withoutEnv` names the
  * variables taken OFF it first (the git variables a hook sets, which would aim a program started from a worktree at the wrong repository).
  * `killSignal` is what a program that runs past `timeoutMs` is stopped with (SIGTERM unless a plugin asks for SIGKILL, for a program that has hung), and `maxBuffer` the most it may print.
- * `cwd` is the directory it runs in, and `input` the text written to its standard input (A11-160: a comment body that must not travel in an argument list).
+ * `cwd` is the directory it runs in, and `input` the text written to its standard input (A11-160: a comment body that must not travel in an argument list). `countedByCaller` says the run is an attempt of a call
+ * the board's outside client ({@link PluginDeps.outside}) makes and counts once, so core's `exec` does not count it in the call figure again (A11-436).
  */
-export type ExecOptions = Readonly<{ inherit?: boolean; timeoutMs?: number; env?: Readonly<Record<string, string>>; withoutEnv?: readonly string[]; killSignal?: "SIGKILL"; maxBuffer?: number; cwd?: string; input?: string }>;
+export type ExecOptions = Readonly<{ inherit?: boolean; timeoutMs?: number; env?: Readonly<Record<string, string>>; withoutEnv?: readonly string[]; killSignal?: "SIGKILL"; maxBuffer?: number; cwd?: string; input?: string;
+  countedByCaller?: boolean }>;
 
 /**
  * How a reviewer judges a pull request, as the gate's modules decide it: the `--json` fields it reads by, whether the author is the org's own, and whether the checks settled green.
@@ -291,8 +293,8 @@ export type PluginDeps = Readonly<{
   freshFetch?: typeof fetch;
   /**
    * The board's one client for outside calls (A11-436), bound to the plugin's service: it runs `attempt` with a signal cut at the service's time, tries it again when the one rule (`failureKindOf`) says another
-   * try can get past the failure, refuses at once while the service's breaker is open, and counts the call once in the board's call figure. The loader gives it to a tracker, whose calls are the `linear` figure.
-   * A plugin with none makes each call once.
+   * try can get past the failure, refuses at once while the service's breaker is open, and counts the call once in the board's call figure. The loader gives it to a tracker, whose calls are the `linear` figure, and to a code host, whose
+   * `gh` calls are the `github` figure. A plugin with none makes each call once.
    */
   outside?: ServiceCall;
   /** True in the board's own process only (A11-359): a tracker plugin keeps the rate of its failed calls in the state folder for doctor, which a short-lived process (`pr:open` in a worker's pane) must not overwrite with its own few calls. */

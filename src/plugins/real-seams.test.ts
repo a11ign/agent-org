@@ -9,13 +9,14 @@ import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { RUN_ROOT_ENV } from "../private-tmp.ts";
+import { callOutcomes } from "../ticket-mode/call-outcomes.ts";
 import { realExec, realExecAsync, refuseUnderTests, TAILSCALE_OPT_IN_ENV, TAILSCALE_UNDER_TESTS } from "./real-seams.ts";
 
-/** A directory holding a `tailscale` and an `other` that append their arguments to `calls.log`, and the env that puts it first on PATH. */
+/** A directory holding a `tailscale`, an `other` and a `gh` that append their arguments to `calls.log`, and the env that puts it first on PATH. */
 function standIn() {
   const dir = mkdtempSync(join(tmpdir(), "real-seams-"));
   const log = join(dir, "calls.log");
-  for (const name of ["tailscale", "other"]) {
+  for (const name of ["tailscale", "other", "gh"]) {
     writeFileSync(join(dir, name), `#!/bin/sh\necho "${name} $*" >> "${log}"\n`);
     chmodSync(join(dir, name), 0o755);
   }
@@ -71,4 +72,21 @@ test("A11-279: refuseUnderTests reads the program's base name, the run root and 
   assert.equal(refuseUnderTests("tailscale", { A11Y_PRIVATE_TMP_BASE: "/x" }), null, "a base alone is any shell's, where doctor must still read the real serves");
   assert.equal(refuseUnderTests("tailscale", { [RUN_ROOT_ENV]: "" }), null);
   assert.equal(refuseUnderTests("tailscaled", run), null);
+});
+
+test("A11-436: a gh run counts in the board's github figure, but not a run the outside client made, which the client counts once itself", async () => {
+  const shim = standIn();
+  try {
+    const calls = () => callOutcomes.figures().github.calls;
+    const before = calls();
+    realExec("gh", ["api", "user"], { env: shim.env, countedByCaller: true });
+    await realExecAsync("gh", ["api", "user"], { env: shim.env, countedByCaller: true });
+    assert.equal(calls(), before, "an attempt of the client's call is not counted again");
+    realExec("gh", ["api", "user"], { env: shim.env });
+    await realExecAsync("gh", ["api", "user"], { env: shim.env });
+    assert.equal(calls(), before + 2);
+    assert.deepEqual(shim.calls(), Array(4).fill("gh api user"), "the stand-in gh ran each time");
+  } finally {
+    shim.done();
+  }
 });
