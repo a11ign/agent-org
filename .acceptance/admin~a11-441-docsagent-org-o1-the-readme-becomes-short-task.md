@@ -6,7 +6,7 @@ pnpm exec rstest run --config scripts/rstest/rstest.config.ts src/ticket-mode/re
 test "$(wc -l < README.md)" -lt 150
 ```
 
-Fails on the base: with both test files copied onto `4afb7952c`, 2 of 3 tests fail: `readme-keys.test.ts` cannot open `docs/guide/configuration.md`, and `readme-pages.test.ts` says `README.md is 836 lines`.
+Fails on the base: with both test files copied onto `4afb7952c`, `readme-keys.test.ts` cannot open `docs/guide/configuration.md`, and `readme-pages.test.ts` says `README.md is 836 lines` and cannot list `docs/guide`.
 
 Mutation: delete the `tickets.max` row from `docs/guide/configuration.md`, and the first `readme-keys` test names `docs/guide/configuration.md: tickets.max has no row in the key table`. Point a README row at `docs/guide/instal.md`, and `readme-pages` names both the missing task page and the broken link.
 

@@ -11,6 +11,11 @@ const ROOT = fileURLToPath(new URL("../../", import.meta.url));
 const GUIDE = "docs/guide";
 const README_MAX_LINES = 150;
 const TASK_PAGES = ["install", "onboard", "services", "ticket-mode", "plugins", "troubleshooting"].map((name) => `${GUIDE}/${name}.md`);
+/** Every guide page, spelled out: check:changed selects a test that names a changed file's path, and selects none for a docs/ file a test only lists (scripts/rstest/select-tests.ts). */
+const GUIDE_PAGES = [
+  "docs/guide/install.md", "docs/guide/onboard.md", "docs/guide/services.md", "docs/guide/ticket-mode.md", "docs/guide/configuration.md",
+  "docs/guide/plugins.md", "docs/guide/other-machines.md", "docs/guide/troubleshooting.md", "docs/guide/development.md",
+];
 
 const read = (path: string): string => readFileSync(join(ROOT, path), "utf8");
 
@@ -27,21 +32,23 @@ function brokenLinks(file: string, markdown: string, exists: (path: string) => b
     .map((target) => `${file}: ${target}`);
 }
 
-const shippedPages = (): string[] => [
-  "README.md",
-  ...readdirSync(join(ROOT, GUIDE)).filter((name) => name.endsWith(".md")).map((name) => `${GUIDE}/${name}`),
-];
+const guidePagesOnDisk = (): string[] => readdirSync(join(ROOT, GUIDE)).filter((name) => name.endsWith(".md")).map((name) => `${GUIDE}/${name}`).sort();
 
 test(`the README is under ${README_MAX_LINES} lines and links to a page for each task`, () => {
   const readme = read("README.md");
-  assert.ok(readme.split("\n").length < README_MAX_LINES, `README.md is ${readme.split("\n").length} lines`);
+  const lines = readme.split("\n").length;
+  assert.ok(lines < README_MAX_LINES, `README.md is ${lines} lines`);
   const linked = new Set(relativeLinkTargets(readme));
   assert.deepEqual(TASK_PAGES.filter((page) => !linked.has(page)), [], "a task page the README does not link to");
 });
 
+test("the list of guide pages is the folder's pages, so a new page is named and its links are checked", () => {
+  assert.deepEqual(guidePagesOnDisk(), [...GUIDE_PAGES].sort());
+});
+
 test("every relative link in the README and the guide pages names a file that exists", () => {
   const exists = (path: string): boolean => existsSync(join(ROOT, path));
-  assert.deepEqual(shippedPages().flatMap((file) => brokenLinks(file, read(file), exists)), []);
+  assert.deepEqual(["README.md", ...GUIDE_PAGES].flatMap((file) => brokenLinks(file, read(file), exists)), []);
 });
 
 test("a link is resolved from the folder of the page it is on, and a web or in-page link is not a file", () => {
