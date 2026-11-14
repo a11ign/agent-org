@@ -5,6 +5,7 @@ import { settingsSectionHref } from "../shell/routes.ts";
 import { OptionsIcon } from "./icons.tsx";
 import type { QueueOptions } from "./tickets-model.ts";
 import type { BatchState } from "./use-queue-state.ts";
+import type { SuggestionState } from "./use-suggestion.ts";
 import { useDismiss } from "./use-dismiss.ts";
 
 type PopoverProps = Readonly<{ config: ConfigView; options: QueueOptions; batch: BatchState; close: () => void; anchor: RefObject<HTMLElement | null>; cog: RefObject<HTMLElement | null> }>;
@@ -58,15 +59,32 @@ type BarProps = Readonly<{
   busy: boolean;
   /** True while the instance cannot be reached: nothing can be queued. */
   paused: boolean;
+  /** The model and effort past runs of the selected tickets' kind suggest, with its reason and sample size (A11-435). It only advises: Queue sends the batch's own choice. */
+  suggestion: SuggestionState;
   onClear: () => void;
   onQueue: () => void;
 }>;
 
+/** The suggestion's words: the model and effort with the first-pass rate, sample size and kind they were read from; the outcome log's error when it could not be read; or null. */
+function suggestionText({ suggestion, refusal }: SuggestionState): string | null {
+  if (suggestion !== null) return `Suggested: ${suggestion.model}/${suggestion.effort} · ${suggestion.reason}`;
+  return refusal === null ? null : `No suggestion: ${refusal}`;
+}
+
 /**
- * The bar that shows while tickets are selected: how many, Clear, the Custom pill while the batch differs from the default, the Options cog that opens the popover, and Queue. It sticks
+ * The suggestion's line in the spacer's place, or the spacer when there is none. It is one line the bar shrinks from no width, so it never wraps the bar to a second row at phone width:
+ * the rate and n come first, and the whole line is its title.
+ */
+function SuggestionLine(state: SuggestionState) {
+  const text = suggestionText(state);
+  return text === null ? <div className="queue-bar-spacer" /> : <span className="queue-bar-suggestion" title={text}>{text}</span>;
+}
+
+/**
+ * The bar that shows while tickets are selected: how many, Clear, the suggested model and effort when past runs give one, the Custom pill while the batch differs from the default, the Options cog that opens the popover, and Queue. It sticks
  * to the bottom of the page.
  */
-export function QueueBar({ config, count, options, batch, busy, paused, onClear, onQueue }: BarProps) {
+export function QueueBar({ config, count, options, batch, busy, paused, suggestion, onClear, onQueue }: BarProps) {
   const [open, setOpen] = useState(false);
   const anchor = useRef<HTMLDivElement>(null);
   const cog = useRef<HTMLButtonElement>(null);
@@ -75,7 +93,7 @@ export function QueueBar({ config, count, options, batch, busy, paused, onClear,
     <div role="region" aria-label="Queue selected tickets" className="queue-bar">
       <span className="queue-bar-count">{count} selected</span>
       <button type="button" className="ghost ghost-quiet" onClick={onClear}>Clear</button>
-      <div className="queue-bar-spacer" />
+      <SuggestionLine {...suggestion} />
       {options.custom ? <span className="pill-tag pill-tag-warn">Custom · {options.customLabel}</span> : null}
       <div className="run-options-anchor" ref={anchor}>
         <button ref={cog} type="button" className="ghost" aria-label="Run options" aria-expanded={open} aria-haspopup="dialog" onClick={() => setOpen(!open)}>

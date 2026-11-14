@@ -21,6 +21,7 @@
 import { DEFAULT_TIMEOUT_SECONDS, MAX_TIMEOUT_SECONDS, type Preflight } from "./preflight.ts";
 import { defaultBinDir } from "./worker-files.ts";
 import { DEFAULT_CI_BUDGET_MINUTES } from "./ci-spend/budget.ts";
+import { pricesOf } from "./outcomes/prices-config.ts";
 import { isActive, PROVIDER_BLOCKS, PUBLISHER_SHAPE, resolveProviders, type BlockReport, type Providers, type Setting } from "./providers.ts";
 import type { Catalog } from "../plugins/manifest.ts";
 import { defaultCatalog, isTrackerConnector, pluginNamed } from "../plugins/registry.ts";
@@ -105,6 +106,11 @@ export type TicketSettings = Readonly<{
    */
   fixRedMain?: boolean;
   /**
+   * Whether the board runs the daily ticket-mode retro, which writes each repository's lessons from its recent runs (A11-432, `retro/retro-job.ts`). False by default: the feature turns on only once
+   * the offline eval shows no drop. Optional, so a settings object made by hand (a test's) leaves it off.
+   */
+  lessons?: boolean;
+  /**
    * Whether this machine can capture the board for a worker (`ticket:capture`): both Chromium builds start, so the worker brief asks for a capture of a page a
    * change alters, and the pull request shows it. False by default: a worker is then not told to capture. Onboard sets it when both builds start.
    */
@@ -134,6 +140,8 @@ export type TicketSettings = Readonly<{
    * should have woken it by then. Marking it ends nothing. 30 by default.
    */
   stallMinutes: number;
+  /** How many decided past runs of one model and effort, of a kind, the queue footer needs before it suggests them (A11-435, `suggest-model.ts`). */
+  suggestMinSample: number;
   /**
    * The weighted CI minutes one ticket's pushes may run before the board warns its worker, and, at twice that, holds the run (A11-261); 0 is none. {@link DEFAULT_CI_BUDGET_MINUTES} by default. The figures show whatever it is.
    */
@@ -433,6 +441,13 @@ function fixRedMainOf(value: unknown): boolean {
   return value;
 }
 
+/** `tickets.lessons`: true for the board to run the daily retro and write each repository's lessons (A11-432). Absent is false. Any other value is refused by name. */
+function lessonsOf(value: unknown): boolean {
+  if (value === undefined) return false;
+  if (typeof value !== "boolean") throw new TicketSettingsRefusal("tickets.lessons", `must be true or false, not ${JSON.stringify(value)}`);
+  return value;
+}
+
 /** `tickets.capture`: true when this machine can capture the board for a worker. Absent is false. Any other value is refused by name. */
 function captureOf(value: unknown): boolean {
   if (value === undefined) return false;
@@ -549,11 +564,31 @@ function instanceOf(value: unknown, machine: string): string {
   return value;
 }
 
+/** The whole-number limits on a worker's run, in the order they are checked: its idle time, the runs a suggestion needs (A11-435), its CI budget and how long an update may wait for it. */
+function workerLimitsOf(tickets: Readonly<Record<string, unknown>>): Pick<TicketSettings, "stallMinutes" | "suggestMinSample" | "ciBudgetMinutes" | "updateMaxDeferHours"> {
+  return {
+    stallMinutes: positiveInteger(tickets.stallMinutes, "tickets.stallMinutes", 30),
+    suggestMinSample: positiveInteger(tickets.suggestMinSample, "tickets.suggestMinSample", 20),
+    ciBudgetMinutes: nonNegativeInteger(tickets.ciBudgetMinutes, "tickets.ciBudgetMinutes", DEFAULT_CI_BUDGET_MINUTES),
+    updateMaxDeferHours: positiveInteger(tickets.updateMaxDeferHours, "tickets.updateMaxDeferHours", 2),
+  };
+}
+
 /**
  * The settings, from the host file's parsed JSON. PURE: the caller reads the file.
  * @param home the user's home directory, for the default state directory
  * @param machine the machine's host name, which `tickets.instance` defaults to
  */
+/** The instance's loopback port and the page's, from the exposure block. REFUSES naming the field when either is not a port, or they are equal. */
+function portsOf(exposure: BlockReport): Readonly<{ port: number; uiPort: number }> {
+  const port = settingOf(exposure, "port");
+  const uiPort = settingOf(exposure, "uiPort");
+  const portNumber = positiveInteger(port.value, port.at, 4747);
+  const uiPortNumber = positiveInteger(uiPort.value, uiPort.at, 4748);
+  if (uiPortNumber === portNumber) throw new TicketSettingsRefusal(uiPort.at, `must differ from ${port.at}, which is ${portNumber} too`);
+  return { port: portNumber, uiPort: uiPortNumber };
+}
+
 export function parseTicketSettings(host: unknown, home: string = homedir(), machine: string = hostname(), catalog: Catalog = defaultCatalog()): TicketSettings {
   if (!isObject(host)) throw new TicketSettingsRefusal("(root)", "must be a JSON object");
   const clones = host.clones;
@@ -571,11 +606,9 @@ export function parseTicketSettings(host: unknown, home: string = homedir(), mac
   const providers = resolveProviders(host, catalog);
   refuseRelativeSecretPaths(providers, catalog);
   const { tracker, codeHost, publish, reviewer, exposure } = providers.blocks;
-  const port = settingOf(exposure, "port");
-  const uiPort = settingOf(exposure, "uiPort");
-  const portNumber = positiveInteger(port.value, port.at, 4747);
-  const uiPortNumber = positiveInteger(uiPort.value, uiPort.at, 4748);
-  if (uiPortNumber === portNumber) throw new TicketSettingsRefusal(uiPort.at, `must differ from ${port.at}, which is ${portNumber} too`);
+  const { port: portNumber, uiPort: uiPortNumber } = portsOf(exposure);
+  // A wrong price table refuses the start, naming its field. The table is not kept: `/api/outcomes` reads the host file again on each request, so a change is in force at the next read (A11-430).
+  pricesOf(tickets.prices);
   const stack = settingOf(codeHost, "stack");
   if (stack.value !== undefined && typeof stack.value !== "boolean") throw new TicketSettingsRefusal(stack.at, `must be true or false, not ${JSON.stringify(stack.value)}`);
   const trackerConnectors = settingOf(tracker, "connectors");
@@ -612,15 +645,14 @@ export function parseTicketSettings(host: unknown, home: string = homedir(), mac
     drafts: draftsOf(tickets.drafts),
     designTools: designToolsOf(tickets.designTools),
     fixRedMain: fixRedMainOf(tickets.fixRedMain),
+    lessons: lessonsOf(tickets.lessons),
     capture: captureOf(tickets.capture),
     prReview: prReviewOf(tickets.prReview),
     reviewer: isActive(reviewer) ? reviewer.provider : null,
     reviewerRequired: reviewerRequiredOf(reviewer),
     publishWhen: publishWhenOf(publish),
     pick: pickOf(tickets.pick),
-    stallMinutes: positiveInteger(tickets.stallMinutes, "tickets.stallMinutes", 30),
-    ciBudgetMinutes: nonNegativeInteger(tickets.ciBudgetMinutes, "tickets.ciBudgetMinutes", DEFAULT_CI_BUDGET_MINUTES),
-    updateMaxDeferHours: positiveInteger(tickets.updateMaxDeferHours, "tickets.updateMaxDeferHours", 2),
+    ...workerLimitsOf(tickets),
     // Where the tailnet ports were read before they moved to the exposure plugin: a value no exposure could serve on is still refused after the fields before it.
     ...refuseUnservablePorts(settingOf(exposure, "tailnetPorts")),
     stackRequired: stack.value ?? true,

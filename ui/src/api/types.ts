@@ -14,11 +14,12 @@ export type { Change, EditFile, Preview as SettingsPreview } from "../../../src/
 /** What a Settings save and a restore answer, as the functions that make them return it. */
 export type SettingsSaved = Awaited<ReturnType<typeof saveEdit>>;
 export type SettingsRestored = Awaited<ReturnType<typeof restoreBackup>>;
-export type { PluginsAnswer } from "../../../src/ticket-mode/plugins-api.ts";
+export type { PluginsAnswer, SecretDone } from "../../../src/ticket-mode/plugins-api.ts";
 export type { ActionDone as PluginActionDone, ActionRequest as PluginActionRequest } from "../../../src/plugins/page-actions.ts";
 export type { PlannedStep } from "../../../src/ticket-mode/plan-step-sections.ts";
 export type { RunWorker } from "../../../src/ticket-mode/queue/queue-run-detail.ts";
 export type { RunEvent, RunEventKind } from "../../../src/ticket-mode/queue/run-log.ts";
 export type { DayView, InterventionsView } from "../../../src/ticket-mode/queue/interventions.ts";
 export type { FlakesView, FlakyTest } from "../../../src/ticket-mode/flakes.ts";
+export type { Suggestion, SuggestionView } from "../../../src/ticket-mode/suggest-model.ts";
 export type { TimelineEvent } from "../../../src/ticket-mode/board-view/run-timeline.ts";

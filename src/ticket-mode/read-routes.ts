@@ -21,11 +21,13 @@ import { queueEntryView, queueView, shownWriter, type QueueView } from "./queue-
 export type { QueueEntryView, QueueListEntry, QueueView, RunDetailEntry } from "./queue-view.ts";
 import { interventionsView } from "./queue/interventions.ts";
 import { flakesPath, flakesViewOf } from "./flakes.ts";
+import { outcomesAnswer } from "./outcomes/route.ts";
 import { type Queue, type RunChoice, type WriterRun, writerStatus } from "./queue/queue-entries-and-outcomes.ts";
 import { isTicketWriter, type TicketWriterRun } from "./queue/writer-modes.ts";
 import { EFFORTS, MODELS, readSettingsView } from "./settings-read.ts";
 import { hostFilePath, type TicketSettings } from "./settings.ts";
 import type { Assignee, People, ScopePage, Ticket, TicketSource, TrackerProject } from "./source.ts";
+import { suggestionView } from "./suggest-model.ts";
 import { type TerminalRun, terminalRunOf } from "./terminal-pair.ts";
 import { PRIORITIES } from "./writer.ts";
 
@@ -318,6 +320,15 @@ export async function readRoute(board: ReadBoard, method: string, path: string, 
   if (method === "GET" && path === "/api/interventions") return [200, interventionsView(store.get(), (board.now ?? Date.now)())];
   // The tests that flaked three times in seven days (A11-300), read from the flake log in the board's state: the chairman's session files a ticket for each.
   if (method === "GET" && path === "/api/flakes") return [200, flakesViewOf(flakesPath(board.settings.stateDir), (board.now ?? Date.now)())];
+  // The outcome rollups of a window (A11-430), by model and effort, repository and label, priced at the host file's prices as they are now.
+  if (method === "GET" && path === "/api/outcomes") return outcomesAnswer({ stateDir: settings.stateDir, hostPath: paths.hostPath ?? hostFilePath(), now: (board.now ?? Date.now)() }, query);
+  if (method === "GET" && path === "/api/suggestion") {
+    // The model and effort the queue footer suggests for the selected tickets (A11-435), from the outcome log: advisory, so it changes nothing. A key the page has not listed has no kind, and no suggestion.
+    const keys = (query.get("keys") ?? "").split(",").filter((key) => key !== "");
+    const tickets = keys.map((key) => known.tickets.get(key));
+    const listed = tickets.every((ticket) => ticket !== undefined) ? tickets.filter((ticket) => ticket !== undefined) : [];
+    return [200, suggestionView({ stateDir: settings.stateDir, tickets: listed, clones: Object.keys(settings.clones), minSample: settings.suggestMinSample })];
+  }
   return undefined;
 }
 

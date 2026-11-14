@@ -3,7 +3,7 @@
 // EVERY RESPONSIVE SCREEN READS THIS ONE INSTANCE, so the tablet and phone captures of the pages can be set side by side. It is built from the page tickets' own stands: the Tickets board's tickets, the
 // Runs board's named runs with two that failed, the notifications board's finished requests, and the Settings and Plugins boards' files.
 import type { BrowserContext } from "playwright-core";
-import type { QueueView } from "../../src/api/types.ts";
+import type { QueueView, Suggestion } from "../../src/api/types.ts";
 import { HERE, PERSONAL, type InstanceAnswers, type Stand } from "../fixtures.ts";
 import { serveInstance } from "../instance-routes.ts";
 import { RUNS, writingStand, type Run } from "../new-ticket/new-ticket-stand.ts";
@@ -44,19 +44,20 @@ const NOTIFIED: readonly Run[] = [
 /** The SSH link to the instance: while `down`, its queue read cannot reach it, which the Unreachable page draws. */
 export type Link = { down: boolean };
 
-/** Options of the stand: workers `paused`, and an SSH `link` that a check can take down. */
-export type Options = Readonly<{ paused?: boolean; link?: Link }>;
+/** Options of the stand: workers `paused`, an SSH `link` that a check can take down, and the `suggestion` the queue bar is answered with (A11-435). */
+export type Options = Readonly<{ paused?: boolean; link?: Link; suggestion?: Suggestion }>;
 
 /**
  * The stand: `here`, the instance that writes and searches tickets, and `personal` beside it with nothing on it, so the instance chip has two connections to move between. With a `link`, the busy
  * instance is `personal` alone, an SSH connection whose queue read fails while the link is down.
  */
-export function responsiveStand({ paused = false, link }: Options = {}): Stand {
+export function responsiveStand({ paused = false, link, suggestion }: Options = {}): Stand {
   const board = writingStand({ runs: NOTIFIED, config: { search: true } as never });
   const personal = board.instances?.personal as InstanceAnswers;
   const tickets = personal.tickets ?? [];
   const queue = queueWith(RESPONSIVE_RUNS, { paused }) as QueueView;
-  const instance: InstanceAnswers = { ...personal, queue, search: (text) => tickets.filter(({ key, title }) => `${key} ${title}`.toLowerCase().includes(text.toLowerCase())).slice(0, 8) };
+  const instance: InstanceAnswers = { ...personal, queue, search: (text) => tickets.filter(({ key, title }) => `${key} ${title}`.toLowerCase().includes(text.toLowerCase())).slice(0, 8),
+    ...(suggestion === undefined ? {} : { suggestion: () => ({ suggestion }) }) };
   if (link !== undefined) {
     const dropping = Object.defineProperty({ ...instance }, "queueFails", { enumerable: true, get: () => (link.down ? { status: 502, error: "cannot reach personal over SSH: no answer within 30 seconds" } : undefined) });
     return { connections: [PERSONAL], instances: { personal: dropping } };
