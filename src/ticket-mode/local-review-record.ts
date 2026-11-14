@@ -73,10 +73,11 @@ export const short = (sha: string): string => sha.slice(0, 8);
 /**
  * THE CHECK (PURE), made only on a run the pool marked with the local review on: a create needs a review of this tree at `head`, its current commit. A convinced one passes, and a not convinced
  * one refuses: its blocking findings are fixed before the pull request opens. One with no verdict passes only when the body has a `## Local review` section that says the reviewer could not run.
- * @param {{ record: LocalReviewRecord | null, head: string | null, body: string, key: string }} facts
+ * The review must also be of the diff the create is checked against: a review against another base read another diff.
+ * @param {{ record: LocalReviewRecord | null, head: string | null, base: string, body: string, key: string }} facts
  * @returns {LocalReviewVerdict}
  */
-export function localReviewCheck({ record, head, body, key }: { record: LocalReviewRecord | null; head: string | null; body: string; key: string }): LocalReviewVerdict {
+export function localReviewCheck({ record, head, base, body, key }: { record: LocalReviewRecord | null; head: string | null; base: string; body: string; key: string }): LocalReviewVerdict {
   const how = "Run `agent-org ticket:review-local` in this worktree after your last commit (with `--base <branch>` for a stacked pull request), fix each blocking finding, commit, and run it again";
   if (head === null) return { refusal: `pr-open: REFUSED -- this tree's commit could not be read, so ${key}'s local review cannot be checked against it. Nothing was sent to GitHub (A11-440).`, note: null };
   if (record === null) {
@@ -86,6 +87,10 @@ export function localReviewCheck({ record, head, body, key }: { record: LocalRev
   if (record.head !== head) {
     return { refusal: `pr-open: REFUSED -- the last local review of this tree was at ${short(record.head)}, and it is now at ${short(head)}: a commit since then has not been reviewed. `
       + `${how}. Nothing was sent to GitHub (A11-440).`, note: null };
+  }
+  if (record.base !== base) {
+    return { refusal: `pr-open: REFUSED -- the local review at ${short(head)} read the diff against ${record.base}, and this pull request's diff is against ${base}. `
+      + `${how}, with the same \`--base\` you give pr:open. Nothing was sent to GitHub (A11-440).`, note: null };
   }
   if (record.verdict === "convinced") return { refusal: null, note: `LOCAL-REVIEW: convinced at ${short(head)}` };
   if (record.verdict === "not convinced") {

@@ -37,15 +37,17 @@ test("A11-440: tickets.localReview is off unless it is true, any other value is 
 });
 
 test("A11-440: pr:open's check refuses a create with no review or a review of an earlier commit, and passes a convinced one at this commit", () => {
-  const facts = { head: HEAD, body: "Closes A11-440\n", key: KEY };
+  const facts = { head: HEAD, base: BASE, body: "Closes A11-440\n", key: KEY };
   assert.match(localReviewCheck({ ...facts, record: null }).refusal ?? "", /no review of this tree ran for A11-440\. Run `agent-org ticket:review-local`.*Nothing was sent to GitHub/);
   assert.match(localReviewCheck({ ...facts, record: record({ head: LATER }) }).refusal ?? "", /last local review of this tree was at deadbeef, and it is now at c0ffee12/);
   assert.deepEqual(localReviewCheck({ ...facts, record: record() }), { refusal: null, note: "LOCAL-REVIEW: convinced at c0ffee12" });
   assert.match(localReviewCheck({ ...facts, record: record(), head: null }).refusal ?? "", /commit could not be read/);
+  assert.match(localReviewCheck({ ...facts, record: record({ base: "origin/feature" }) }).refusal ?? "", /read the diff against origin\/feature, and this pull request's diff is against origin\/main/,
+    "a review against another base read another diff");
 });
 
 test("A11-440: a review that was not convinced refuses the create whatever the body says; one with no verdict passes only when the body says so under ## Local review", () => {
-  const facts = { head: HEAD, key: KEY };
+  const facts = { head: HEAD, base: BASE, key: KEY };
   const blocked = record({ verdict: "not convinced" });
   assert.match(localReviewCheck({ ...facts, record: blocked, body: "Closes A11-440\n" }).refusal ?? "", /was not convinced \(its findings: \/r\.md\)\. Fix each blocking finding/);
   assert.match(localReviewCheck({ ...facts, record: blocked, body: "Closes A11-440\n\n## Local review\n\nFinding 2 is wrong: the test exists.\n" }).refusal ?? "", /was not convinced/,
@@ -177,7 +179,7 @@ test("A11-440: the record keeps each worktree's review, so a run that changes tw
     assert.deepEqual(Object.keys(readLocalReviews(path)), ["/a", "/b"]);
     writeFileSync(path, JSON.stringify({ "/a": record(), "/tree": {}, "/odd": { ...record(), verdict: "maybe" }, "/bare": "x" }));
     assert.deepEqual(Object.keys(readLocalReviews(path)), ["/a"], "a record of another shape is no review, and the check asks for one rather than crashing on it");
-    assert.match(localReviewCheck({ record: readLocalReviews(path)["/tree"] ?? null, head: HEAD, body: "", key: KEY }).refusal ?? "", /no review of this tree ran/);
+    assert.match(localReviewCheck({ record: readLocalReviews(path)["/tree"] ?? null, head: HEAD, base: BASE, body: "", key: KEY }).refusal ?? "", /no review of this tree ran/);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

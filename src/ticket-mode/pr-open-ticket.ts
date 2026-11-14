@@ -183,7 +183,7 @@ export function ticketChecks(mode: string, rest: string[], body: string, ticket:
   const draft = ticketDraftRefusal(mode, rest, ticket);
   if (draft !== null) return { refusal: draft, notes: [] };
   const notes: string[] = [];
-  const reviewed = localReviewStep(mode, body, ticket, git);
+  const reviewed = localReviewStep(mode, body, ticket, { git, base });
   if (reviewed.note !== null) notes.push(reviewed.note);
   if (reviewed.refusal !== null) return { refusal: reviewed.refusal, notes };
   const region = regionCheck(body, ticket, { git, base, rootFiles });
@@ -215,12 +215,12 @@ function ownerRefusal(ticket: TicketContext, git: (args: string[]) => string): s
 /**
  * THE REVIEW OF THE LOCAL DIFF (A11-440), on a run the pool marked with `tickets.localReview` on: a create needs a review of this tree at its current commit (`localReviewCheck`). Only
  * `create` is asked: an `edit` opens nothing, and the board's own review reads each new head.
- * @param {string} mode @param {string} body @param {TicketContext} ticket @param {(args: string[]) => string} git
+ * @param {string} mode @param {string} body @param {TicketContext} ticket @param {{ git: (args: string[]) => string, base: string }} deps `base` is the `origin/<base>` the create's diff is read against
  * @returns {StepVerdict}
  */
-function localReviewStep(mode: string, body: string, ticket: TicketContext, git: (args: string[]) => string): StepVerdict {
+function localReviewStep(mode: string, body: string, ticket: TicketContext, { git, base }: { git: (args: string[]) => string; base: string }): StepVerdict {
   if (mode !== "create" || ticket.localReview === undefined) return { refusal: null, note: null };
-  return localReviewCheck({ record: ticket.localReview.record, head: gitOrNull(git, ["rev-parse", "HEAD"]), body, key: ticket.key });
+  return localReviewCheck({ record: ticket.localReview.record, head: gitOrNull(git, ["rev-parse", "HEAD"]), base, body, key: ticket.key });
 }
 
 /**

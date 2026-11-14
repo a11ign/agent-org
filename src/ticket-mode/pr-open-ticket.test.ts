@@ -496,6 +496,9 @@ test("A11-440: with the local review on, a create with no review, or a review of
   assert.equal(none.code, EXIT_NOTHING_SENT);
   assert.deepEqual(none.sent, [], "nothing reached GitHub");
   assert.match(none.refused, /no review of this tree ran for A11-74\. Run `agent-org ticket:review-local`/);
+  const otherBase = open(["--body", BODY, "--base", "admin/a11-1-lower"], { ticket: ticket({ localReview: localReviewAt("abc1234") }) });
+  assert.equal(otherBase.code, EXIT_NOTHING_SENT, "a review of the diff against main does not cover a create stacked on another branch");
+  assert.match(otherBase.refused, /read the diff against origin\/main, and this pull request's diff is against origin\/admin\/a11-1-lower/);
   const stale = open(["--body", BODY], { ticket: ticket({ localReview: localReviewAt("0123456789") }) });
   assert.equal(stale.code, EXIT_NOTHING_SENT);
   assert.match(stale.refused, /last local review of this tree was at 01234567, and it is now at abc1234/);

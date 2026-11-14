@@ -9,6 +9,7 @@
 // The diff is `<base>...HEAD`, three dots, as the board's reviewer reads a pull request: a stacked pull request names its base with `--base`, so the work below it is not reviewed again.
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { baseFrom, ORIGIN_HEAD_ARGS } from "../pr-open.ts";
 import { BRIEF_FILE } from "./worker-files.ts";
 import { LOCAL_REVIEW_RECORD_FILE, type LocalVerdict, short, writeLocalReview } from "./local-review-record.ts";
 
@@ -61,18 +62,16 @@ const firstLine = (error: unknown): string => (error instanceof Error ? error.me
 const codeOf = (verdict: LocalVerdict): 0 | 1 | 2 => (verdict === "convinced" ? 0 : verdict === "not convinced" ? 1 : 2);
 
 /**
- * The `origin/<branch>` the diff is read against, by `pr:open`'s rule (`diffBaseOf`): the branch `--base` names, else `origin/HEAD`, else `origin/main` for a clone that never set one.
- * `diffBaseOf` reads `git` synchronously, which ticket mode may not, so the rule is read here through the asynchronous `git`.
+ * The `origin/<branch>` the diff is read against, by `pr:open`'s own rule (`baseFrom`), so the review is of the diff `pr:open` checks. `diffBaseOf` reads `git` synchronously, which ticket mode
+ * may not, so `origin/HEAD` is read here through the asynchronous `git`.
  */
 export async function localBaseOf(git: LocalReviewDeps["git"], named: string | null): Promise<string> {
-  if (named !== null) return `origin/${named}`;
+  if (named !== null) return baseFrom(named, null);
   try {
-    const head = (await git(["symbolic-ref", "--short", "refs/remotes/origin/HEAD"])).trim();
-    if (/^origin\/[^\s]+$/.test(head)) return head;
+    return baseFrom(null, await git(ORIGIN_HEAD_ARGS));
   } catch {
-    // no `origin/HEAD` to read: `main`, as pr:open reads it
+    return baseFrom(null, null);  // no `origin/HEAD` to read: `main`, as pr:open reads it
   }
-  return "origin/main";
 }
 
 /** Why the tree cannot be reviewed as it is (uncommitted changes, or nothing to review), or null when it can. */
