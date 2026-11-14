@@ -7,8 +7,9 @@ import { tmpDir } from "../../src/lib/tmp-fixture.ts";
 import type { Ticket } from "../../src/plugins/contracts/tracker.ts";
 import { depsFor } from "../../src/plugins/loader.ts";
 import { fakePluginDeps } from "../../src/plugins/fakes/deps.ts";
-import { createCallLedger } from "../../src/ticket-mode/call-outcomes.ts";
-import { LINEAR_API, RETRY_WAITS_MS, completionOf, downloadName, linearSource, pickQuery, scopedQuery, pullState, uploadLinks } from "./linear.ts";
+import { createCallLedger, type CallLedger } from "../../src/ticket-mode/call-outcomes.ts";
+import { ATTEMPT_MS, RETRY_WAITS_MS, createOutsideClient } from "../../src/ticket-mode/outside-client.ts";
+import { LINEAR_API, completionOf, downloadName, linearSource, pickQuery, scopedQuery, pullState, uploadLinks } from "./linear.ts";
 
 const node = (identifier: string, extra: Record<string, unknown> = {}) => ({
   identifier, title: `Title ${identifier}`, description: null, url: `https://linear.app/x/issue/${identifier}`, branchName: identifier.toLowerCase(),
@@ -599,7 +600,7 @@ test("A11-173: comment() is refused when Linear matches no ticket by that key, o
   const none = linear([{ data: { issues: { nodes: [] } } }]);
   await assert.rejects(linearSource({ key: "k", fetch: none.fetch }).comment!("NBF-9", "c"), /Linear matched no ticket for NBF-9 \(filter: team key NBF, number 9, archived tickets included\)/);
   const refused = linear([{ data: { issues: { nodes: [{ id: "uuid-1" }] } } }, { data: { commentCreate: { success: false } } }]);
-  await assert.rejects(linearSource({ key: "k", fetch: refused.fetch }).comment!("NBF-1", "c"), /Linear did not post a comment on NBF-1/);
+  await assert.rejects(boardSource(refused.fetch).comment!("NBF-1", "c"), /Linear did not post a comment on NBF-1/);
 });
 
 test("A11-91: updateTicketText() writes only the title and description it is given, to the ticket's id", async () => {
@@ -617,7 +618,7 @@ test("A11-91: updateTicketText() is refused when Linear has no ticket by that ke
   const missing = linear([{ data: { issues: { nodes: [] } } }]);
   await assert.rejects(linearSource({ key: "k", fetch: missing.fetch }).updateTicketText!("NBF-1", { title: "t" }), /Linear matched no ticket for NBF-1 \(filter: team key NBF, number 1, archived tickets included\)/);
   const refused = linear([{ data: { issues: { nodes: [{ id: "uuid-1" }] } } }, { data: { issueUpdate: { success: false } } }]);
-  await assert.rejects(linearSource({ key: "k", fetch: refused.fetch }).updateTicketText!("NBF-1", { title: "t" }), /did not update the text of NBF-1/);
+  await assert.rejects(boardSource(refused.fetch).updateTicketText!("NBF-1", { title: "t" }), /did not update the text of NBF-1/);
 });
 
 test("A11-92: Linear's own pull request words are the keywords a source hands the brief and pr:open", () => {
@@ -813,10 +814,19 @@ const FOUND = { data: { issues: { nodes: [node("NBF-1")] } } };
 /** A `sleep` that waits for nothing and records how long it was asked to. */
 const sleeping = () => { const waits: number[] = []; return { waits, sleep: async (ms: number) => { waits.push(ms); } }; };
 
+type BoardSeams = Readonly<{ sleep?: (ms: number) => Promise<void>; ledger?: CallLedger; attemptMs?: number; stateDir?: string; log?: (line: string) => void; now?: () => number }>;
+
+/** The Linear source the board builds for `request`: the outside client the loader gives a tracker (A11-436), over its own ledger, with its waits and its attempt time as seams. */
+function boardSource(request: typeof globalThis.fetch, seams: BoardSeams = {}) {
+  const { sleep = sleeping().sleep, ledger = createCallLedger(() => 1_000), attemptMs, ...source } = seams;
+  const client = createOutsideClient({ ledger, sleep, ...(attemptMs === undefined ? {} : { attemptMs: { ...ATTEMPT_MS, linear: attemptMs } }) });
+  return linearSource({ key: "k", fetch: request, outside: depsFor("tracker", fakePluginDeps({ fetch: request }), client).outside, ...source });
+}
+
 test("A11-359: a call that fails with fetch failed is tried again on a new connection after a short wait, and the answer of the retry is the call's", async () => {
   const { fetch, calls } = dropping(1, staleSocket(), FOUND);
   const { waits, sleep } = sleeping();
-  assert.equal((await linearSource({ key: "k", fetch, sleep }).read("NBF-1"))?.title, "Title NBF-1");
+  assert.equal((await boardSource(fetch, { sleep }).read("NBF-1"))?.title, "Title NBF-1");
   assert.equal(calls.length, 2);
   assert.deepEqual(waits, [RETRY_WAITS_MS[0]]);
   assert.equal(calls[1].get("authorization"), "k", "the retry sends the key as the first call did");
@@ -825,11 +835,11 @@ test("A11-359: a call that fails with fetch failed is tried again on a new conne
 test("A11-359: a call is made up to three times more, each after a longer wait, and the last failure is the caller's", async () => {
   const third = dropping(3, staleSocket(), FOUND);
   const waited = sleeping();
-  assert.equal((await linearSource({ key: "k", fetch: third.fetch, sleep: waited.sleep }).read("NBF-1"))?.title, "Title NBF-1", "three failures and then an answer: the fourth call succeeds");
+  assert.equal((await boardSource(third.fetch, { sleep: waited.sleep }).read("NBF-1"))?.title, "Title NBF-1", "three failures and then an answer: the fourth call succeeds");
   assert.equal(third.calls.length, 4);
   assert.deepEqual(waited.waits, [200, 800, 2000], "the waits grow");
   const fourth = dropping(4, staleSocket(), FOUND);
-  await assert.rejects(linearSource({ key: "k", fetch: fourth.fetch, sleep: sleeping().sleep }).read("NBF-1"), /fetch failed/);
+  await assert.rejects(boardSource(fourth.fetch).read("NBF-1"), /fetch failed/);
   assert.equal(fourth.calls.length, 4, "never a fifth");
 });
 
@@ -842,7 +852,7 @@ test("A11-359: a call whose connection never answers is dropped after its time a
     void init;
     return new Response(JSON.stringify(FOUND), { status: 200 });
   }) as typeof globalThis.fetch;
-  const found = await linearSource({ key: "k", fetch, sleep: sleeping().sleep, attemptMs: 20 }).read("NBF-1");
+  const found = await boardSource(fetch, { attemptMs: 20 }).read("NBF-1");
   assert.equal(found?.title, "Title NBF-1");
   assert.equal(calls, 2);
 });
@@ -851,24 +861,26 @@ test("A11-359: Linear's 429 and 5xx answers are tried again, and a 4xx and an er
   for (const status of [429, 500, 502, 503]) {
     const answers = [new Response("busy", { status }), new Response(JSON.stringify(FOUND), { status: 200 })];
     const fetch = (async () => answers.shift()) as unknown as typeof globalThis.fetch;
-    assert.equal((await linearSource({ key: "k", fetch, sleep: sleeping().sleep }).read("NBF-1"))?.title, "Title NBF-1", `after a ${status}`);
+    assert.equal((await boardSource(fetch).read("NBF-1"))?.title, "Title NBF-1", `after a ${status}`);
     assert.equal(answers.length, 0);
   }
   let calls = 0;
   const unauthorised = (async () => { calls += 1; return new Response(JSON.stringify({ errors: [{ message: "Authentication required" }] }), { status: 401 }); }) as unknown as typeof globalThis.fetch;
-  await assert.rejects(linearSource({ key: "k", fetch: unauthorised, sleep: sleeping().sleep }).read("NBF-1"), /Authentication required/);
+  await assert.rejects(boardSource(unauthorised).read("NBF-1"), /Authentication required/);
   assert.equal(calls, 1);
   const stuck = (async () => { calls += 1; return new Response("down", { status: 503 }); }) as unknown as typeof globalThis.fetch;
-  await assert.rejects(linearSource({ key: "k", fetch: stuck, sleep: sleeping().sleep }).read("NBF-1"), /Linear answered 503/);
+  await assert.rejects(boardSource(stuck).read("NBF-1"), /Linear answered 503/);
   assert.equal(calls, 5, "a 503 that goes on is the caller's after four calls");
 });
 
 test("A11-345: an error that is not fetch failed is not sent again", async () => {
   const { fetch, calls } = dropping(1, new RangeError("bad"), FOUND);
-  await assert.rejects(linearSource({ key: "k", fetch }).read("NBF-1"), /bad/);
+  const dir = tmpDir("linear-calls-");
+  await assert.rejects(boardSource(fetch, { stateDir: dir }).read("NBF-1"), /bad/);
   assert.equal(calls.length, 1);
+  assert.equal(existsSync(join(dir, "linear-calls.json")), false, "an error of this process, before Linear was asked, is not an attempt doctor's rate counts");
   const refused = dropping(0, null, { errors: [{ message: "Authentication required" }] });
-  await assert.rejects(linearSource({ key: "k", fetch: refused.fetch }).read("NBF-1"), /Authentication required/);
+  await assert.rejects(boardSource(refused.fetch).read("NBF-1"), /Authentication required/);
   assert.equal(refused.calls.length, 1, "an answer from Linear, even a refusal, is not a dropped connection");
 });
 
@@ -884,7 +896,7 @@ test("A11-359: a mutation is tried again too: a comment whose connection dropped
     }
     return new Response(JSON.stringify({ data: { issues: { nodes: [{ id: "id-1" }] } } }), { status: 200 });
   }) as typeof globalThis.fetch;
-  await linearSource({ key: "k", fetch, sleep: sleeping().sleep }).comment!("NBF-1", "hello");
+  await boardSource(fetch).comment!("NBF-1", "hello");
   assert.equal(sent.filter((each) => each === "mutation").length, 2, "the mutation was sent again after it failed");
 });
 
@@ -893,7 +905,7 @@ test("A11-359: every attempt is counted, a failed one is logged with the rate, a
   const lines: string[] = [];
   const { fetch } = dropping(2, staleSocket(), FOUND);
   let clock = 0;
-  await linearSource({ key: "k", fetch, sleep: sleeping().sleep, stateDir: dir, log: (line) => lines.push(line), now: () => (clock += 2_000) }).read("NBF-1");
+  await boardSource(fetch, { stateDir: dir, log: (line) => lines.push(line), now: () => (clock += 2_000) }).read("NBF-1");
   assert.equal(lines.length, 2, "one line for each failed attempt");
   assert.match(lines[0], /^Linear: a call failed \(UND_ERR_SOCKET\), trying again on a new connection in 200 ms; 1 of 1 calls failed in the last hour \(100\.0%\)$/);
   assert.match(lines[1], /in 800 ms; 2 of 2 calls failed/);
@@ -901,29 +913,25 @@ test("A11-359: every attempt is counted, a failed one is logged with the rate, a
   assert.deepEqual([written.calls, written.failures], [2, 2], "a failure is written at once, so the file holds the two that failed and not the call that then succeeded");
 });
 
-test("A11-345: the first attempt goes through `fetch` and each retry through `retryFetch`", async () => {
-  const first = dropping(1, staleSocket(), FOUND);
-  const retried = dropping(0, null, FOUND);
-  await linearSource({ key: "k", fetch: first.fetch, retryFetch: retried.fetch, sleep: sleeping().sleep }).read("NBF-1");
-  assert.deepEqual([first.calls.length, retried.calls.length], [1, 1]);
-  const alone = dropping(1, staleSocket(), FOUND);
-  await linearSource({ key: "k", fetch: alone.fetch, sleep: sleeping().sleep }).read("NBF-1");
-  assert.equal(alone.calls.length, 2, "with no retryFetch the retry goes through fetch, as before");
+test("A11-436: a source made without the board's client makes each call once, as onboard's key check does", async () => {
+  const { fetch, calls } = dropping(1, staleSocket(), FOUND);
+  await assert.rejects(linearSource({ key: "k", fetch }).read("NBF-1"), /fetch failed/);
+  assert.equal(calls.length, 1);
 });
 
 test("A11-345: a call whose four attempts all fail while the host has no network is one failed call in the board's tracker figure, not four", async () => {
   const ledger = createCallLedger(() => 1_000);
   const down = (async () => { throw new TypeError("fetch failed", { cause: Object.assign(new Error("connect ETIMEDOUT"), { code: "ETIMEDOUT" }) }); }) as typeof globalThis.fetch;
   const up = (async () => new Response(JSON.stringify(FOUND), { status: 200 })) as typeof globalThis.fetch;
-  for (let call = 0; call < 170; call += 1) await countedSource(up, ledger).read("NBF-1");
-  await assert.rejects(countedSource(down, ledger).read("NBF-1"), /fetch failed/);
+  for (let call = 0; call < 170; call += 1) await boardSource(up, { ledger }).read("NBF-1");
+  await assert.rejects(boardSource(down, { ledger }).read("NBF-1"), /fetch failed/);
   assert.deepEqual(ledger.figures().linear, { calls: 171, failures: 1, failuresPer100: 0.6 }, "170 answered and one failed: under the 1% the reliability watch holds");
 });
 
 test("A11-345: a call that fails once and is answered on its retry is one failed call: the failure a retry covers still shows", async () => {
   const ledger = createCallLedger(() => 1_000);
   const flaky = dropping(1, staleSocket(), FOUND).fetch;
-  await countedSource(flaky, ledger).read("NBF-1");
+  await boardSource(flaky, { ledger }).read("NBF-1");
   assert.deepEqual(ledger.figures().linear, { calls: 1, failures: 1, failuresPer100: 100 });
 });
 
@@ -931,15 +939,9 @@ test("A11-345: a call answered with a 503 and then a 200 is one failed call too"
   const ledger = createCallLedger(() => 1_000);
   let answered = 0;
   const unwell = (async () => new Response(JSON.stringify(FOUND), { status: (answered += 1) === 1 ? 503 : 200 })) as typeof globalThis.fetch;
-  await countedSource(unwell, ledger).read("NBF-1");
+  await boardSource(unwell, { ledger }).read("NBF-1");
   assert.deepEqual(ledger.figures().linear, { calls: 1, failures: 1, failuresPer100: 100 });
 });
-
-/** The Linear source the board builds for `request`: the deps the loader gives a tracker, which count `fetch` into `ledger` and leave `retryFetch` uncounted. */
-function countedSource(request: typeof globalThis.fetch, ledger: ReturnType<typeof createCallLedger>) {
-  const deps = depsFor("tracker", fakePluginDeps({ fetch: request, freshFetch: request }), ledger);
-  return linearSource({ key: "k", fetch: deps.freshFetch, retryFetch: deps.retryFetch, sleep: sleeping().sleep });
-}
 
 test("A11-359: a plan's download is tried again as a query is, so a plan read in fill does not fail on one dead connection", async () => {
   const dir = tmpDir("linear-download-");
@@ -953,7 +955,7 @@ test("A11-359: a plan's download is tried again as a query is, so a plan read in
     return new Response("# plan", { status: 200, headers: { "content-type": "text/markdown" } });
   }) as typeof globalThis.fetch;
   const ticket = { key: "NBF-1", description: `see ${link}` } as Ticket;
-  const files = await linearSource({ key: "k", fetch, sleep: sleeping().sleep }).download!(ticket, dir);
+  const files = await boardSource(fetch).download!(ticket, dir);
   assert.equal(gets, 2);
   assert.deepEqual(files.map((file) => readFileSync(file, "utf8")), ["# plan"]);
 });
