@@ -36,6 +36,8 @@ test("a transcript that is missing, or has a line that is not JSON before its en
   assert.match("unreadable" in missing ? missing.unreadable : "", /is missing/);
   const broken = readTurns(transcript(["{\"usage\": nope", record("m1", 10, { input_tokens: 1, output_tokens: 1 })]));
   assert.match("unreadable" in broken ? broken.unreadable : "", /line 1 of its transcript .* is not JSON/);
+  const brokenWithoutUsage = readTurns(transcript(["not-json", record("m1", 10, { input_tokens: 1, output_tokens: 1 })]));
+  assert.match("unreadable" in brokenWithoutUsage ? brokenWithoutUsage.unreadable : "", /line 1 of its transcript .* is not JSON/, "a broken line that names no usage still makes the transcript unreadable");
 });
 
 test("a round counts only the turns written after the previous round ended", () => {
