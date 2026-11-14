@@ -322,7 +322,9 @@ Ticket mode is two services, both on `127.0.0.1`:
   carry on: the run keeps its terminal open for the tickets it handed back (parked), and each of their cards says "Planned together with A, B, C: answer in the batch's terminal"
   and links to that one terminal. The person answers there, and when the run writes `planned` again the tickets it still holds are settled the same way, the order read against
   every ticket the batch was planned with. The board records the order in the tracker as "blocks" relations, so a ticket that waits on another shows as Blocked until it
-  is done. An order that names a ticket outside the batch, a ticket waiting on itself or a cycle records no relation, and the board's log
+  is done. Every ticket of the batch with no unfinished blocker then starts in the same pass, as far as the free slots go, and the board opens
+  their runs side by side, so the third does not wait for the first two to settle (A11-442); a ticket whose plan claims a file another of them holds
+  still waits, or stacks, under the overlap rule. An order that names a ticket outside the batch, a ticket waiting on itself or a cycle records no relation, and the board's log
   says why. A run that ends any other way ends every ticket of the batch that way. Stop on any ticket stops the whole run, and Retry plans
   a ticket again on its own.
 - **Board.** Every run in one list, newest activity first, each with a status icon after GitHub's Actions runs, and a filter per status
