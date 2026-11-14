@@ -1,0 +1,12 @@
+The readiness score for tickets (A11-443, step 1 of 2), behind `tickets.readiness`, which is off by default. `src/ticket-mode/readiness.ts` scores a ticket with a headless `claude -p` on haiku (no tools, no MCP server, no session kept, at most $0.10 and 2 minutes a call, at most two calls at once), keeps the score in `<stateDir>/tickets/readiness.json` by the description's hash (`descriptionHash`), and answers `POST /api/readiness` from it: a ticket whose description has a score is answered without a call, one without is answered `pending` while its call runs in the background. `/api/config` says `readiness: true` while the key is on, and only then does the Tickets page ask. A score under 60 shows its reasons and "Improve with the writer", which opens the New ticket dialog filled in with the ticket, its score and its reasons.
+
+Acceptance:
+```bash
+npx rstest run --config scripts/rstest/rstest.config.ts src/ticket-mode/readiness.test.ts src/ticket-mode/settings.test.ts src/ticket-mode/remote-proxy.test.ts src/ticket-mode/retro/retro.test.ts src/ticket-mode/config-schema.test.ts
+npx rstest run --config scripts/rstest/rstest.config.ts src/ticket-mode/server.test.ts -t "A11-443"
+pnpm --dir ui exec rstest run --config rstest.config.ts src/tickets/tickets-readiness.test.tsx
+```
+
+Mutation: answer every ticket as if it had no kept score (drop `if (record?.hash === hash) return viewOf(record);`), and "a ticket whose description has not changed since it was scored ... the model is not asked again" fails, with two more. Start a call whether or not one is under way (drop the `asked.has` check), and "a ticket asked for again while its score is being made starts no second call" and "a changed description is scored again, once" fail. Keep an answer for an older description (drop the `latest.get(ticket.key) !== hash` return), and "an answer for an older description that ends after the newer one's is dropped" fails.
+
+Consumer-declaration: one new optional host file key, `tickets.readiness`, read only by `parseTicketSettings`; a host file without it reads as before, `/api/config` says `readiness: false`, and the page sends no readiness request. One new route, `POST /api/readiness`, passed on by the remote proxy. `claudeArgs` and `askClaude` in `retro/retro-job.ts` take an optional bounds argument whose default is the retro's own, so the retro's call is unchanged. New state file `<stateDir>/tickets/readiness.json`, written only by the readiness scorer.

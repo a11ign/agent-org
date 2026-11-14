@@ -18,6 +18,8 @@ import type { RunEvent } from "../queue/run-log.ts";
 import { RETRO_DAYS, retroEvidence, type RetroItem } from "./evidence.ts";
 import { type Lesson, lessonsDir, mergeLessons, type Proposal, readLessons, writeLessons } from "./lessons-store.ts";
 import { proposalsOf, replyOf, retroPrompt } from "./retro-prompt.ts";
+import { askHeadless, type ClaudeBounds, type HeadlessExec, headlessArgs } from "../headless-claude.ts";
+export { HEADLESS_ENV as RETRO_ENV } from "../headless-claude.ts";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -116,25 +118,13 @@ async function askFor(deps: RetroDeps, repo: string, lessons: readonly Lesson[],
   return proposals ?? [];
 }
 
-/** The most the retro's model run may spend, in dollars, and the turns it may take: one answer, with no tool to call, needs one. */
+/** The most the retro's model run may spend, in dollars. */
 const RETRO_MAX_BUDGET_USD = 2;
-const RETRO_MAX_TURNS = 2;
 
-/**
- * The headless `claude` the board asks, its prompt read from stdin: no tool, no MCP server (nor the account's connectors, {@link RETRO_ENV}), no session kept, no permission prompt, a bound on its
- * turns and its spend, and its result as JSON.
- */
-export function claudeArgs(): string[] {
-  return ["-p", "--output-format", "json", "--model", RETRO_MODEL, "--tools", "", "--strict-mcp-config", "--no-session-persistence", "--permission-prompts", "none",
-    "--max-turns", String(RETRO_MAX_TURNS), "--max-budget-usd", String(RETRO_MAX_BUDGET_USD)];
-}
+const RETRO_BOUNDS: ClaudeBounds = { model: RETRO_MODEL, maxBudgetUsd: RETRO_MAX_BUDGET_USD, timeoutMs: RETRO_TIMEOUT_MS };
 
-/** The env the retro's model run adds: the account's claude.ai connectors off, as the eval's worker has them (`run-eval/sandbox.ts`). */
-export const RETRO_ENV: Readonly<Record<string, string>> = { ENABLE_CLAUDEAI_MCP_SERVERS: "false" };
+/** The headless `claude` the retro asks (`headless-claude.ts`), within the retro's bounds. */
+export const claudeArgs = (): string[] => headlessArgs(RETRO_BOUNDS);
 
-type Exec = (file: string, args: readonly string[], options: { timeoutMs: number; cwd: string; input: string; env: Readonly<Record<string, string>> }) => Promise<ExecResult>;
-
-/** Ask `claude` through `exec` (the board passes `realExecAsync`), in `stateDir`, the prompt on stdin, cut at {@link RETRO_TIMEOUT_MS}. */
-export function askClaude(exec: Exec, stateDir: string): (prompt: string) => Promise<ExecResult> {
-  return (prompt) => exec("claude", claudeArgs(), { timeoutMs: RETRO_TIMEOUT_MS, cwd: stateDir, input: prompt, env: RETRO_ENV });
-}
+/** Ask `claude` through `exec` (the board passes `realExecAsync`), in `stateDir`, the prompt on stdin, within the retro's bounds: cut at {@link RETRO_TIMEOUT_MS}. */
+export const askClaude = (exec: HeadlessExec, stateDir: string): ((prompt: string) => Promise<ExecResult>) => askHeadless(exec, stateDir, RETRO_BOUNDS);

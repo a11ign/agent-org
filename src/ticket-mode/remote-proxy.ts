@@ -29,7 +29,7 @@ const FORWARD_MS = 30_000;
 const ANSWER_BYTES = 8 * 1024 * 1024;
 const READS = new Set(["/api/config", "/api/tickets", "/api/people", "/api/projects", "/api/search", "/api/parents", "/api/pick", "/api/queue", "/api/writer", "/api/settings", "/api/plugins", "/api/health", "/api/interventions", "/api/flakes", "/api/outcomes", "/api/suggestion"]);
 const WRITES = new Set(["/api/queue", "/api/queue-children", "/api/choice", "/api/publish", "/api/paused", "/api/max", "/api/terminal-pair", "/api/terminal-run", "/api/writer", "/api/writer/dismiss-finished", "/api/grill-ticket",
-  "/api/settings/preview", "/api/settings/save", "/api/settings/restore", "/api/plugins/action", "/api/plugins/secret"]);
+  "/api/settings/preview", "/api/settings/save", "/api/settings/restore", "/api/plugins/action", "/api/plugins/secret", "/api/readiness"]);
 /** Reads that are passed on but never kept for an SSH connection's last known: the loop's health (A11-282) changes on every read, is polled every 10 s, and is no use once old. */
 const NEVER_KEPT = new Set(["/api/health"]);
 /**

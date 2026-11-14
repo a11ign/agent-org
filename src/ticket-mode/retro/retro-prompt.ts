@@ -34,7 +34,7 @@ export function retroPrompt(repo: string, lessons: readonly Lesson[], items: rea
 }
 
 /** The JSON object in a model's reply: the reply itself, or the first `{` to the last `}` when it wrapped it in a code fence or a sentence. Null when there is none. PURE. */
-function objectIn(reply: string): unknown {
+export function objectIn(reply: string): unknown {
   const start = reply.indexOf("{");
   const end = reply.lastIndexOf("}");
   if (start === -1 || end < start) return null;

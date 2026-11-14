@@ -988,6 +988,25 @@ test("A11-199: a placement that is not auto or manual is refused, and so is an a
   assert.deepEqual(b.ticks, [], "and wakes nothing");
 });
 
+test("A11-443: POST /api/readiness scores the page's listed tickets through the board, once per description, and /api/config says whether the page asks; off, the model is never asked", async () => {
+  const asked: string[] = [];
+  const askReadiness = async (prompt: string) => { asked.push(prompt); return { status: 0, stdout: JSON.stringify({ result: '{"score": 15, "reasons": ["No acceptance criteria."]}' }), stderr: "" }; };
+  const vague = () => createFakeTracker([{ ...ticket("NBF-1"), description: "Make the board nicer." }]);
+  const on = board(4747, { readiness: true }, { askReadiness }, vague());
+  await on.api("GET", "/api/tickets", {});
+  const [, config] = await on.api("GET", "/api/config", {}) as [number, any];
+  assert.equal(config.readiness, true);
+  assert.deepEqual(await on.api("POST", "/api/readiness", { keys: ["NBF-1"] }), [200, { on: true, scores: { "NBF-1": { state: "pending" } } }]);
+  await on.readiness.idle();
+  assert.deepEqual(await on.api("POST", "/api/readiness", { keys: ["NBF-1"] }), [200, { on: true, scores: { "NBF-1": { state: "scored", score: 15, reasons: ["No acceptance criteria."], low: true } } }]);
+  assert.equal(asked.length, 1);
+  const off = board(4747, {}, { askReadiness }, vague());
+  await off.api("GET", "/api/tickets", {});
+  assert.equal(((await off.api("GET", "/api/config", {})) as [number, any])[1].readiness, false);
+  assert.deepEqual(await off.api("POST", "/api/readiness", { keys: ["NBF-1"] }), [200, { on: false, scores: {} }]);
+  assert.equal(asked.length, 1);
+});
+
 test("grill is refused without a terminal, and a machine with no writer writes no tickets", async () => {
   const tracker = creating();
   const plain = board(4747, { writer: WRITER.writer }, {}, tracker);

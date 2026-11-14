@@ -69,7 +69,8 @@ import { sessionAsksRoute } from "./session-asks.ts";
 import { startHealth } from "./health-route.ts";
 import { CLOSES_WAIT_MS, STARTS_WAIT_MS, untilNoneStarting } from "./shutdown-wait.ts";
 import { startingRunCount } from "./queue/queue-readopt.ts";
-import { answerKeyed, holdsRun, plansOf, readChoice, type ReadBoard, readRoute, type SavedChoice, terminalRunFor, trackerReads, writersViewOf } from "./read-routes.ts";
+import { instanceReadiness, type Readiness, type ReadinessDeps } from "./readiness.ts";
+import { answerKeyed, holdsRun, plansOf, readChoice, type ReadBoard, readinessAnswer, readRoute, type SavedChoice, terminalRunFor, trackerReads, writersViewOf } from "./read-routes.ts";
 import { queueView, type QueueView } from "./queue-view.ts";
 import { startBoardThread } from "./board-thread.ts";
 import { REQUEST_THREAD } from "./thread-messages.ts";
@@ -130,6 +131,8 @@ export type BoardDeps = Readonly<{
   health?: () => unknown;
   /** Told the queue after every change to it: the board thread posts the request thread a snapshot (A11-282). */
   queueChanged?: (queue: Queue) => void;
+  /** How a ticket's readiness is asked of the model (A11-443): a headless `claude` on the cheap model unless a test names its own. */
+  askReadiness?: ReadinessDeps["ask"];
 }>;
 
 /** The name the exposure answers to on this machine, or null when it has none: an exposure that serves nothing is not asked. */
@@ -229,6 +232,7 @@ type Board = ReadBoard & Readonly<{
   wake: () => void;
   queueTickets: (tickets: readonly Ticket[], choice: RunChoice, options: { plan: boolean }) => void;
   plugins: PluginsApi;
+  readiness: Readiness;
 }>;
 
 /** What `/api/choice` answers: the choice as saved. */
@@ -611,6 +615,7 @@ async function routeApi(board: Board, method: string, path: string, body: Json, 
     ?? (await settingsEditRoute(board, method, path, body))
     ?? (await pluginActionRoute(board, method, path, body))
     ?? (await queueActionRoute(board, method, path, body))
+    ?? readinessAnswer(board, method, path, body)
     ?? afterMergeRoute({ stateDir: board.settings.stateDir, now: board.now }, method, path, body)
     ?? sessionAsksRoute({ stateDir: board.settings.stateDir, now: board.now, queue: board.store.get }, method, path, query)
     ?? sessionAnswerRoute({ stateDir: board.settings.stateDir, now: board.now, queue: board.store.get }, method, path, body)
@@ -689,7 +694,8 @@ export function createBoard(deps: BoardDeps) {
   const plugins = pluginsApi({ hostPath: deps.hostPath ?? hostFilePath(), settings, seam: deps.plugins, warm: deps.warmPlugins });
   const update = updateReader(deps, store);
   const paths = { hostPath: deps.hostPath, queuePath: deps.queuePath, choicePath: deps.choicePath, pluginRecord: deps.poolDeps?.pluginRecord };
-  const board: Board = { deps, settings, source, store, pool, now, known, claimant, plans, paths, update, wake, queueTickets, terminalAddress, plugins, health: deps.health, ...trackerReads(source, settings) };
+  const readiness = instanceReadiness(settings.stateDir, deps.askReadiness);
+  const board: Board = { deps, settings, source, store, pool, now, known, claimant, plans, paths, update, wake, queueTickets, terminalAddress, plugins, readiness, health: deps.health, ...trackerReads(source, settings) };
 
   async function api(method: string, path: string, body: Json, query = new URLSearchParams()): Promise<[number, unknown]> {
     return routeApi(board, method, path, body, query);
@@ -701,7 +707,8 @@ export function createBoard(deps: BoardDeps) {
 
   // `known`, `terminalAddress` and `update` are what the board thread's snapshot reads, and where a forwarded write's copies of the page's tickets are kept (`board-thread.ts`).
   // `queueWritten` is the pool's way to queue a new-ticket run's tickets (A11-420), returned so a test of the board drives it as the pool does.
-  return { handle, api, pool, store, queueTickets, queueWritten, wake, plugins, known, terminalAddress, update };
+  // `readiness` is returned so a test of the board can wait for its background scoring (A11-443).
+  return { handle, api, pool, store, queueTickets, queueWritten, wake, plugins, known, terminalAddress, update, readiness };
 }
 
 /**
