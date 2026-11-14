@@ -45,7 +45,7 @@ The canvas draws neither of these. Each is designed from its neighbouring states
 * A failure state for herdr not opening: Run detail's failure banner, with Retry and Dismiss, says which of the four ways it failed (`ui/captures/run-detail/run-detail-herdr-*.png`).
 * The states of the "Claude plugins" tab: a need not met, none listed, a plugin workers do not get, and an install record that cannot be read (`ui/captures/plugins/plugins-claude*.png`).
 
-Every other feature the boards do not draw is a `pattern:` row of PARITY.md, to be designed the same way.
+Every other feature the boards do not draw is designed the same way: each is a `designed:` row of PARITY.md that links its captures (A11-446, step 2), and no `pattern:` row is left.
 
 ## Before a page is done
 
