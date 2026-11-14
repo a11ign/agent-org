@@ -7,18 +7,14 @@
 // past runs of that kind are grouped by model and effort; a group with fewer runs than `tickets.suggestMinSample` says nothing, and of the rest the one with the best first-pass rate is
 // suggested, the larger sample winning a tie. Its reason and its sample size are always shown with it.
 //
-// FIRST PASS, as the outcome log can tell it: the run's worker delivered in one round, and no round followed to answer a review: one round ended `ready-pr`, `done` or `checked`, or a
-// `draft-pr` round was followed only by the `reviewed` round a person's approval starts. A run that asked a person, crashed, stopped or was sent back for another round did not pass first time.
-// Planning, publishing and wrong-repository runs are no worker's, and are not counted. A run that has passed so far is counted only once its latest round is UNDECIDED_MS old, since its
-// review may still send it back; one that has failed is counted at once.
+// FIRST PASS is the Outcomes view's (`outcomes/rollup.ts`, A11-430): the reviewer approved each of the run's pull requests at its first review. A run the reviewer reviewed nothing of (a
+// planning run, a run with no pull request, or one whose review has not come yet) is not counted, as it is not in that view's rate, so the footer's rate and the view's agree on the same runs.
 
 import { existsSync, statSync } from "node:fs";
 import { latestOutcomes, type OutcomeRecord, outcomesPath, readOutcomes } from "./outcomes/outcome-record.ts";
+import { firstPassOf } from "./outcomes/rollup.ts";
 import { repoOfProject } from "./project-repo.ts";
 import type { Ticket } from "./source.ts";
-
-/** How long a run that has passed so far waits before it counts as a first pass: its review may still send it back. */
-export const UNDECIDED_MS = 24 * 60 * 60 * 1000;
 
 /** What the footer shows: the model and effort, the first-pass rate as a whole percent, the sample size, the kind it was read from, and the reason in words. */
 export type Suggestion = Readonly<{ model: string; effort: string; firstPass: number; n: number; label: string; repo: string; reason: string }>;
@@ -28,28 +24,6 @@ export type SuggestionView = Readonly<{ suggestion: Suggestion | null }>;
 
 /** What a ticket is matched to past runs by: its repository, or null when it names none on this machine, and its labels. */
 export type TicketKind = Readonly<{ repo: string | null; labels: readonly string[] }>;
-
-/** The kinds of run that are no worker's: they deliver nothing a review passes. */
-const NOT_WORKER = new Set(["planned", "published", "drafted", "wrong-repo"]);
-/** The single rounds that are a first pass. */
-const DELIVERED = new Set(["ready-pr", "done", "checked"]);
-
-/** Whether `record`'s rounds are a first pass so far: one round that delivered, or a draft and the review run its approval started. PURE. */
-function passedSoFar({ rounds }: OutcomeRecord): boolean {
-  const outcomes = rounds.map(({ outcome }) => outcome);
-  if (outcomes.length === 1) return DELIVERED.has(outcomes[0] ?? "");
-  return outcomes.length === 2 && outcomes[0] === "draft-pr" && outcomes[1] === "reviewed";
-}
-
-/** How a run counts toward a suggestion: a first pass, not one, or not at all: no worker's run, or a pass its review may still undo. */
-export type FirstPass = "passed" | "failed" | "uncounted";
-
-/** How `record`'s run counts toward a suggestion at `now`. PURE. */
-export function firstPassOf(record: OutcomeRecord, now: number): FirstPass {
-  if (record.rounds.some(({ outcome }) => NOT_WORKER.has(outcome))) return "uncounted";
-  if (!passedSoFar(record)) return "failed";
-  return now - record.at >= UNDECIDED_MS ? "passed" : "uncounted";
-}
 
 /** The repository named on the description's own `**Repository:** <repo>` line, which the board's ticket writers end a description with. */
 const REPOSITORY_LINE = /^\*\*Repository:\*\*\s*`?([\w.-]+)`?\s*$/m;
@@ -73,17 +47,17 @@ function sharedKind(kinds: readonly TicketKind[]): SharedKind | null {
 
 type Group = { model: string; effort: string; label: string; passed: number; n: number };
 
-/** The decided worker runs of `label` in `repo`, by model and effort. PURE. */
-function groupsOf(records: readonly OutcomeRecord[], repo: string, label: string, now: number): Group[] {
+/** The reviewed runs of `label` in `repo`, by model and effort. PURE. */
+function groupsOf(records: readonly OutcomeRecord[], repo: string, label: string): Group[] {
   const groups = new Map<string, Group>();
   for (const record of records) {
     if (!record.repos.includes(repo) || !record.labels.includes(label)) continue;
-    const counted = firstPassOf(record, now);
-    if (counted === "uncounted") continue;
+    const passed = firstPassOf(record);
+    if (passed === null) continue;
     const at = `${record.model}/${record.effort}`;
     const group = groups.get(at) ?? { model: record.model, effort: record.effort, label, passed: 0, n: 0 };
     group.n += 1;
-    if (counted === "passed") group.passed += 1;
+    if (passed) group.passed += 1;
     groups.set(at, group);
   }
   return [...groups.values()];
@@ -96,21 +70,21 @@ const better = (a: Group, b: Group): Group => {
   return b.n > a.n ? b : a;
 };
 
-type SuggestOptions = Readonly<{ minSample: number; now: number }>;
+type SuggestOptions = Readonly<{ minSample: number }>;
 
 /**
  * The suggestion for a batch of tickets of `kinds`, from the outcome log's `records` (every line, or each run's latest), or null: when the tickets share no repository and label, or no model
- * and effort has `minSample` decided runs of a kind they share. PURE.
+ * and effort has `minSample` reviewed runs of a kind they share. PURE.
  */
 export function suggestionOf(records: readonly OutcomeRecord[], kinds: readonly TicketKind[], options: SuggestOptions): Suggestion | null {
   const shared = sharedKind(kinds);
   return shared === null ? null : suggestionFor(records, shared, options);
 }
 
-/** The suggestion for tickets of the `shared` kind, from the outcome log's `records`, or null when no model and effort has `minSample` decided runs of a label they share. PURE. */
-function suggestionFor(records: readonly OutcomeRecord[], shared: SharedKind, { minSample, now }: SuggestOptions): Suggestion | null {
+/** The suggestion for tickets of the `shared` kind, from the outcome log's `records`, or null when no model and effort has `minSample` reviewed runs of a label they share. PURE. */
+function suggestionFor(records: readonly OutcomeRecord[], shared: SharedKind, { minSample }: SuggestOptions): Suggestion | null {
   const runs = latestOutcomes(records);
-  const candidates = shared.labels.flatMap((label) => groupsOf(runs, shared.repo, label, now)).filter(({ n }) => n >= minSample);
+  const candidates = shared.labels.flatMap((label) => groupsOf(runs, shared.repo, label)).filter(({ n }) => n >= minSample);
   if (candidates.length === 0) return null;
   const best = candidates.reduce(better);
   const firstPass = Math.round((100 * best.passed) / best.n);
@@ -139,9 +113,9 @@ function outcomesAt(path: string): readonly OutcomeRecord[] {
 type SuggestionInput = Readonly<{ stateDir: string; tickets: readonly Ticket[]; clones: readonly string[] } & SuggestOptions>;
 
 /** What `/api/suggestion` answers for `tickets`, read from the outcome log in `stateDir`. Throws, naming the line, when the log cannot be read: an unreadable log is an error, not "no suggestion". */
-export function suggestionView({ stateDir, tickets, clones, minSample, now }: SuggestionInput): SuggestionView {
+export function suggestionView({ stateDir, tickets, clones, minSample }: SuggestionInput): SuggestionView {
   const shared = sharedKind(tickets.map((ticket) => kindOf(ticket, clones)));
   // Tickets with no kind in common are not matched to any run, so the log is not read for them.
   if (shared === null || shared.labels.length === 0) return { suggestion: null };
-  return { suggestion: suggestionFor(outcomesAt(outcomesPath(stateDir)), shared, { minSample, now }) };
+  return { suggestion: suggestionFor(outcomesAt(outcomesPath(stateDir)), shared, { minSample }) };
 }

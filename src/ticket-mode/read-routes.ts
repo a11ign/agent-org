@@ -22,12 +22,12 @@ export type { QueueEntryView, QueueListEntry, QueueView, RunDetailEntry } from "
 import { interventionsView } from "./queue/interventions.ts";
 import { flakesPath, flakesViewOf } from "./flakes.ts";
 import { outcomesAnswer } from "./outcomes/route.ts";
-import { suggestionView } from "./suggest-model.ts";
 import { type Queue, type RunChoice, type WriterRun, writerStatus } from "./queue/queue-entries-and-outcomes.ts";
 import { isTicketWriter, type TicketWriterRun } from "./queue/writer-modes.ts";
 import { EFFORTS, MODELS, readSettingsView } from "./settings-read.ts";
 import { hostFilePath, type TicketSettings } from "./settings.ts";
 import type { Assignee, People, ScopePage, Ticket, TicketSource, TrackerProject } from "./source.ts";
+import { suggestionView } from "./suggest-model.ts";
 import { type TerminalRun, terminalRunOf } from "./terminal-pair.ts";
 import { PRIORITIES } from "./writer.ts";
 
@@ -327,7 +327,7 @@ export async function readRoute(board: ReadBoard, method: string, path: string, 
     const keys = (query.get("keys") ?? "").split(",").filter((key) => key !== "");
     const tickets = keys.map((key) => known.tickets.get(key));
     const listed = tickets.every((ticket) => ticket !== undefined) ? tickets.filter((ticket) => ticket !== undefined) : [];
-    return [200, suggestionView({ stateDir: settings.stateDir, tickets: listed, clones: Object.keys(settings.clones), minSample: settings.suggestMinSample, now: (board.now ?? Date.now)() })];
+    return [200, suggestionView({ stateDir: settings.stateDir, tickets: listed, clones: Object.keys(settings.clones), minSample: settings.suggestMinSample })];
   }
   return undefined;
 }

@@ -75,8 +75,8 @@ const NO_DOLLARS: Dollars = { usd: 0, floor: false };
 const flooredByUnread = (dollars: Dollars, spends: readonly Readonly<{ unread?: string }>[]): Dollars =>
   ({ ...dollars, floor: dollars.floor || spends.some(({ unread }) => unread !== undefined) });
 
-/** Whether the reviewer approved each of the run's reviewed pull requests at its first review; null when it reviewed none. PURE. */
-function firstPassOf(record: OutcomeRecord): boolean | null {
+/** Whether the reviewer approved each of the run's reviewed pull requests at its first review; null when it reviewed none. The queue footer's suggestion (A11-435) counts runs by it too. PURE. */
+export function firstPassOf(record: OutcomeRecord): boolean | null {
   const reviews = record.reviews ?? [];
   if (reviews.length === 0) return null;
   const first = new Map<string, string>();
