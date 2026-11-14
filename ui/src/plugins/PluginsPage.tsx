@@ -47,7 +47,7 @@ function Reading() {
   );
 }
 
-const INTEGRATIONS_WORDS = "One plugin is active for each concern. Installing a plugin and setting its secrets happen on the host, so this page shows the command and never takes a secret. A change here applies after the instance restarts.";
+const INTEGRATIONS_WORDS = "One plugin is active for each concern. A secret typed here is stored on the instance's machine and never shown again; one with no field is set on the host with the command shown. A change here applies after the instance restarts.";
 
 /** The Integrations tab: a card for each concern, then the packages the registry refused. */
 function Integrations({ answer, open, onOpen }: Readonly<{ answer: PluginsAnswer; open: string | null; onOpen: (concern: string | null) => void }>) {

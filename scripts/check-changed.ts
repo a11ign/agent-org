@@ -1,7 +1,7 @@
 // command: `npm run check:changed` -- one check of the change a worker is making: lint on the changed files, typecheck of the whole program, and the tests that cover it (A11-307)
 //
 // WHAT RAN IS PRINTED, WITH THE REASON. The change is everything since the merge base with the default branch: committed, staged, unstaged and untracked files together.
-// Lint is ESLint with `--cache` on the changed files (`lint-cache.ts` keys the cache by the config, the lockfile and the plugin versions, so none of them can leave a stale pass).
+// Lint is ESLint with `--cache` on the changed files (`lint-cache.ts` keys the cache by the config and the data it reads, the lockfile and the plugin versions, so none of them can leave a stale pass).
 // Typecheck is `tsc --noEmit` over the WHOLE program, incrementally (`node_modules/.cache/tsc`), because a type error is in the file that uses the changed one.
 // Tests are every test file that imports a changed file at any depth, names its path, or is itself changed (`scripts/rstest/select-tests.ts`), never tests matched by name.
 // A change the import graph cannot judge (the runner's files, a shared fixture, a config, the manifest, the lockfile) FALLS BACK: the whole suite and the whole lint run, and the output says which path did it.

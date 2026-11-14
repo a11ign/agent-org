@@ -21,6 +21,7 @@
 import { DEFAULT_TIMEOUT_SECONDS, MAX_TIMEOUT_SECONDS, type Preflight } from "./preflight.ts";
 import { defaultBinDir } from "./worker-files.ts";
 import { DEFAULT_CI_BUDGET_MINUTES } from "./ci-spend/budget.ts";
+import { pricesOf } from "./outcomes/prices-config.ts";
 import { isActive, PROVIDER_BLOCKS, PUBLISHER_SHAPE, resolveProviders, type BlockReport, type Providers, type Setting } from "./providers.ts";
 import type { Catalog } from "../plugins/manifest.ts";
 import { defaultCatalog, isTrackerConnector, pluginNamed } from "../plugins/registry.ts";
@@ -554,6 +555,16 @@ function instanceOf(value: unknown, machine: string): string {
  * @param home the user's home directory, for the default state directory
  * @param machine the machine's host name, which `tickets.instance` defaults to
  */
+/** The instance's loopback port and the page's, from the exposure block. REFUSES naming the field when either is not a port, or they are equal. */
+function portsOf(exposure: BlockReport): Readonly<{ port: number; uiPort: number }> {
+  const port = settingOf(exposure, "port");
+  const uiPort = settingOf(exposure, "uiPort");
+  const portNumber = positiveInteger(port.value, port.at, 4747);
+  const uiPortNumber = positiveInteger(uiPort.value, uiPort.at, 4748);
+  if (uiPortNumber === portNumber) throw new TicketSettingsRefusal(uiPort.at, `must differ from ${port.at}, which is ${portNumber} too`);
+  return { port: portNumber, uiPort: uiPortNumber };
+}
+
 export function parseTicketSettings(host: unknown, home: string = homedir(), machine: string = hostname(), catalog: Catalog = defaultCatalog()): TicketSettings {
   if (!isObject(host)) throw new TicketSettingsRefusal("(root)", "must be a JSON object");
   const clones = host.clones;
@@ -571,11 +582,9 @@ export function parseTicketSettings(host: unknown, home: string = homedir(), mac
   const providers = resolveProviders(host, catalog);
   refuseRelativeSecretPaths(providers, catalog);
   const { tracker, codeHost, publish, reviewer, exposure } = providers.blocks;
-  const port = settingOf(exposure, "port");
-  const uiPort = settingOf(exposure, "uiPort");
-  const portNumber = positiveInteger(port.value, port.at, 4747);
-  const uiPortNumber = positiveInteger(uiPort.value, uiPort.at, 4748);
-  if (uiPortNumber === portNumber) throw new TicketSettingsRefusal(uiPort.at, `must differ from ${port.at}, which is ${portNumber} too`);
+  const { port: portNumber, uiPort: uiPortNumber } = portsOf(exposure);
+  // A wrong price table refuses the start, naming its field. The table is not kept: `/api/outcomes` reads the host file again on each request, so a change is in force at the next read (A11-430).
+  pricesOf(tickets.prices);
   const stack = settingOf(codeHost, "stack");
   if (stack.value !== undefined && typeof stack.value !== "boolean") throw new TicketSettingsRefusal(stack.at, `must be true or false, not ${JSON.stringify(stack.value)}`);
   const trackerConnectors = settingOf(tracker, "connectors");
