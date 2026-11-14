@@ -382,8 +382,9 @@ function ended(entry: Entry, outcome: Outcome, now: number, { tokens, session }:
   // remains to build and drops the declaration (A11-173), and any other keeps what the run had: a review round's `reviewed` says nothing of it.
   // The heads of its pull requests belong to the outcome it replaces: the end of this run records its own (A11-153).
   // The idle clock and the board's resume prompt (A11-279) are a running run's too.
+  // So is a hold on the spent allowance (A11-434): a run that ended is not waiting on it.
   const { session: _earlier, working: _note, declined: _refused, prompt: _asked, partial: _declared, talk: _talking, talkFrom: _replaced, outcomeHeads: _ended, outcomeBlocks: _blocked, pullHeads: _read, sessionNote: _closed, handedBack: _handed, stoppedForUpdate: _stopped,
-    idleSince: _idle, resume: _resumed, ...kept } = entry;
+    idleSince: _idle, resume: _resumed, allowance: _spent, ...kept } = entry;
   // A talk session that ends on a pull request outcome is that run again, not a review round: the list it borrowed to keep them linked goes.
   const borrowed = entry.talk && entry.talkFrom?.review === undefined && (outcome.kind === "draft-pr" || outcome.kind === "ready-pr");
   const { review: _borrowed, ...unborrowed } = kept;

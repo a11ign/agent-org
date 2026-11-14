@@ -210,6 +210,11 @@ export type Entry = Readonly<{
   /** The first line of the dialog a waiting agent sits on, when the pool could read one from its pane. Cleared when the run stops waiting (A11-174). */
   prompt?: string;
   /**
+   * Set while the run's worker is out of Claude allowance (A11-434): the message it was refused with, when the allowance returns, and when the board first held it. The run reads
+   * Waiting: allowance, and is never ended for it, as crashed, failed or for having no outcome. Dropped when its agent works again.
+   */
+  allowance?: Readonly<{ text: string; until: number; since: number }>;
+  /**
    * The Claude Code safety prompt the pool last answered No to on this run (A11-174): the command it asked about, its warning, the subagent that raised it (absent for the main agent, A11-209), when, how many the run has had
    * answered (bounded), and whether the agent has been told yet (herdr refuses a message to an agent that still reads blocked). Dropped when the run ends.
    */

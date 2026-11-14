@@ -66,8 +66,8 @@ export function recordPluginCopy(queue: Queue, keys: readonly string[], copies: 
   return { ...queue, entries: queue.entries.map((entry) => (keys.includes(entry.ticket.key) && entry.phase === "starting" ? { ...entry, pluginCopy: copies } : entry)) };
 }
 
-/** What a stopped run drops when it is queued again: what its live agent held, its idle clock and the board's resume of it among them (A11-279). */
-const runtimeFields = ["workspace", "pane", "startedAt", "finishedAt", "seenWorking", "waiting", "prompt", "declined", "working", "lastTerminal", "sessionWait", "sessionNote", "outcome", "tokens", "idleSince", "resume"] as const;
+/** What a stopped run drops when it is queued again: what its live agent held, its idle clock and the board's resume of it among them (A11-279), and a hold on the spent allowance (A11-434). */
+const runtimeFields = ["workspace", "pane", "startedAt", "finishedAt", "seenWorking", "waiting", "prompt", "declined", "working", "lastTerminal", "sessionWait", "sessionNote", "outcome", "tokens", "idleSince", "resume", "allowance"] as const;
 
 /**
  * Why the board stopped a live run, and what the entry it queues again records of it: `record` is set on it, each field `drops` names goes with what its live agent held, and `session` is the Claude session its
