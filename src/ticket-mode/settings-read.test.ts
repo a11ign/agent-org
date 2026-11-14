@@ -102,3 +102,13 @@ test("a plugin with no contract has no rows", async () => {
   const view = await viewOfPlugin(tmpDir("settings-read-no-contract-"), undefined);
   assert.deepEqual(view.contract, [], "a plugin with no contract declares none");
 });
+
+test("A11-447: a Linear host's Settings page draws the GitHub Issues tracker's own rows as not in use, and Linear's key and the shared rows as in use; a GitHub Issues host the other way round", async () => {
+  const dir = tmpDir("settings-read-two-trackers-");
+  const path = join(dir, "host.json");
+  writeFileSync(path, JSON.stringify({ clones: { r: "/r" }, stateDir: dir, tickets: {} }));
+  const inUse = (view: View) => Object.fromEntries(rowsIn(view).filter((row) => /^tickets\.providers\.tracker\.(repo|token|key|workingState)$/.test(row.key)).map((row) => [row.key.split(".").pop(), row.inUse]));
+  assert.deepEqual(inUse(await readSettingsView(options(dir, path))), { repo: false, token: false, key: true, workingState: true }, "the default tracker, Linear: an edit of repo or token would be refused");
+  const issues = { ...options(dir, path), settings: parseTicketSettings({ clones: { r: "/r" }, stateDir: dir, tickets: { providers: { tracker: { provider: "github-issues", repo: "acme/tracker" } } } }) };
+  assert.deepEqual(inUse(await readSettingsView(issues)), { repo: true, token: true, key: false, workingState: true });
+});

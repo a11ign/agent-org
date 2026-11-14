@@ -238,7 +238,7 @@ test("A11-161: no concern is pinned to core any more: a fake is named by a block
 test("A11-158: a plugin of another concern, and one the registry does not hold, are refused by name listing what the block may name", () => {
   const wrongConcern = refusalOf({ tickets: { providers: { tracker: { provider: "slack" } } } });
   assert.equal(wrongConcern.field, "tickets.providers.tracker.provider");
-  assert.match(wrongConcern.message, /must be one of "linear", not "slack"/, "a fake runs no host, so it is not offered");
+  assert.match(wrongConcern.message, /must be one of "github-issues", "linear", not "slack"/, "a fake runs no host, so it is not offered");
   assert.match(refusalOf({ tickets: { providers: { publish: { provider: "jira" } } } }).message, /must be one of "slack", "none", not "jira"/);
 });
 

@@ -2,8 +2,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { SCHEMA } from "../ticket-mode/config-schema.ts";
-import { defaultSchema, schemaOf } from "./schema.ts";
-import { buildCatalog, defaultCatalog, type PackageFiles } from "./registry.ts";
+import { defaultSchema, keysOfOtherPlugins, schemaOf } from "./schema.ts";
+import { buildCatalog, defaultCatalog, pluginNamed, type PackageFiles } from "./registry.ts";
 
 const entry = (key: string) => ({ key, file: "host.json", group: "Tracker", type: "text", absent: "unset", default: null, explanation: "e", breaks: "b", edit: { editable: false, why: "w" } });
 const files = (settings: Record<string, unknown>): PackageFiles => ({
@@ -12,14 +12,19 @@ const files = (settings: Record<string, unknown>): PackageFiles => ({
   isFile: () => true,
 });
 
-test("the tracker's settings come from the Linear plugin, after the tracker's enabled entry, in the order the page drew them", () => {
+test("the tracker's settings come from the tracker plugins, after the tracker's enabled entry, in the order the page drew them", () => {
   const keys = defaultSchema().map(({ key }) => key);
   const from = keys.indexOf("tickets.providers.tracker.enabled");
-  assert.deepEqual(keys.slice(from, from + 9), [
-    "tickets.providers.tracker.enabled", "tickets.providers.tracker.key", "tickets.providers.tracker.key.path", "tickets.providers.tracker.key.keychain",
-    "tickets.providers.tracker.connectors", "tickets.providers.tracker.workingState", "tickets.providers.tracker.plannedState", "tickets.providers.tracker.takenStates",
-    "tickets.providers.codeHost",
+  // A11-447: GitHub Issues is a second tracker, listed before Linear by name. The settings both declare are described once, in the same words, and the token is its own setting, not Linear's key.
+  assert.deepEqual(keys.slice(from, from + 14), [
+    "tickets.providers.tracker.enabled", "tickets.providers.tracker.repo", "tickets.providers.tracker.prefix", "tickets.providers.tracker.token", "tickets.providers.tracker.token.path",
+    "tickets.providers.tracker.token.keychain", "tickets.providers.tracker.connectors", "tickets.providers.tracker.workingState", "tickets.providers.tracker.plannedState",
+    "tickets.providers.tracker.takenStates", "tickets.providers.tracker.key", "tickets.providers.tracker.key.path", "tickets.providers.tracker.key.keychain", "tickets.providers.codeHost",
   ]);
+  const linear = pluginNamed(defaultCatalog(), "linear")!.settings;
+  for (const shared of ["connectors", "workingState", "plannedState", "takenStates"]) {
+    assert.deepEqual(defaultSchema().find(({ key }) => key === `tickets.providers.tracker.${shared}`), linear[shared], `${shared} reads as Linear's entry, whichever tracker the catalog lists first`);
+  }
   assert.equal(SCHEMA.some(({ key }) => key === "tickets.providers.tracker.key"), false, "core's own entries no longer hold them");
   assert.equal(defaultSchema(), defaultSchema(), "built once per process");
 });
@@ -40,4 +45,11 @@ test("the settings of two plugins of one concern follow the block's enabled entr
   const keys = schemaOf(catalog).map(({ key }) => key);
   const at = keys.indexOf("tickets.providers.tracker.enabled");
   assert.equal(keys[at + 1], "tickets.providers.tracker.token", "the example plugin is first in the catalog, so its settings follow the entry first");
+});
+
+test("A11-447: the keys only another tracker declares are the ones the named tracker's block refuses: neither the shared settings nor the named tracker's own", () => {
+  const catalog = defaultCatalog();
+  const short = (keys: ReadonlySet<string>) => [...keys].map((key) => key.replace("tickets.providers.tracker.", "")).sort();
+  assert.deepEqual(short(keysOfOtherPlugins("tracker", "linear", catalog)), ["prefix", "repo", "token", "token.keychain", "token.path"]);
+  assert.deepEqual(short(keysOfOtherPlugins("tracker", "github-issues", catalog)), ["key", "key.keychain", "key.path"]);
 });
