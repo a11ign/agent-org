@@ -1,5 +1,0 @@
----
-"agent-org": patch
----
-
-The typecheck covers 44 more files (a11ign/a11ign#3571, follow-up to #3551). `tsconfig.json`'s `exclude` named 48 files that were not type-clean; measured with `tsc --noEmit` and `exclude` emptied at `758ad90`, 44 of them had 147 errors between them (`auto-arm-token.test.ts` had been made clean by #197), and none now do. `exclude` holds four files, the tests that import a sibling living in the project (`merge-guard`, `merge-guard-checks-rule`, `workflow-run-liveness`, `tracker-leak-refusal`), because copying the siblings in would fork a file two repositories must keep identical. The program is 473 files, up from 429, and the CI floor is 440. The fixes are types: JSDoc on the tests' fakes, narrowing assertions, and annotations on six sources whose declared types were narrower than what they accept (`fake-provider`, `listen`, `stall`, `org-retro`, `row-claim` and `poll`, the last two with a hoisted binding that behaves the same). One test (`pr-stall-reason.test.ts`, #3120 (4)) recorded `gh` calls through a seam `stalledPrFacts` no longer has and asserted none, which could not fail; it now asserts what it can.
