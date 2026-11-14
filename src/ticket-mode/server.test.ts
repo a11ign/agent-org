@@ -398,7 +398,7 @@ test("A11-257: /api/interventions answers the last 7 days and today's total, fro
   assert.equal(fixed, 200);
   assert.equal(after.today, 1, "the answer to a record is the view after it");
   const [, read] = await b.api("GET", "/api/interventions", {}) as [number, any];
-  assert.deepEqual(read.days.slice(-2), [{ date: "2026-10-25", needsYou: 1, fixes: 0, total: 1, standoffs: 0 }, { date: "2026-10-26", needsYou: 0, fixes: 1, total: 1, standoffs: 0 }]);
+  assert.deepEqual(read.days.slice(-2), [{ date: "2026-10-25", needsYou: 1, fixes: 0, total: 1, standoffs: 0, autoAnswers: 0, personAnswers: 0 }, { date: "2026-10-26", needsYou: 0, fixes: 1, total: 1, standoffs: 0, autoAnswers: 0, personAnswers: 0 }]);
   assert.equal("interventions" in ((await b.api("GET", "/api/queue", {}))[1] as object), false, "the queue's own answer does not carry the tally");
 });
 

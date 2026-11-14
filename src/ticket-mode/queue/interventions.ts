@@ -17,14 +17,22 @@ const DAY_MS = 86_400_000;
 /**
  * What one day holds: the runs that went to Needs you, the fixes a chairman session recorded, and the stand-offs the board settled with no person (A11-290: a re-review that stayed not convinced at an unchanged head, routed to the planner and the worker,
  * and ended on a new head or an approval). The last is how the chairman sees that route work; it is not an intervention, so it is in no total, and a day that settled none holds no such field.
+ * The questions answered that day are counted apart by who answered them (A11-438): `autoAnswers`, by the answerer from what is written down (`auto-answer.ts`), and `personAnswers`, by a person through the answer route
+ * (`pool-answer.ts`). Neither is an intervention (the Needs-you card a person answered is counted already), so neither is in a total, and a day with none holds no such field.
  */
-export type DayCount = Readonly<{ needsYou: number; fixes: number; standoffs?: number }>;
+export type DayCount = Readonly<{ needsYou: number; fixes: number; standoffs?: number; autoAnswers?: number; personAnswers?: number }>;
+
+/** What one day can count. */
+type Counted = "needsYou" | "fixes" | "standoffs" | "autoAnswers" | "personAnswers";
 
 /** The tally by UTC day, `YYYY-MM-DD`. */
 export type Interventions = Readonly<Record<string, DayCount>>;
 
-/** One day as `/api/interventions` answers it: its date, each kind of intervention and their total, and the stand-offs settled with no person that day (A11-290), which are in no total. */
-export type DayView = Readonly<{ date: string; needsYou: number; fixes: number; total: number; standoffs: number }>;
+/**
+ * One day as `/api/interventions` answers it: its date, each kind of intervention and their total, the stand-offs settled with no person that day (A11-290), and the questions answered automatically and by a person
+ * (A11-438), which are in no total.
+ */
+export type DayView = Readonly<{ date: string; needsYou: number; fixes: number; total: number; standoffs: number; autoAnswers: number; personAnswers: number }>;
 
 /** What `/api/interventions` answers: the last {@link DAYS_SHOWN} days, oldest first, and today's total. */
 export type InterventionsView = Readonly<{ today: number; days: readonly DayView[] }>;
@@ -33,7 +41,7 @@ export type InterventionsView = Readonly<{ today: number; days: readonly DayView
 export const dayOf = (at: number): string => new Date(at).toISOString().slice(0, 10);
 
 /** The tally with one more of `kind` on the day of `at`, and the days older than {@link DAYS_KEPT} dropped. */
-function counted(queue: Queue, at: number, kind: "needsYou" | "fixes" | "standoffs"): Queue {
+function counted(queue: Queue, at: number, kind: Counted): Queue {
   // A time that is no date counts nothing, so logging an event never throws (`toISOString` does on one).
   if (!Number.isFinite(at)) return queue;
   const day = dayOf(at);
@@ -52,12 +60,18 @@ export const countFix = (queue: Queue, at: number): Queue => counted(queue, at, 
 /** The queue with one more stand-off counted as settled with no person (A11-290), on the day of `at`. PURE. */
 export const countStandoffSettled = (queue: Queue, at: number): Queue => counted(queue, at, "standoffs");
 
+/** The queue with one more question counted as answered by the answerer, from what is written down (A11-438), on the day of `at`. PURE. */
+export const countAutoAnswer = (queue: Queue, at: number): Queue => counted(queue, at, "autoAnswers");
+
+/** The queue with one more question counted as answered by a person through the answer route (A11-438), on the day of `at`. PURE. */
+export const countPersonAnswer = (queue: Queue, at: number): Queue => counted(queue, at, "personAnswers");
+
 /** The last {@link DAYS_SHOWN} days at `now`, oldest first, a day with none counting 0, and today's total. PURE. */
 export function interventionsView(queue: Queue, now: number): InterventionsView {
   const days = Array.from({ length: DAYS_SHOWN }, (_, back): DayView => {
     const date = dayOf(now - (DAYS_SHOWN - 1 - back) * DAY_MS);
-    const { needsYou, fixes, standoffs = 0 } = queue.interventions?.[date] ?? { needsYou: 0, fixes: 0 };
-    return { date, needsYou, fixes, total: needsYou + fixes, standoffs };
+    const { needsYou, fixes, standoffs = 0, autoAnswers = 0, personAnswers = 0 } = queue.interventions?.[date] ?? { needsYou: 0, fixes: 0 };
+    return { date, needsYou, fixes, total: needsYou + fixes, standoffs, autoAnswers, personAnswers };
   });
   return { today: days.at(-1)?.total ?? 0, days };
 }

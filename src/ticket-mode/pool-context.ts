@@ -2,6 +2,7 @@
 // module: the pool's context -- its deps and seams, and the state its parts share, built once for each pool
 
 import { createGate, shellPreflight, type PreflightExec } from "./preflight.ts";
+import type { Answerer } from "./auto-answer.ts";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { type HookCommand } from "./worker-files.ts";
@@ -97,6 +98,8 @@ export type PoolDeps = Readonly<{
   reviewerSeen?: Map<string, number>;
   /** Runs one `tickets.preflight` command; a shell by default. A test injects one so no process runs. */
   preflight?: PreflightExec;
+  /** Asks the answerer's model (A11-438, `auto-answer.ts`): the `claude` command by default. A test injects one so no model is asked. */
+  answerer?: Answerer;
   /** Where a draining update's record is read and written (A11-169): the agent-org home's `update-drain.json` by default. */
   drain?: DrainStore;
   /** Starts the auto-update service now, once a drain's runs have been stopped (A11-169). */

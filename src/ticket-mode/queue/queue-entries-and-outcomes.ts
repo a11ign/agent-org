@@ -22,6 +22,7 @@ import type { Standoff } from "./standoff-types.ts";
 import type { CapRound, TicketWait } from "./queue-cap.ts";
 import type { CiHold, TicketCi } from "../ci-spend/store.ts";
 import type { Interventions } from "./interventions.ts";
+import type { AutoAnswer } from "./auto-answer-record.ts";
 import type { AfterWriting, QueueAfter } from "./queue-after-writing.ts";
 import type { OutcomeRun } from "../outcomes/outcome-record.ts";
 
@@ -477,7 +478,10 @@ export type Entry = Readonly<{
   freeRounds?: number;
   /** Set on a finished run the planner marked as waiting on another ticket (A11-343): see {@link TicketWait}. The run reads Waiting, and is dropped from the wait when that ticket's pull request merges. */
   waitingOnTicket?: TicketWait;
+  /** Set when the answerer answered this run's question from what is written down, instead of parking it for a person (A11-438): see {@link AutoAnswer}. The same question is never answered automatically twice while it is set; a round that builds the entry afresh drops it. */
+  autoAnswer?: AutoAnswer;
 }>;
+
 
 /**
  * The board sent a running run the resume prompt (A11-279): when, and why, after a restart or after its agent sat idle since `idleSince`; `refused` is herdr's reason when it would not take the prompt, which the card

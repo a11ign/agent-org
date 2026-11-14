@@ -6,7 +6,7 @@ import { runsHref } from "../shell/routes.ts";
 import { actionsOf } from "./run-actions.ts";
 import { ActionIcon, MessageIcon, PullIcon, StatusIcon, STATUS_TONE } from "./icons.tsx";
 import { MESSAGE_TITLE } from "./publish-model.ts";
-import { ciLineOf, labelOf, noteOf, timingOf, tokensOf, type NoteContext, type RunEntry } from "./runs-model.ts";
+import { autoAnswerLineOf, ciLineOf, labelOf, noteOf, timingOf, tokensOf, type NoteContext, type RunEntry } from "./runs-model.ts";
 
 /** The ticks of a machine with a publisher: the keys ticked for Publish, and the press that ticks or unticks one. */
 export type Ticks = Readonly<{ picked: readonly string[]; toggle: (key: string) => void }>;
@@ -95,6 +95,26 @@ function CiLine({ entry }: Readonly<{ entry: RunEntry }>) {
   return <div className={line.tone === "warn" ? "run-ci tone-warn" : "run-ci"}>{line.text}</div>;
 }
 
+/**
+ * The run's automatic answer (A11-438): what the answerer answered and how sure it was, or that a person overruled it, with each source it cites, linked when it has an http or https address. A person overrules it
+ * through the board's answer route (`docs/answering-a-run.md`).
+ */
+function AutoAnswerLine({ entry }: Readonly<{ entry: RunEntry }>) {
+  const line = autoAnswerLineOf(entry);
+  if (line === null) return null;
+  return (
+    <div className={line.overruled ? "run-auto-answer is-overruled" : "run-auto-answer"}>
+      {line.text}
+      {line.sources.length === 0 ? null : <> · from {line.sources.map(({ label, href }, at) => (
+        <span key={label}>
+          {at === 0 ? "" : ", "}
+          {href === "" ? label : <a href={href} target="_blank" rel="noreferrer">{label}</a>}
+        </span>
+      ))}</>}
+    </div>
+  );
+}
+
 /** The reserved first column of a machine with a publisher: a tick box on a run that can be published, and nothing on any other, so the rows stay in line. */
 function Tick({ entry, context, ticks }: Readonly<{ entry: RunEntry; context: RowContext; ticks: Ticks }>) {
   const { key } = entry.ticket;
@@ -109,7 +129,7 @@ function Tick({ entry, context, ticks }: Readonly<{ entry: RunEntry; context: Ro
   );
 }
 
-/** One run: its status icon, its key and title (a link to Run detail), its status, repositories, model and tokens, its note, its CI line, its pull requests and timing, and its buttons. */
+/** One run: its status icon, its key and title (a link to Run detail), its status, repositories, model and tokens, its note, its CI line, its automatic answer, its pull requests and timing, and its buttons. */
 export function RunRow({ entry, context }: Readonly<{ entry: RunEntry; context: RowContext }>) {
   const { queue } = context;
   const status = shownStatus(entry, queue.publish, queue.entries);
@@ -141,6 +161,7 @@ export function RunRow({ entry, context }: Readonly<{ entry: RunEntry; context: 
         </div>
         {note === null ? null : <div className="run-note clamp" title={note}>{note}</div>}
         <CiLine entry={entry} />
+        <AutoAnswerLine entry={entry} />
       </div>
       <div className="run-right">
         <Timing entry={entry} now={context.now} />

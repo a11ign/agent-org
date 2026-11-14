@@ -69,7 +69,7 @@ test("A11-257: the view is the last 7 days, oldest first, a day with none shown 
   assert.equal(view.days.length, 7);
   assert.deepEqual(view.days.map(({ date }) => date), ["2026-10-20", "2026-10-21", "2026-10-22", "2026-10-23", "2026-10-24", "2026-10-25", "2026-10-26"]);
   assert.deepEqual(view.days.map(({ total }) => total), [1, 0, 0, 0, 0, 0, 3], "the day 7 days back is not in the view");
-  assert.deepEqual(view.days.at(-1), { date: "2026-10-26", needsYou: 2, fixes: 1, total: 3, standoffs: 0 });
+  assert.deepEqual(view.days.at(-1), { date: "2026-10-26", needsYou: 2, fixes: 1, total: 3, standoffs: 0, autoAnswers: 0, personAnswers: 0 });
   assert.equal(view.today, 3);
   assert.deepEqual(interventionsView(emptyQueue(1), NOON).days.map(({ total }) => total), [0, 0, 0, 0, 0, 0, 0]);
 });
@@ -101,4 +101,14 @@ test("A11-257: an event with no valid time counts nothing and logging it does no
   const queue = logEvent(emptyQueue(1), "A", Number.NaN, { kind: "needs-you", reason: "post it?" });
   assert.equal(queue.interventions, undefined);
   assert.equal(countFix(emptyQueue(1), Number.POSITIVE_INFINITY).interventions, undefined);
+});
+
+test("A11-438: a week with 12 automatic answers and 5 answers from people reads the two counts apart, and neither as a person-intervention", () => {
+  let queue = emptyQueue(1);
+  for (let at = 0; at < 12; at++) queue = logEvent(queue, `A${at}`, NOON - (at % 7) * DAY, { kind: "auto-answered", answer: "agent-org", confidence: 0.95, sources: ["the parent ticket A11-1"] });
+  for (let at = 0; at < 5; at++) queue = logEvent(queue, `P${at}`, NOON - (at % 7) * DAY, { kind: "answered", by: "answer" });
+  queue = logEvent(queue, "R", NOON, { kind: "answered", by: "respond" });
+  const days = interventionsView(queue, NOON).days;
+  assert.deepEqual({ auto: days.reduce((sum, day) => sum + day.autoAnswers, 0), person: days.reduce((sum, day) => sum + day.personAnswers, 0), total: days.reduce((sum, day) => sum + day.total, 0) }, { auto: 12, person: 5, total: 0 },
+    "only the answer route's answers are a person's answers; neither kind is an intervention");
 });

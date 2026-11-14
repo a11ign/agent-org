@@ -78,6 +78,7 @@ function rowOf(event: TimelineEvent, { now, startedAt, newest, going, canceled, 
     case "needs-you": return { text: "Waiting on a person", when: ago, tone: "amber" };
     case "push-check": return { text: event.step === "passed" ? "Push access checked by the board: it works" : "Push access checked by the board: the push failed", when: joined(ago, event.detail, note), tone: event.step === "passed" ? "green" : "red" };
     case "answered": return { text: "Answered", when: joined(ago, ANSWER_WORDS[event.by]), tone: "grey" };
+    case "auto-answered": return { text: `Answered automatically: ${event.answer}`, when: joined(ago, `${Math.round(event.confidence * 100)}% sure`, event.sources.length === 0 ? null : `from ${event.sources.join(", ")}`), tone: "green" };
     case "published": return { text: "Published", when: joined(ago, note), tone: "violet" };
     case "base-merge": return { text: baseMergeWords(event.url, event.base, event.step), when: joined(ago, note), tone: BASE_MERGE_TONES[event.step] };
     case "cancelled-rerun": return { text: cancelledRerunWords(event), when: joined(ago, note), tone: event.refused === undefined && event.stopped === undefined ? "violet" : "amber" };

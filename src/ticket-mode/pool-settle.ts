@@ -26,6 +26,8 @@ import { batchPlanDone, finish, noteWorking, park, planDone, recordPullFiles, re
 import { doneComment, outcomeWritten, PLAN_FILE_BYTES, QUESTION_CHARS } from "./pool-outcome.ts";
 import { writtenStep } from "./outcome.ts";
 import { escalationItem, escalationReason, questionEscalation, questionText } from "./escalation.ts";
+import { mayAnswer } from "./auto-answer.ts";
+import { answerBeforeParking } from "./pool-auto-answer.ts";
 import { isRetryableWrite, WRITE_GIVE_UP_MS, WRITE_RETRY_NOTE, writeWait } from "./result-write-retry.ts";
 import { logEvent, logHas, shortReason, type TrackerWriteStep } from "./queue/run-log.ts";
 import { recordCurrentStep } from "./queue/queue-run-detail.ts";
@@ -113,6 +115,8 @@ export function settle(ctx: PoolContext, entry: Entry, outcome: WrittenOutcome):
   if (claimsLostPush(outcome) && checkouts.length > 0) return void settleLostPush(ctx, entry, outcome, checkouts).catch(settleFailed(entry));
   if (outcome.kind === "done") return void completeDone(ctx, entry, outcome).catch(settleFailed(entry));
   if (outcome.kind === "wrong-repo") return settleWrongRepo(ctx, entry, outcome);
+  // A question already written down is answered before the run is parked for a person (A11-438); with the switch off, or a question it may not take, the run ends as it always has.
+  if (mayAnswer(ctx.settings.autoAnswer, entry, outcome)) return void answerBeforeParking(ctx, entry, outcome, (current) => end(ctx, current, outcome)).catch(settleFailed(entry));
   if (outcome.kind !== "planned") return end(ctx, entry, outcome);
   if (!isPlanning(ctx, entry)) return end(ctx, entry, { kind: "needs-human", reason: "the worker wrote a planned outcome, but its run was not a planning run" });
   // Nothing waits on the attach, so its own failure is caught here rather than left to stop the board.

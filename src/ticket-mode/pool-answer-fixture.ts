@@ -8,6 +8,7 @@ import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { createFakeTracker } from "../plugins/fakes/tracker.ts";
 import { herdrName, type Herdr } from "./pool.ts";
+import type { PoolDeps } from "./pool-context.ts";
 import { poolFixture } from "./pool-fixture.ts";
 import type { Ticket, TicketSource } from "./source.ts";
 import { ticketDir } from "./ticket-paths.ts";
@@ -20,16 +21,25 @@ export type HeldTicket = { description: string; updatedAt: string };
 /** `2026-10-25`, at noon local time, in milliseconds: the board's local date is the same in every time zone. */
 export const NOON = new Date(2026, 9, 25, 12).getTime();
 
-/** What a test sets: the description the ticket holds, and the name the tracker gives the key's person. */
-export type AnswerFixtureOptions = Readonly<{ description?: string; viewer?: string | null; withoutUpdate?: boolean }>;
+/**
+ * What a test sets: the description the ticket holds, and the name the tracker gives the key's person. The answerer's tests (A11-438) also set the ticket's parent (its key and description), the host file's `tickets`
+ * settings and the answerer the pool asks.
+ */
+export type AnswerFixtureOptions = Readonly<{
+  description?: string; viewer?: string | null; withoutUpdate?: boolean;
+  parent?: Readonly<{ key: string; description: string }>; tickets?: Readonly<Record<string, unknown>>; answerer?: PoolDeps["answerer"];
+}>;
 
-export function answerFixture({ description = "Fix the toast.", viewer = "Dana Beck", withoutUpdate = false }: AnswerFixtureOptions = {}) {
+export function answerFixture({ description = "Fix the toast.", viewer = "Dana Beck", withoutUpdate = false, parent, tickets = {}, answerer }: AnswerFixtureOptions = {}) {
   const held: HeldTicket = { description, updatedAt: "2026-10-25T10:00:00.000Z" };
   const writes: { description: string; herdrCallsBefore: number }[] = [];
   const control = { refuseWrite: null as string | null, refuseMessage: null as string | null, calls: () => 0 };
   const tracker: TicketSource = {
     assigned: base.assigned, download: base.download, keywords: base.keywords,
-    read: async (key) => ({ key, title: key, description: held.description, updatedAt: held.updatedAt, url: `https://linear.app/x/${key}`, branch: key.toLowerCase(), status: "Backlog", statusOrder: 0, team: "NBF", project: null, priority: 0 }) as Ticket,
+    read: async (key) => ({
+      key, title: key, description: key === parent?.key ? parent.description : held.description, updatedAt: held.updatedAt, url: `https://linear.app/x/${key}`, branch: key.toLowerCase(), status: "Backlog", statusOrder: 0, team: "NBF",
+      project: null, priority: 0, ...(parent === undefined || key === parent.key ? {} : { parent: parent.key }),
+    }) as Ticket,
     ...(viewer === null ? {} : { viewer: async () => viewer }),
     ...(withoutUpdate ? {} : {
       updateTicketText: async (_key, text) => {
@@ -39,12 +49,12 @@ export function answerFixture({ description = "Fix the toast.", viewer = "Dana B
       },
     }),
   };
-  const made = poolFixture({ keys: ["NBF-1"], max: 1, now: () => NOON, source: tracker, descriptions: { "NBF-1": description } });
+  const made = poolFixture({ keys: ["NBF-1"], max: 1, now: () => NOON, source: tracker, descriptions: { "NBF-1": description }, tickets });
   const herdr: Herdr = (args) => {
     if (control.refuseMessage !== null && args.includes("prompt")) throw Object.assign(new Error("herdr exited 1"), { stdout: JSON.stringify({ error: { message: control.refuseMessage } }) });
     return made.herdr.run(args);
   };
-  const pool = made.restart({ herdr });
+  const pool = made.restart({ herdr, ...(answerer === undefined ? {} : { answerer }) });
   control.calls = () => made.herdr.calls.length;
   const dir = ticketDir(made.settings, "NBF-1");
 
