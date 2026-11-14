@@ -23,21 +23,25 @@ Design source: [https://claude.ai/artifact/S7AMyTJ3wSDk7s342DzcVD](<https://clau
 
 ## Proposed, not yet in the code (to be built)
 
-* The unreachable "Last known" view and its "Check now" action.
-* The Auto/Manual placement toggle in the new-ticket dialog.
-* The Models/Workers/Machine split of Settings.
-* The "1 needs attention" badge on the Plugins sub-nav item.
+None. The four the brief listed are built (re-checked on 2026-11-14, A11-446):
+
+* The unreachable "Last known" view and its "Check now" action: A11-195 (`ui/src/tickets/TicketsUnreachable.tsx`, captured in `ui/captures/tickets-unreachable-1440x900.png`).
+* The Auto/Manual placement toggle in the new-ticket dialog: A11-199 (`ui/src/new-ticket/NewTicketDialog.tsx`, captured in `ui/captures/new-ticket/new-ticket-manual-1440x900.png`).
+* The Models/Workers/Machine split of Settings: A11-200 (`/settings/models`, `/settings/workers` and `/settings/machine`, captured in `ui/captures/settings-*-1440x900.png`).
+* The "1 needs attention" badge on the Plugins sub-nav item: A11-201 (`ui/src/plugins/AttentionBadge.tsx`, captured in `ui/captures/plugins/plugins-badge-1440x900.png`).
 
 ## Example text
 
 The reason and prompt text on the failed, needs-you, handed-back, blocked and awaiting run boards is illustrative and labelled that way. Use the real strings from the backend.
 
-## Not designed
+## Designed in the code, not on the canvas
 
-* A failure state for herdr not opening.
-* Separate state boards for the "Claude plugins" tab.
+The canvas draws neither of these. Each is designed from its neighbouring states' patterns, and [PARITY.md](PARITY.md) links its captures (A11-446):
 
-Use the same patterns as the neighbouring states for both.
+* A failure state for herdr not opening: Run detail's failure banner, with Retry and Dismiss, says which of the four ways it failed (`ui/captures/run-detail/run-detail-herdr-*.png`).
+* The states of the "Claude plugins" tab: a need not met, none listed, a plugin workers do not get, and an install record that cannot be read (`ui/captures/plugins/plugins-claude*.png`).
+
+Every other feature the boards do not draw is a `pattern:` row of PARITY.md, to be designed the same way.
 
 ## Before a page is done
 
