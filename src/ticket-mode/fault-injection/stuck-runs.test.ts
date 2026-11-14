@@ -48,6 +48,15 @@ test("a settled run needs no reason: Checked, Completed and Cancelled say where 
   assert.ok(verdicts(queue, NOW).every((verdict) => !isStuck(verdict)));
 });
 
+test("Awaiting review says where a run is only while a review is owed: once its pull request is approved at its head, a run whose card says nothing more is stuck (A11-342)", () => {
+  const url = "https://github.com/fixture/app/pull/1";
+  const awaiting = { phase: "finished", finishedAt: NOW, outcome: { kind: "ready-pr", prs: [{ repo: "fixture/app", url }] } } as Partial<Entry>;
+  let queue = changed(queued("FIX-1", "FIX-2"), "FIX-1", awaiting);
+  queue = changed(queue, "FIX-2", { ...awaiting, pullHeads: { [url]: { head: "f".repeat(40), approved: true, review: "approved" } } } as Partial<Entry>);
+  assert.deepEqual(verdicts(queue, NOW).map(({ status, reason }) => [status, reason]), [["awaiting-review", null], ["awaiting-review", null]]);
+  assert.deepEqual(verdicts(queue, NOW).map(isStuck), [false, true], "a review owed explains the wait; an approval with nothing said does not");
+});
+
 test("a failed run with no reason is stuck: Failed says that it ended, not why", () => {
   const queue = changed(queued("FIX-1"), "FIX-1", { phase: "finished", finishedAt: NOW, outcome: { kind: "crashed" } } as Partial<Entry>);
   assert.equal(verdictOf(queue, "FIX-1").status, "failed");
