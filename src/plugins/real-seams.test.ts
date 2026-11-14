@@ -27,6 +27,11 @@ test("the premise: this test runs under the test runner's run root, which only r
   assert.ok(process.env[RUN_ROOT_ENV], `${RUN_ROOT_ENV} is set`);
 });
 
+test("A11-432: realExecAsync writes `input` to the program's stdin and closes it, as realExec does", async () => {
+  const answer = await realExecAsync("cat", [], { input: "a prompt on stdin", timeoutMs: 5_000 });
+  assert.deepEqual([answer.status, answer.stdout], [0, "a prompt on stdin"]);
+});
+
 test("A11-279: under the test runner `tailscale` is refused before anything is spawned, by realExec and realExecAsync", async () => {
   const shim = standIn();
   try {

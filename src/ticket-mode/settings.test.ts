@@ -27,7 +27,7 @@ test("only `clones` is required, every repository in it is offered, and every ot
 
 test("the `tickets` block and `stateDir` override the defaults", () => {
   const settings = parseTicketSettings({ clones, stateDir: "/state", tickets: { max: 5, port: 5000, herdrSession: "nbl", worktreeRoot: "/wt", linearKey: { path: "/keys/linear" } } });
-  assert.deepEqual({ ...settings, clones: undefined, providers: undefined }, { clones: undefined, providers: undefined, stackRequired: true, takenStates: [], max: 5, port: 5000, uiPort: 4748, herdrSession: "nbl", instance: defaultInstance(), worktreeRoot: "/wt", stateDir: "/state", binDir: join(homedir(), ".local", "bin"), brief: null, review: null, deny: [], plugins: [], terminal: null, plan: null, planner: null, writer: null, preflight: [], workingState: null, connectors: [], publish: null, drafts: true, designTools: false, fixRedMain: true, capture: false, prReview: null, reviewer: null, reviewerRequired: false, publishWhen: "ready-to-merge", pick: "assigned", stallMinutes: 30, suggestMinSample: 20, ciBudgetMinutes: 300, updateMaxDeferHours: 2 });
+  assert.deepEqual({ ...settings, clones: undefined, providers: undefined }, { clones: undefined, providers: undefined, stackRequired: true, takenStates: [], max: 5, port: 5000, uiPort: 4748, herdrSession: "nbl", instance: defaultInstance(), worktreeRoot: "/wt", stateDir: "/state", binDir: join(homedir(), ".local", "bin"), brief: null, review: null, deny: [], plugins: [], terminal: null, plan: null, planner: null, writer: null, preflight: [], workingState: null, connectors: [], publish: null, drafts: true, designTools: false, fixRedMain: true, lessons: false, capture: false, prReview: null, reviewer: null, reviewerRequired: false, publishWhen: "ready-to-merge", pick: "assigned", stallMinutes: 30, suggestMinSample: 20, ciBudgetMinutes: 300, updateMaxDeferHours: 2 });
 });
 
 test("A11-261: the CI budget is a whole number of weighted minutes per ticket, 300 by default, and 0 is none", () => {
@@ -141,6 +141,12 @@ test("A11-428: a machine files fix tickets for checks red on main unless tickets
   assert.equal(parseTicketSettings({ clones }).fixRedMain, true);
   assert.equal(parseTicketSettings({ clones, tickets: { fixRedMain: false } }).fixRedMain, false);
   assert.throws(() => parseTicketSettings({ clones, tickets: { fixRedMain: "no" } }), (err: unknown) => err instanceof TicketSettingsRefusal && err.field === "tickets.fixRedMain");
+});
+
+test("A11-432: the daily retro and its lessons are off unless tickets.lessons is true, and any other value is refused by name", () => {
+  assert.equal(parseTicketSettings({ clones }).lessons, false);
+  assert.equal(parseTicketSettings({ clones, tickets: { lessons: true } }).lessons, true);
+  assert.throws(() => parseTicketSettings({ clones, tickets: { lessons: "yes" } }), (err: unknown) => err instanceof TicketSettingsRefusal && err.field === "tickets.lessons");
 });
 
 test("a machine can capture the board for its workers only where both Chromium builds start, which onboard says by writing tickets.capture", () => {

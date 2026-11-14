@@ -61,6 +61,8 @@ import { PRIORITIES } from "./writer.ts";
 import { sectionsNeeded } from "./open-decisions.ts";
 import { boardDependencySweep } from "./dependency-updates/board.ts";
 import { idleBlockerSweep } from "./idle-blockers.ts";
+import { askClaude, retroSweep } from "./retro/retro-job.ts";
+import { realExecAsync } from "../plugins/real-seams.ts";
 import { afterMergeRoute } from "./after-merge/route.ts";
 import { sessionAnswerRoute } from "./session-answers.ts";
 import { sessionAsksRoute } from "./session-asks.ts";
@@ -723,6 +725,15 @@ export function idleBlockersOf(board: Pick<ReturnType<typeof createBoard>, "stor
   });
 }
 
+/** The daily retro's sweep over a board made by {@link createBoard} (A11-432): it reads the queue's run logs and asks `claude` without holding the loop. `serve` schedules it with the feedback sweeps. */
+export function retroOf(board: Pick<ReturnType<typeof createBoard>, "store">, deps: BoardDeps): () => Promise<void> {
+  const { settings } = deps;
+  return retroSweep({
+    on: () => settings.lessons === true, stateDir: settings.stateDir, runLog: () => board.store.get().runLog ?? {}, ask: askClaude(realExecAsync, settings.stateDir),
+    now: deps.now ?? Date.now, log: (line) => process.stderr.write(`ticket:serve: ${line}\n`),
+  });
+}
+
 /**
  * The child's program (A11-84): activate the code host plugin (the wrapper is its), load the host module and run the start-up check of the routing wrapper. A process boundary keeps the gate's closure out of this instance, as
  * `work-gate.ts` does for `host:check`, and a host the module cannot load on (no declaration of its project) is one line on stderr, never a stack: the instance starts anyway.
@@ -770,7 +781,7 @@ export type Sweeping<P> = { [K in keyof P]: K extends "watchFeedback" | "release
  * what schedules a sweep, which `serve` passes `setInterval` for, so a test sees each sweep and its interval without a timer.
  */
 export function startFeedbackSweeps(pool: Sweeping<Pick<ReturnType<typeof createPool>, "watchFeedback" | "releaseReviewers" | "retargetStacked" | "rebaseStacked" | "reviewNewHeads"> & Partial<Pick<ReturnType<typeof createPool>, "startGreenReviewers" | "cloneMissing">>>,
-  every: (run: () => void, ms: number) => unknown, board: { dependencyUpdates?: () => void | Promise<void>; idleBlockers?: () => void | Promise<void> } = {}): void {
+  every: (run: () => void, ms: number) => unknown, board: { dependencyUpdates?: () => void | Promise<void>; idleBlockers?: () => void | Promise<void>; retro?: () => void | Promise<void> } = {}): void {
   const sweeps: { sweep: () => unknown; failure: string; ms?: number }[] = [
     { sweep: () => pool.watchFeedback(), failure: "the pull requests' feedback could not be read" },
     // Its own sweep, not `watchFeedback`'s: that one returns early when no run is watched, and a merged run is no longer watched.
@@ -789,6 +800,8 @@ export function startFeedbackSweeps(pool: Sweeping<Pick<ReturnType<typeof create
     ...(board.dependencyUpdates === undefined ? [] : [{ sweep: board.dependencyUpdates, failure: "the dependency updates could not be turned into tickets" }]),
     // A ticket In Progress with no run that holds queued runs back is completed or queued (A11-347). Asynchronous, so a failure is said when it settles.
     ...(board.idleBlockers === undefined ? [] : [{ sweep: board.idleBlockers, failure: "the tickets that hold queued runs back with no run could not be completed or queued" }]),
+    // The daily ticket-mode retro writes each repository's lessons (A11-432): it does nothing unless tickets.lessons is on and today's has not run. Asynchronous, so a failure is said when it settles.
+    ...(board.retro === undefined ? [] : [{ sweep: board.retro, failure: "the daily retro could not write the lessons" }]),
   ];
   const said = (failure: string, err: unknown) => process.stderr.write(`ticket:serve: ${failure}: ${String((err as Error)?.message ?? err)}\n`);
   for (const { sweep, failure, ms = FEEDBACK_MS } of sweeps) {
@@ -886,7 +899,7 @@ async function serve(): Promise<void> {
   setInterval(() => { void board.pool.tick(); }, intervalMs(process.env, "TICK_MS", TICK_MS));
   void board.pool.refreshTracker();
   setInterval(() => { void board.pool.refreshTracker(); }, intervalMs(process.env, "TRACKER_MS", TRACKER_MS));
-  startFeedbackSweeps(board.pool, (run, ms) => { setInterval(run, intervalMs(process.env, ms === REVIEW_START_MS ? "REVIEW_START_MS" : "FEEDBACK_MS", ms)); }, { dependencyUpdates: dependencyUpdatesOf(board, boardDeps), idleBlockers: idleBlockersOf(board, boardDeps) });
+  startFeedbackSweeps(board.pool, (run, ms) => { setInterval(run, intervalMs(process.env, ms === REVIEW_START_MS ? "REVIEW_START_MS" : "FEEDBACK_MS", ms)); }, { dependencyUpdates: dependencyUpdatesOf(board, boardDeps), idleBlockers: idleBlockersOf(board, boardDeps), retro: retroOf(board, boardDeps) });
 }
 
 if (import.meta.url === pathToFileURL(process.argv[1] ? realpathSync(process.argv[1]) : "").href) {

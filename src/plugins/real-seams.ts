@@ -84,7 +84,7 @@ function execAsyncOnce(file: string, args: readonly string[], options: ExecOptio
   const refused = refuseUnderTests(file, env);
   if (refused !== null) return Promise.resolve(notStarted(refused));
   return new Promise((done) => {
-    execFile(file, [...args], { encoding: "utf8", timeout: options.timeoutMs ?? DEFAULT_EXEC_MS, env, maxBuffer: options.maxBuffer ?? EXEC_MAX_BUFFER, ...(options.cwd === undefined ? {} : { cwd: options.cwd }),
+    const child = execFile(file, [...args], { encoding: "utf8", timeout: options.timeoutMs ?? DEFAULT_EXEC_MS, env, maxBuffer: options.maxBuffer ?? EXEC_MAX_BUFFER, ...(options.cwd === undefined ? {} : { cwd: options.cwd }),
       ...(options.killSignal === undefined ? {} : { killSignal: options.killSignal }) }, (error, stdout, stderr) => {
       if (error === null) return done({ status: 0, stdout, stderr, signal: null });
       const failure = error as NodeJS.ErrnoException & { killed?: boolean; signal?: NodeJS.Signals | null };
@@ -95,6 +95,8 @@ function execAsyncOnce(file: string, args: readonly string[], options: ExecOptio
       const spawnError = code === undefined ? failure.message : `spawn ${file} ${code}`;
       done({ status: null, stdout, stderr: spawnError, spawnError, signal: failure.signal ?? null });
     });
+    // `input` is written to the program's stdin and closed, as `realExec` gives it (A11-432): a prompt too long for one argument goes this way. Without it stdin is left as it was.
+    if (options.input !== undefined) child.stdin?.end(options.input);
   });
 }
 

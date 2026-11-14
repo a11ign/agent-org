@@ -13,7 +13,7 @@ import { dismiss as dismissRun, remove as removeQueued, retry as retryQueued } f
 import { retryRefusal } from "./queue/queue-retry-refusal.ts";
 import { refusal } from "./local-http.ts";
 import { logEvent } from "./queue/run-log.ts";
-import { checkGhWrapperAtStart, STOPPED_BEFORE_QUEUEING, createBoard, runNodeProgram, dependencyUpdatesOf, FEEDBACK_MS, holdsKey, idleBlockersOf, REVIEW_START_MS, startFeedbackSweeps, type BoardDeps } from "./server.ts";
+import { checkGhWrapperAtStart, STOPPED_BEFORE_QUEUEING, createBoard, runNodeProgram, dependencyUpdatesOf, FEEDBACK_MS, holdsKey, idleBlockersOf, REVIEW_START_MS, retroOf, startFeedbackSweeps, type BoardDeps } from "./server.ts";
 import type { Outcome } from "./queue/queue-entries-and-outcomes.ts";
 import { DEPENDENCY_PULL_AUTHOR } from "../plugins/contracts/code-host.ts";
 import type { Ticket, TicketSource } from "./source.ts";
@@ -1712,6 +1712,20 @@ test("A11-347: the idle-blocker sweep is scheduled on the feedback cadence besid
   const said = await saidWhileRunning(scheduled[5]!.run);
   assert.deepEqual(calls, ["idleBlockers"]);
   assert.deepEqual(said, ["ticket:serve: the tickets that hold queued runs back with no run could not be completed or queued: the tracker is down\n"]);
+});
+
+test("A11-432: the daily retro is scheduled on the feedback cadence beside the others, and a failure of it is said when it settles, without stopping the rest", async () => {
+  const scheduled = scheduledWith({ idleBlockers: () => {}, retro: () => Promise.reject(new Error("the outcome log is not JSON")) });
+  assert.deepEqual(scheduled.map(({ ms }) => ms), Array(7).fill(FEEDBACK_MS), "on the feedback cadence, a sweep of its own");
+  const said = await saidWhileRunning(scheduled[6]!.run);
+  assert.deepEqual(said, ["ticket:serve: the daily retro could not write the lessons: the outcome log is not JSON\n"]);
+});
+
+test("A11-432: the board's retro sweep does nothing while tickets.lessons is off: no model is asked and no lessons are written", async () => {
+  const b = board();
+  await retroOf(b, { settings: b.settings, now: () => 7 } as BoardDeps)();
+  assert.equal(existsSync(join(b.settings.stateDir, "tickets", "lessons")), false);
+  assert.equal(existsSync(join(b.settings.stateDir, "tickets", "lessons-retro.json")), false);
 });
 
 test("A11-347: the board's idle-blocker sweep queues a ticket this instance claimed, on the saved choice, and wakes the pool; the same ticket claimed by nobody is left", async () => {
