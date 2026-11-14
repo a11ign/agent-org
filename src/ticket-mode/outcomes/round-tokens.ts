@@ -45,7 +45,8 @@ export function readTurns(file: string | null): TranscriptRead {
   const lines = text.split("\n");
   const byMessage = new Map<string, Turn>();
   for (const [index, line] of lines.entries()) {
-    if (!line.includes("\"usage\"")) continue;
+    // Every line is parsed, not only those naming a usage: a broken line anywhere says the transcript cannot be trusted, whatever it held.
+    if (line.trim() === "") continue;
     const turn = turnOf(line);
     if (turn === "not-json" && index !== lines.length - 1) return { unreadable: `line ${index + 1} of its transcript ${file} is not JSON` };
     if (turn !== "not-json" && turn !== null) byMessage.set(turn.id, turn);
@@ -53,7 +54,7 @@ export function readTurns(file: string | null): TranscriptRead {
   return { turns: [...byMessage.values()] };
 }
 
-/** The turn one transcript line records, null for a line that records none (a user's message that quotes `"usage"`), or `not-json`. PURE. */
+/** The turn one transcript line records, null for a line that records none (a user's message, a tool result, a summary), or `not-json`. PURE. */
 function turnOf(line: string): Turn | null | "not-json" {
   let record: UsageRecord;
   try {
