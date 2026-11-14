@@ -1,9 +1,10 @@
-Step 1 of 2 of A11-446: BRIEF.md's "Proposed, not yet in the code" list names nothing that is built, and its "Not designed" section becomes "Designed in the code, not on the canvas". PARITY.md gains a row for Talk to it when herdr does not open (four ways, each in Run detail's failure banner) and a row for the Claude plugins tab's states (a need not met, none listed, a plugin workers do not get, the install record unreadable). Each row's last cell is `designed:` with links to its captures in `ui/captures/`, which the page tests write. `parity.test.ts` accepts `designed:` cells, holds every link to a PNG that exists under `ui/captures/`, and holds both rows to be designed. A check row on the Plugins page now keeps its dot beside its words at 390px, where it used to sit alone on a line above them.
+Step 2 of 2 of A11-446: PARITY.md has no `pattern:` row left. The 36 rows step 1 left are `designed:` rows, each linking its captures in `ui/captures/`. Most captures already existed; `parity.page.test.ts` adds eleven states and writes them to `ui/captures/parity/`: four Run detail pages whose "Everything this run noted" holds the run-card notes (the shared batch session, Waits on and Stacked on, publishing off, the started-anyway note and the cut list, a restart's note, a done run's evidence, and the verdict, retarget, check and merge queue notes), the connections file refused, the quiet Reconnecting line after a focus read, an old board's `/?connection=…#run-KEY` link sent on to the run on the named instance, a stale answer for the instance switched away from that is not drawn, the settings read's notes, an instance older than the page, and the plugins read's host note. Each new scene asserts what it shows. `parity.test.ts` now refuses a `pattern:` row, holds every `designed:` link to a 390x844 capture beside its 1440x900 one, and fails if any pattern row is left.
 
 Acceptance:
 ```bash
 (cd ui && npx rstest run --config rstest.config.ts --project node test/parity/parity.test.ts)
-(cd ui && pnpm run build && npx rstest run --config rstest.config.ts --project pages test/plugins/plugins.page.test.ts test/run-detail/run-detail.page.test.ts test/responsive/responsive-captures.page.test.ts)
+(cd ui && pnpm run build && npx rstest run --config rstest.config.ts --project pages test/parity/parity.page.test.ts)
+test "$(grep -c '| pattern:' docs/design/atomaut/PARITY.md)" = 0
 ```
 
 Consumer-declaration: none -- no host file key changes meaning.

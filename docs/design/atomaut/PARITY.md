@@ -4,11 +4,13 @@ The chairman's rule (2026-10-24): **"The current functionality doesn't degrade."
 
 This file is the record of the retired page's features and where Atomaut has each. It was read from `ui.html`'s markup and script (A11-220), and A11-202 walked every row against the running Atomaut before `/` served it, then deleted `ui.html`. The "In `ui.html`" column names the element ids and functions of the page that is gone, so a row can still be found in that file's history.
 
-## Every `pattern:` row is a feature the chairman can draw later
+## Every row is drawn by a board, or designed and captured
 
-A row whose last cell starts `pattern:` is a feature with no board. It uses the pattern named after the colon, so it reads as a neighbour of what the boards draw. It is the list of what to draw on the canvas when the chairman wants it. A row whose last cell names a board (`AtomautRuns`) is drawn as the board draws it.
+A row whose last cell names a board (`AtomautRuns`) is drawn as the board draws it.
 
-A row whose last cell starts `designed:` is a state the boards do not draw that has been designed in the code from its neighbours' patterns (A11-446). Its links are the captures of each of its states in `ui/captures/`, at 1440px; the 390px capture has the same name with `390x844`. The page test that writes each capture names it.
+A row whose last cell starts `designed:` is a state the boards do not draw that has been designed in the code from its neighbours' patterns (A11-446). Its links are the captures of each of its states in `ui/captures/`, at 1440px; the 390px capture has the same name with `390x844`. The page test that writes each capture names it: most are `ui/test/parity/parity.page.test.ts`, which writes `ui/captures/parity/`.
+
+Until A11-446 a feature with no board was a `pattern: <name>` row, kept in a neighbouring pattern (a status banner, a disclosure) and listed as something to draw later. A11-446 designed all 40 of them, so none is left, and the test refuses a new one: a feature the boards do not draw is designed and captured when it is built.
 
 ## How the rows are written
 
@@ -18,9 +20,9 @@ A row whose last cell starts `designed:` is a state the boards do not draw that 
 | In `ui.html` | The element id (`#claim-note`) or the function (`renderBoard()`, or a name `ui.html` imports, in backticks) that draws it. A test holds every element id of `ui.html`'s markup, and every name it imports from `/board-view.js`, `/label-filters.js`, `/assignee-filter.js`, `/settings-search.js` and `/plugins-section.js`, to appear in this column of some row. |
 | Atomaut page | The route and the place on it. |
 | Ticket | The ticket that built the feature, or that builds it. |
-| Board or pattern | The board that draws it, `pattern: <name>`, or `designed:` and a link to each of its captures. |
+| Board or pattern | The board that draws it, or `designed:` and a link to each of its captures. |
 
-`ui/test/parity/parity.test.ts` reads this file. It fails when a row has an empty cell, a Ticket that is not a ticket key, a last cell that is neither a board, `pattern: <words>` nor `designed:` with its links, or a `designed:` link that is no PNG in `ui/captures/`. Until A11-202 it also failed when an id or an imported name of `ui.html` was in no row; it was run once on the last commit that held `ui.html`, and passed.
+`ui/test/parity/parity.test.ts` reads this file. It fails when a row has an empty cell, a Ticket that is not a ticket key, a last cell that is neither a board nor `designed:` with its links (a `pattern:` row among them), or a `designed:` link that is no PNG in `ui/captures/` or has no 390px capture beside it. Until A11-202 it also failed when an id or an imported name of `ui.html` was in no row; it was run once on the last commit that held `ui.html`, and passed.
 
 The tickets: A11-194 the shell, A11-195 an unreachable instance, A11-196 Tickets, A11-197 Runs, A11-198 Run detail, A11-199 New ticket, A11-200 Settings, A11-201 Plugins, A11-211 refetch on focus and the reconnecting line, A11-217 the update drain banner, A11-218 Publish, A11-202 the cutover, A11-220 this inventory and what it restored.
 
@@ -31,18 +33,18 @@ The tickets: A11-194 the shell, A11-195 an unreachable instance, A11-196 Tickets
 | The title and the tabs that switch pages | `#pick`, `#board`, `renderBoard()`, `renderPick()` | Every page: the sidebar's Tickets and Runs items | A11-194 | AtomautTickets |
 | Instance switcher, shown when there is more than one instance | `#connection-label`, `#connection`, `renderConnections()`, `connectionLabel`, `chosenConnection` | Every page: the sidebar's instance switcher | A11-194 | AtomautTickets |
 | The remembered instance and the `apiBase` of its API | `apiBase`, `recall`, `remember` | Every page: the shell's `ShellProvider` and client | A11-194 | AtomautTickets |
-| The service's refusal of the connections file | `#connections-note` | Every page: the shell frame's refusal banner | A11-194 | pattern: status banner |
+| The service's refusal of the connections file | `#connections-note` | Every page: the shell frame's refusal banner | A11-194 | designed: [tickets-connections-refused](../../../ui/captures/parity/tickets-connections-refused-1440x900.png) |
 | The Settings button | `#open-settings` | Every page: the sidebar's Settings item | A11-194 | AtomautTickets |
 | The error line, red, with the sentence of a refused press or read | `#error`, `report()` | Each page's failure banner, with Retry and Dismiss | A11-194 | AtomautRuns |
-| The quiet Reconnecting line while the instance restarts | `#reconnecting`, `looksLikeRestart`, `Restarting` | Every page: the lifecycle's reconnecting frame | A11-211 | pattern: reconnecting frame |
-| The check that holds every run, above both tabs | `#held` | `/tickets` above the list, and `/runs` above the pool bar | A11-220 | pattern: status banner |
+| The quiet Reconnecting line while the instance restarts | `#reconnecting`, `looksLikeRestart`, `Restarting` | Every page: the lifecycle's reconnecting frame | A11-211 | designed: [runs-reconnecting](../../../ui/captures/parity/runs-reconnecting-1440x900.png) |
+| The check that holds every run, above both tabs | `#held` | `/tickets` above the list, and `/runs` above the pool bar | A11-220 | designed: [tickets-held-and-labels](../../../ui/captures/parity/tickets-held-and-labels-1440x900.png), [runs-notices-and-lists](../../../ui/captures/parity/runs-notices-and-lists-1440x900.png) |
 | The breaking update that drains: its banner, and the line on a run | `#update-note`, `updateBanner`, `updateLines` | `/tickets` and `/runs` above the page: the shell's drain banner. A run's line is on the Runs row and on Run detail's "Everything this run noted" | A11-217 | AtomautRunsDraining |
-| The poll: one read after another, 5 s after a good one, backing off from 2 s to 60 s | `POLL_MS`, `nextDelay` | Every page: the shell's poller | A11-211 | pattern: reconnecting frame |
-| Read at once when the window is focused or shown again | `readNow()`, `readOnce()` | Every page: the poller | A11-211 | pattern: reconnecting frame |
-| An answer for another instance is dropped | `STALE`, `call()` | Every page: `ShellProvider`, which keys every read to its connection | A11-194 | pattern: status banner |
-| A link from an ended run names its instance (`?connection=`) | `chosenConnection` | `/`, the old board's address, sends the link on with its query, and `ShellProvider` chooses the instance it names | A11-202 | pattern: redirect |
-| Scroll to the card a link names (`#run-KEY`) | `scrollToNamedCard()` | `/` with `#run-KEY` goes to `/runs/<key>`, the run's own page; `#writer-<id>` goes to `/tickets`, where the request strip is; `#/settings` goes to `/settings/models` (`ui/src/shell/old-links.ts`) | A11-202 | pattern: redirect |
-| A stale terminal link is read again before it is followed | `resolveStaleTerminal()`, `isBlank()`, `openTerminalWhenReady()`, `terminalTab`, `terminalLink`, `terminalOpenHref` | The header's Talk to it link on `/runs/<key>`, and Open terminal on a New ticket request | A11-220 | pattern: terminal link |
+| The poll: one read after another, 5 s after a good one, backing off from 2 s to 60 s | `POLL_MS`, `nextDelay` | Every page: the shell's poller | A11-211 | designed: [runs-reconnecting](../../../ui/captures/parity/runs-reconnecting-1440x900.png) |
+| Read at once when the window is focused or shown again | `readNow()`, `readOnce()` | Every page: the poller | A11-211 | designed: [runs-reconnecting](../../../ui/captures/parity/runs-reconnecting-1440x900.png) |
+| An answer for another instance is dropped | `STALE`, `call()` | Every page: `ShellProvider`, which keys every read to its connection | A11-194 | designed: [tickets-other-instance-dropped](../../../ui/captures/parity/tickets-other-instance-dropped-1440x900.png) |
+| A link from an ended run names its instance (`?connection=`) | `chosenConnection` | `/`, the old board's address, sends the link on with its query, and `ShellProvider` chooses the instance it names | A11-202 | designed: [old-link-run](../../../ui/captures/parity/old-link-run-1440x900.png) |
+| Scroll to the card a link names (`#run-KEY`) | `scrollToNamedCard()` | `/` with `#run-KEY` goes to `/runs/<key>`, the run's own page; `#writer-<id>` goes to `/tickets`, where the request strip is; `#/settings` goes to `/settings/models` (`ui/src/shell/old-links.ts`) | A11-202 | designed: [old-link-run](../../../ui/captures/parity/old-link-run-1440x900.png) |
+| A stale terminal link is read again before it is followed | `resolveStaleTerminal()`, `isBlank()`, `openTerminalWhenReady()`, `terminalTab`, `terminalLink`, `terminalOpenHref` | The header's Talk to it link on `/runs/<key>`, and Open terminal on a New ticket request | A11-220 | designed: [run-detail-ready](../../../ui/captures/run-detail/run-detail-ready-1440x900.png), [run-detail-herdr-no-terminal](../../../ui/captures/run-detail/run-detail-herdr-no-terminal-1440x900.png), [run-detail-herdr-run-ended](../../../ui/captures/run-detail/run-detail-herdr-run-ended-1440x900.png), [new-ticket-writing](../../../ui/captures/new-ticket/new-ticket-writing-1440x900.png) |
 | The terminal link of a run, built from a pane | `ticketTerminal()`, `runTerminalHref()`, `writerTerminal()` | `/runs/<key>` header, and the New ticket request card | A11-198 | AtomautRunDetail |
 
 ## 2. Pick: the Tickets page
@@ -61,8 +63,8 @@ The tickets: A11-194 the shell, A11-195 an unreachable instance, A11-196 Tickets
 | Plan filter, only where the machine names a plan pattern | `#plans`, `renderPlans()`, `planChoiceOf`, `planCounts` | `/tickets`, the Plan button's menu | A11-196 | AtomautTickets |
 | Label filters, one row for each label group | `#label-rows`, `renderLabels()`, `labelRows`, `withLabels`, `clearedRow` | `/tickets`, one dashed button for each label group but Goal, whose choice the sidebar's goals make | A11-196 | AtomautTickets |
 | Visible tickets after every filter | `visibleTickets` | `/tickets`, the list | A11-196 | AtomautTickets |
-| A row's label tags, each titled with its group | `groupTags` | `/tickets`, after a row's title; the Goal label is the goal pill | A11-220 | pattern: goal pill |
-| The no-plan mark, muted when the parent's plan covers it | `missingPlan` | `/tickets`, before a row's title | A11-220 | pattern: priority mark |
+| A row's label tags, each titled with its group | `groupTags` | `/tickets`, after a row's title; the Goal label is the goal pill | A11-220 | designed: [tickets-held-and-labels](../../../ui/captures/parity/tickets-held-and-labels-1440x900.png) |
+| The no-plan mark, muted when the parent's plan covers it | `missingPlan` | `/tickets`, before a row's title | A11-220 | designed: [tickets-held-and-labels](../../../ui/captures/parity/tickets-held-and-labels-1440x900.png) |
 | Sections by status, each collapsible and remembered | `#groups`, `groupByStatus`, `flatten`, `toggled` | `/tickets`, the sections | A11-196 | AtomautTickets |
 | The parent tree: fold, tick picks its children, Not in this view, N tickets under it | `parentTick`, `isParentTicket` | `/tickets`, the tree rows | A11-196 | AtomautTickets |
 | A ticket's status when nested under a parent | `titleCell()` | `/tickets`, a nested row's status note | A11-196 | AtomautTickets |
@@ -101,7 +103,7 @@ The tickets: A11-194 the shell, A11-195 an unreachable instance, A11-196 Tickets
 | The question the agent asked | `writerCard()` | The waiting request card | A11-199 | AtomautNewTicketWaiting |
 | Created KEY, linked, and the note when Pick does not list it | `writerTicket()` | The Done item of the notification centre, behind the bell in the sidebar (A11-383) | A11-199 | AtomautTicketsNotifications |
 | The failure | `writerCard()` | The Failed item of the notification centre, behind the bell in the sidebar (A11-383) | A11-199 | AtomautTicketsNotificationsFailed |
-| Pick is read again when a request made a ticket or a Grill ended | `refreshWriters()` | The request strip refreshes the tickets | A11-199 | pattern: request card |
+| Pick is read again when a request made a ticket or a Grill ended | `refreshWriters()` | The request strip refreshes the tickets | A11-199 | designed: [new-ticket-queued](../../../ui/captures/new-ticket/new-ticket-queued-1440x900.png) |
 
 ## 5. Board: the Runs page
 
@@ -117,10 +119,10 @@ The tickets: A11-194 the shell, A11-195 an unreachable instance, A11-196 Tickets
 | A row's pull requests as links; an address that is not http or https is text | `pullsOf`, `safeHref` | `/runs`, a row's pills | A11-197 | AtomautRuns |
 | A row's actions and their titles | `runActions`, `APPROVE_TITLE`, `APPLY_EDIT_TITLE`, `DISCARD_EDIT_TITLE`, `DISMISS_EDIT_TITLE`, `DISMISS_TITLE`, `RESPOND_TITLE`, `START_ANYWAY_TITLE`, `hasEdit` | `/runs`, a row's icon buttons | A11-197 | AtomautRuns |
 | Talk to it | `talkTo()` | `/runs`, a row's button | A11-197 | AtomautRuns |
-| Reviewers off while reviews are required | `#reviewer-off-note`, `reviewerBanner` | `/runs`, above the pool bar | A11-220 | pattern: status banner |
-| The review claims GitHub refuses | `#claim-note` | `/runs`, above the pool bar | A11-220 | pattern: status banner |
-| Pull requests no run lists | `#pull-requests`, `unlistedPulls` | `/runs`, below the runs | A11-220 | pattern: run group |
-| After-merge checks | `#after-merge`, `afterMergeChecks` | `/runs`, below the runs | A11-220 | pattern: run group |
+| Reviewers off while reviews are required | `#reviewer-off-note`, `reviewerBanner` | `/runs`, above the pool bar | A11-220 | designed: [runs-notices-and-lists](../../../ui/captures/parity/runs-notices-and-lists-1440x900.png) |
+| The review claims GitHub refuses | `#claim-note` | `/runs`, above the pool bar | A11-220 | designed: [runs-notices-and-lists](../../../ui/captures/parity/runs-notices-and-lists-1440x900.png) |
+| Pull requests no run lists | `#pull-requests`, `unlistedPulls` | `/runs`, below the runs | A11-220 | designed: [runs-notices-and-lists](../../../ui/captures/parity/runs-notices-and-lists-1440x900.png) |
+| After-merge checks | `#after-merge`, `afterMergeChecks` | `/runs`, below the runs | A11-220 | designed: [runs-notices-and-lists](../../../ui/captures/parity/runs-notices-and-lists-1440x900.png) |
 | Publish: the tick on a Ready to merge run, the button and its note | `#publish`, `#publish-note`, `publishable`, `publishLabel`, `publishNote` | `/runs`, the tick on a row and the bar of the ticked runs; `/runs/<key>`, the header's Publish button and the merge note | A11-218 | AtomautRunsPublishSelect |
 | A published run's Slack message link | `.published.link` | `/runs`, a row's message link; `/runs/<key>`, the Published callout | A11-218 | AtomautRunDetailPublished |
 | A published run's terminal link | `publishTerminalLink` | `/runs/<key>`, the Publishing callout's Open terminal | A11-218 | AtomautRunDetailPublishing |
@@ -131,23 +133,23 @@ The tickets: A11-194 the shell, A11-195 an unreachable instance, A11-196 Tickets
 | Feature | In `ui.html` | Atomaut page | Ticket | Board or pattern |
 | --- | --- | --- | --- | --- |
 | The agent's pending prompt | `promptNote` | The Runs row's note, and the Needs you callout | A11-197 | AtomautRunDetailNeeds |
-| The batch planner's shared session | `sharedRunNote` | The Runs row's note, and "Everything this run noted" | A11-220 | pattern: disclosure |
-| Waits on, and the stack a run sits on | `waitsOn`, `stackedOn`, `stackNote` | The Runs row's note, and "Everything this run noted" | A11-220 | pattern: disclosure |
+| The batch planner's shared session | `sharedRunNote` | The Runs row's note, and "Everything this run noted" | A11-220 | designed: [run-detail-talking-notes-open](../../../ui/captures/parity/run-detail-talking-notes-open-1440x900.png) |
+| Waits on, and the stack a run sits on | `waitsOn`, `stackedOn`, `stackNote` | The Runs row's note, and "Everything this run noted" | A11-220 | designed: [run-detail-waiting-notes-open](../../../ui/captures/parity/run-detail-waiting-notes-open-1440x900.png) |
 | The rebase, and what a queued run waits for | `rebaseNote`, `waitNote` | The Runs row's note; the Queued and Blocked callouts | A11-198 | AtomautRunDetailBlocked |
-| Publishing off | `publishingOffLine` | The Runs row's note, and "Everything this run noted" | A11-220 | pattern: disclosure |
-| The session note, the started-anyway note, the cut list | `sessionNote`, `overrideNote`, `cutListNote` | The Runs row's note, and "Everything this run noted" | A11-220 | pattern: disclosure |
-| A restart's note: a run re-adopted after a restart, or lost in one and queued again | `readoptNote` | The Runs row's note, and "Everything this run noted" | A11-240 | pattern: disclosure |
+| Publishing off | `publishingOffLine` | The Runs row's note, and "Everything this run noted" | A11-220 | designed: [run-detail-delivery-notes-open](../../../ui/captures/parity/run-detail-delivery-notes-open-1440x900.png) |
+| The session note, the started-anyway note, the cut list | `sessionNote`, `overrideNote`, `cutListNote` | The Runs row's note, and "Everything this run noted" | A11-220 | designed: [run-detail-queued-open](../../../ui/captures/parity/run-detail-queued-open-1440x900.png), [run-detail-talking-notes-open](../../../ui/captures/parity/run-detail-talking-notes-open-1440x900.png), [run-detail-waiting-notes-open](../../../ui/captures/parity/run-detail-waiting-notes-open-1440x900.png) |
+| A restart's note: a run re-adopted after a restart, or lost in one and queued again | `readoptNote` | The Runs row's note, and "Everything this run noted" | A11-240 | designed: [run-detail-waiting-notes-open](../../../ui/captures/parity/run-detail-waiting-notes-open-1440x900.png), [run-detail-talking-notes-open](../../../ui/captures/parity/run-detail-talking-notes-open-1440x900.png) |
 | The reason, and the question | `reasonOf` | The callout of every state | A11-198 | AtomautRunDetailHandedBack |
-| What changed in the ticket's description | `#ticket-diff-dialog`, `#ticket-diff-title`, `#ticket-diff`, `ticketChangeOf`, `diffLines`, `showTicketChange()` | `/runs/<key>`, a "What changed in KEY" disclosure | A11-220 | pattern: disclosure |
-| The pull requests a queued plan learns from | `learnsFrom` | `/runs/<key>`, a "learns from" line | A11-220 | pattern: disclosure |
+| What changed in the ticket's description | `#ticket-diff-dialog`, `#ticket-diff-title`, `#ticket-diff`, `ticketChangeOf`, `diffLines`, `showTicketChange()` | `/runs/<key>`, a "What changed in KEY" disclosure | A11-220 | designed: [run-detail-queued-open](../../../ui/captures/parity/run-detail-queued-open-1440x900.png) |
+| The pull requests a queued plan learns from | `learnsFrom` | `/runs/<key>`, a "learns from" line | A11-220 | designed: [run-detail-queued-open](../../../ui/captures/parity/run-detail-queued-open-1440x900.png) |
 | What a breaking update does to the run | `updateLines` | The Runs row's note, and "Everything this run noted" | A11-217 | AtomautRunsDraining |
 | The review state of each open pull request | `reviewLinesOf` | The Ready to merge callout, and Run detail's pull requests | A11-198 | AtomautRunDetailReady |
-| A done run's evidence | `evidence` | "Everything this run noted" | A11-220 | pattern: disclosure |
-| The proposed edit's text, now and proposed | `proposal()` | `/runs/<key>`, a "Proposed edit to the ticket" disclosure; Apply edit and Discard edit are the header's | A11-220 | pattern: disclosure |
-| The verdict, retarget, check and merge queue notes | `verdictNote`, `retargetNote`, `checkNote`, `queueNote` | The Runs row's note, and "Everything this run noted" | A11-220 | pattern: disclosure |
+| A done run's evidence | `evidence` | "Everything this run noted" | A11-220 | designed: [run-detail-done-evidence-open](../../../ui/captures/parity/run-detail-done-evidence-open-1440x900.png) |
+| The proposed edit's text, now and proposed | `proposal()` | `/runs/<key>`, a "Proposed edit to the ticket" disclosure; Apply edit and Discard edit are the header's | A11-220 | designed: [run-detail-proposal-open](../../../ui/captures/parity/run-detail-proposal-open-1440x900.png) |
+| The verdict, retarget, check and merge queue notes | `verdictNote`, `retargetNote`, `checkNote`, `queueNote` | The Runs row's note, and "Everything this run noted" | A11-220 | designed: [run-detail-delivery-notes-open](../../../ui/captures/parity/run-detail-delivery-notes-open-1440x900.png) |
 | A stalled run, and what the worker is doing | `workingNote` | The Working callout | A11-198 | AtomautRunDetail |
 | A parked run | `isParked` | The Runs row's note, and the Handed back callout | A11-198 | AtomautRunDetailHandedBack |
-| Every line of the note, whole | `noteLines()` | `/runs/<key>`, "Everything this run noted" | A11-220 | pattern: disclosure |
+| Every line of the note, whole | `noteLines()` | `/runs/<key>`, "Everything this run noted" | A11-220 | designed: [run-detail-queued-open](../../../ui/captures/parity/run-detail-queued-open-1440x900.png) |
 | The run's pull requests, steps and properties | `.meta` | `/runs/<key>` | A11-198 | AtomautRunDetail |
 | Open terminal | `.terminal` | `/runs/<key>`, the header's Talk to it link | A11-198 | AtomautRunDetail |
 | Talk to it when herdr does not open: no terminal is named, the browser blocks the tab, the instance refuses the press, or the run ends before it has a pane | `talkTo()`, `report()` | `/runs/<key>`, the failure banner, with Retry and Dismiss (`use-talk.ts`) | A11-198 | designed: [no-terminal](../../../ui/captures/run-detail/run-detail-herdr-no-terminal-1440x900.png), [tab-blocked](../../../ui/captures/run-detail/run-detail-herdr-tab-blocked-1440x900.png), [refused](../../../ui/captures/run-detail/run-detail-herdr-refused-1440x900.png), [run-ended](../../../ui/captures/run-detail/run-detail-herdr-run-ended-1440x900.png) |
@@ -160,22 +162,22 @@ The tickets: A11-194 the shell, A11-195 an unreachable instance, A11-196 Tickets
 | The page, its title, and Back to the board | `#settings-page`, `#settings-title`, `#back-to-board`, `showRoute()`, `moveFocus()` | `/settings/models`, `/workers`, `/machine` and the sidebar | A11-200 | AtomautSettings |
 | What the page says of itself | `.hint` | Each page's lede | A11-200 | AtomautSettings |
 | The files the readers refused | `#settings-refusals` | The page's refusal alert | A11-200 | AtomautSettingsRefused |
-| The notes | `#settings-notes` | The page's status banners | A11-200 | pattern: status banner |
-| An instance older than the page | `drawSettingsView()` | The read-failure banner | A11-200 | pattern: status banner |
+| The notes | `#settings-notes` | The page's status banners | A11-200 | designed: [settings-models-notes](../../../ui/captures/parity/settings-models-notes-1440x900.png) |
+| An instance older than the page | `drawSettingsView()` | The read-failure banner | A11-200 | designed: [settings-older-instance](../../../ui/captures/parity/settings-older-instance-1440x900.png) |
 | Search by key or description, and its status | `#settings-search`, `#settings-search-status`, `searchGroups`, `drawSearch()` | The Machine, Workers and Models pages' search | A11-200 | AtomautSettingsMachine |
 | Show settings at their defaults | `#settings-all` | The pages' "Show settings at their defaults" | A11-200 | AtomautSettingsMachine |
 | The sections, with a count each | `#settings-groups`, `settingsGroup()`, `settingsCount()` | Each page's sections | A11-200 | AtomautSettingsMachine |
 | A section's remembered open state | `ticket-mode.settings-open`, `setOpened()` | The boards draw every section open | A11-200 | AtomautSettingsMachine |
-| A row: value, state, source, editable, and its Details | `settingRow()`, `detailsOf()` | A row: value, explanation and meta; "Details" holds its state, source and what breaks | A11-220 | pattern: disclosure |
-| A provider row says where it is changed | `settingRow()` | A provider row's meta line | A11-220 | pattern: row meta |
-| Edit, Stage change, Return to default and the problem line | `editControl()`, `valueOf()`, `stageChange()` | A row's input stages as it is typed; Return to default empties it | A11-220 | pattern: row meta |
+| A row: value, state, source, editable, and its Details | `settingRow()`, `detailsOf()` | A row: value, explanation and meta; "Details" holds its state, source and what breaks | A11-220 | designed: [settings-machine-restore](../../../ui/captures/parity/settings-machine-restore-1440x900.png) |
+| A provider row says where it is changed | `settingRow()` | A provider row's meta line | A11-220 | designed: [settings-machine-restore](../../../ui/captures/parity/settings-machine-restore-1440x900.png) |
+| Edit, Stage change, Return to default and the problem line | `editControl()`, `valueOf()`, `stageChange()` | A row's input stages as it is typed; Return to default empties it | A11-220 | designed: [settings-edited](../../../ui/captures/settings/settings-edited-1440x900.png), [settings-machine-restore](../../../ui/captures/parity/settings-machine-restore-1440x900.png) |
 | The Changes panel: staged list, Take back, Review changes | `#edit-panel`, `#edit-title`, `#pending`, `#pending-list`, `#review-changes`, `renderPending()` | The unsaved-changes bar, with Discard and Review changes | A11-200 | AtomautSettingsEdited |
 | The review: what each file would say, and the dangerous key | `#review`, `#review-files`, `reviewOf()`, `reviewChanges()`, `changeWords()` | The review dialog | A11-200 | AtomautSettingsReview |
 | Save one file | `saveFile()` | The review dialog's Save | A11-200 | AtomautSettingsSaved |
 | Saved, and the refused and conflict outcomes | `#edit-refusal`, `#edit-outcome`, `showEditRefusal()` | The page's saved, refused and conflict banners | A11-200 | AtomautSettingsRefused |
 | A remote instance's files are changed on that machine | `#edit-note`, `editable()` | The page's remote note, with every input read-only | A11-200 | AtomautSettingsUnreachable |
-| Restore the backup of a host file, at any time | `#restores`, `restoreButtons()`, `restoreFile()`, `projectDeclared()` | `/settings/machine`, at the foot; Restore previous is the saved banner's | A11-220 | pattern: ghost button |
-| What the Conventions plugin says: the plugins each worker loads, contract mismatches, the connectors and deny rules | `renderContractMismatchRows()` | `/settings/machine`, a "Conventions plugin" disclosure | A11-220 | pattern: disclosure |
+| Restore the backup of a host file, at any time | `#restores`, `restoreButtons()`, `restoreFile()`, `projectDeclared()` | `/settings/machine`, at the foot; Restore previous is the saved banner's | A11-220 | designed: [settings-machine-restore](../../../ui/captures/parity/settings-machine-restore-1440x900.png) |
+| What the Conventions plugin says: the plugins each worker loads, contract mismatches, the connectors and deny rules | `renderContractMismatchRows()` | `/settings/machine`, a "Conventions plugin" disclosure | A11-220 | designed: [settings-machine-restore](../../../ui/captures/parity/settings-machine-restore-1440x900.png) |
 | New runs: model and effort, saved as they change | `#model`, `#effort`, `saveChoice()`, `readChoice()`, `setDefault()` | `/settings/models` | A11-200 | AtomautSettings |
 | Planning: model and effort, only on a machine that plans | `#planning-settings`, `#planModel`, `#planEffort` | `/settings/models` | A11-200 | AtomautSettings |
 | Ticket writer: model and effort, with the host default | `#writer-settings`, `#writerModel`, `#writerEffort` | `/settings/models` | A11-200 | AtomautSettings |
@@ -193,7 +195,7 @@ The tickets: A11-194 the shell, A11-195 an unreachable instance, A11-196 Tickets
 | A concern, its plugins and its settings | `CONCERNS`, `concernOfGroup`, `PLUGIN_GROUPS`, `providerSections()`, `concernNode()` | A concern's card | A11-201 | AtomautPlugins |
 | A concern with no plugin: the sentence, and the commands | `emptyWords` | The card's check row, with a Copy for each command | A11-201 | AtomautPlugins |
 | A plugin's words: name, version, contract and state | `rowWords`, `pluginNode()` | The card's head | A11-201 | AtomautPlugins |
-| A plugin's description and where it is | `pluginNode()` | The card's muted note for a concern of one plugin, and each plugin of the "Active plugin" choice: "<description> <where>." | A11-202 | pattern: card note |
+| A plugin's description and where it is | `pluginNode()` | The card's muted note for a concern of one plugin, and each plugin of the "Active plugin" choice: "<description> <where>." | A11-202 | designed: [plugins-ready](../../../ui/captures/plugins/plugins-ready-1440x900.png) |
 | Why a plugin failed, and the fix | `failedNode()` | The card's check row | A11-201 | AtomautPlugins |
 | A plugin's failing checks | `pluginNode()` | The card's check rows | A11-201 | AtomautPlugins |
 | A secret is a command, never a field: Install and the set commands, with Copy | `SECRET_WORDS`, `commandNode()` | The card's secrets panel | A11-201 | AtomautPlugins |
@@ -203,5 +205,5 @@ The tickets: A11-194 the shell, A11-195 an unreachable instance, A11-196 Tickets
 | What an action came to | `outcomeWords`, `drawSettings()` | The applied, refused and conflict banners | A11-201 | AtomautPluginsApplied |
 | Refused by the registry | `failedNode()` | The refused package's card | A11-201 | AtomautPlugins |
 | A remote instance offers no control | `buildPluginsSection()` | The page's remote note | A11-201 | AtomautPluginsUnknown |
-| The words about a note the plugins answer carries | `buildPluginsSection()` | The page's host note | A11-201 | pattern: status banner |
+| The words about a note the plugins answer carries | `buildPluginsSection()` | The page's host note | A11-201 | designed: [plugins-host-note](../../../ui/captures/parity/plugins-host-note-1440x900.png) |
 | The Claude plugins tab: a plugin with a need not met, none listed, a plugin workers do not get, and Claude Code's install record unreadable | None: the tab is new in Atomaut | `/settings/plugins`, the Claude plugins tab | A11-201 | designed: [claude](../../../ui/captures/plugins/plugins-claude-1440x900.png), [claude-empty](../../../ui/captures/plugins/plugins-claude-empty-1440x900.png), [claude-not-loading](../../../ui/captures/plugins/plugins-claude-not-loading-1440x900.png), [claude-unknown](../../../ui/captures/plugins/plugins-claude-unknown-1440x900.png) |
