@@ -3,7 +3,10 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { faultInjection } from "./command.ts";
 import { KEYS, runScenario, SCENARIOS, type Scenario } from "./scenarios.ts";
-import { stuckOf } from "./stuck-runs.ts";
+import { stuckOf, type ScenarioResult } from "./stuck-runs.ts";
+import type { RunEvent } from "../queue/run-log.ts";
+import { fakePullUrl } from "../../plugins/fakes/code-host.ts";
+import { FIXTURE_REPOSITORY } from "./fault-pulls.ts";
 
 const scenarioNamed = (name: string): Scenario => SCENARIOS.find((scenario) => scenario.name === name)!;
 
@@ -25,11 +28,19 @@ function assertReport({ stdout, code }: Readonly<{ stdout: string; code: number 
   for (const line of lines) assert.match(stdout, line);
 }
 
-test("the command runs the Linear 5xx and herdr-killed scenarios, both runs of each recover, it reports no stuck runs and exits 0, and no call reaches the network", async () => {
-  assert.deepEqual(SCENARIOS.map(({ name }) => name), ["linear-5xx", "herdr-killed"]);
+const NAMES = ["linear-5xx", "herdr-killed", "check-cancelled", "merge-queue-ejection", "update-during-run"];
+
+/** The pull request the fixture opens for `key`'s run. */
+const pullOf = (key: string): string => fakePullUrl(FIXTURE_REPOSITORY, Number(key.replace(/\D/g, "")));
+
+/** The run log of `key`'s run, as the scenario left it. */
+const logOf = (result: ScenarioResult, key: string): readonly RunEvent[] => result.runs.find((run) => run.key === key)!.log;
+
+test("the command runs every scenario, every run of each recovers or shows its reason, it reports no stuck runs and exits 0, and no call reaches the network", async () => {
+  assert.deepEqual(SCENARIOS.map(({ name }) => name), NAMES);
   const { value, fetches } = await countingFetch(() => faultInjection(undefined));
   assert.equal(fetches, 0, "every fake is in memory");
-  assertReport(value, 0, [/^linear-5xx \(.+\): no stuck runs$/m, /^herdr-killed \(.+\): no stuck runs$/m, /^No run was left stuck with no reason shown\.$/m]);
+  assertReport(value, 0, [...NAMES.map((name) => new RegExp(`^${name} \\(.+\\): no stuck runs$`, "m")), /^No run was left stuck with no reason shown\.$/m]);
 });
 
 test("Linear 5xx: the fault reaches the board, which says the tracker could not answer, and both runs end on their workers' outcomes once it is over", async () => {
@@ -43,6 +54,44 @@ test("herdr killed: the board meets the dead server, sees the restart, starts ea
   const result = await runScenario(scenarioNamed("herdr-killed"));
   assert.ok(result.journal.some((line) => line.includes("the herdr server is not running")), "the board met the dead server");
   assert.ok(KEYS.every((key) => result.journal.some((line) => line.includes(`${key} was started again`))), "each run was started again after the restart");
+  assert.deepEqual(result.runs.map(({ key, status }) => [key, status]), KEYS.map((key) => [key, "checked"]));
+  assert.deepEqual(stuckOf(result), []);
+});
+
+test("check cancelled: the board reruns each cancelled run; FIX-1's rerun goes green and its pull request merges, and the card of FIX-2, cancelled every time, says the board stopped rerunning", async () => {
+  const result = await runScenario(scenarioNamed("check-cancelled"));
+  assert.deepEqual(result.runs.map(({ key, status }) => [key, status]), [["FIX-1", "completed"], ["FIX-2", "awaiting-review"]]);
+  assert.ok(logOf(result, "FIX-1").some((event) => event.kind === "cancelled-rerun" && event.url === pullOf("FIX-1")), "the board reran FIX-1's cancelled run");
+  assert.match(result.runs[1].reason ?? "", /cancelled 3 times, the board has stopped rerunning it/);
+  assert.deepEqual(stuckOf(result), []);
+});
+
+test("check cancelled, on a code host that cannot rerun a run: neither pull request merges and nothing on either card says why, so both runs are listed stuck and the command exits 1", async () => {
+  const cancelled = scenarioNamed("check-cancelled");
+  const unrerunnable: Scenario = {
+    ...cancelled,
+    name: "check-cancelled-no-rerun",
+    inject: async (fixture, crew) => {
+      delete (fixture.codeHost as { rerunRuns?: unknown }).rerunRuns;
+      await cancelled.inject(fixture, crew);
+    },
+  };
+  assertReport(await faultInjection(["check-cancelled-no-rerun"], [unrerunnable]), 1, [/^ {2}FIX-1: awaiting-review, no reason shown$/m, /^ {2}FIX-2: awaiting-review, no reason shown$/m, /^2 runs left stuck with no reason shown\.$/m]);
+});
+
+test("merge-queue ejection: the board puts FIX-1's pull request back in the queue for a registry error with no round, and it merges; FIX-2's card names its removal by a person and says a person decides", async () => {
+  const result = await runScenario(scenarioNamed("merge-queue-ejection"));
+  assert.deepEqual(result.runs.map(({ key, status }) => [key, status]), [["FIX-1", "completed"], ["FIX-2", "needs-you"]]);
+  assert.ok(result.journal.some((line) => line.includes("FIX-2: removed from the merge queue by fixture-maintainer: manual")), "the board named the person's removal");
+  assert.match(result.runs[1].reason ?? "", /is not merging .*: a person decides$/);
+  assert.deepEqual(logOf(result, "FIX-1").filter((event) => event.kind === "round"), [], "no worker round was started for the registry's failure");
+  assert.deepEqual(stuckOf(result), []);
+});
+
+test("update during a run: the restart lands while FIX-2's workspace opens; the new instance re-adopts FIX-1, queues FIX-2 again with nothing lost, and both end on their workers' outcomes", async () => {
+  const result = await runScenario(scenarioNamed("update-during-run"));
+  assert.deepEqual(logOf(result, "FIX-2").flatMap((event) => (event.kind === "requeued" ? [event.why] : [])), ["restart"], "FIX-2 was queued again because of the restart, not lost in it");
+  assert.equal(logOf(result, "FIX-1").filter((event) => event.kind === "started").length, 1, "FIX-1 was adopted, not started a second time");
   assert.deepEqual(result.runs.map(({ key, status }) => [key, status]), KEYS.map((key) => [key, "checked"]));
   assert.deepEqual(stuckOf(result), []);
 });
@@ -74,7 +123,7 @@ test("a scenario the command does not know is refused by name, with the ones it 
   const { stdout, stderr, code } = await faultInjection(["linear-5xx", "nope"]);
   assert.equal(code, 2);
   assert.equal(stdout, "");
-  assert.equal(stderr, "fault-injection: no scenario named nope; the scenarios are linear-5xx, herdr-killed\n");
+  assert.equal(stderr, `fault-injection: no scenario named nope; the scenarios are ${NAMES.join(", ")}\n`);
 });
 
 test("one scenario named runs only that one", async () => {

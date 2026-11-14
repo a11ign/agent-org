@@ -82,7 +82,7 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 const BIN = join(HERE, "..", "bin.ts");
 const TICK_MS = 30_000;
 /** How often the tracker is asked whether finished runs' tickets are done. A merge is not urgent news, and every read is a Linear request. */
-const TRACKER_MS = 120_000;
+export const TRACKER_MS = 120_000;
 /** How often the open pull requests of runs Ready to merge are read for new feedback. Each is one GitHub request per pull request. */
 export const FEEDBACK_MS = 180_000;
 /**

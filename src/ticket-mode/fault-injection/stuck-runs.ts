@@ -6,6 +6,9 @@
 // context and that no scenario sets (the publisher, the update banner, the pull requests' reviews, the CI line). A status that is its own reason needs no line: a settled run (Completed, Checked, Cancelled) and one that waits
 // on a review or a merge, whose status says what it waits on. Every other status (In progress, Waiting, Needs you, Failed, Queued, Blocked and the rest) with no line is a run a person would find stuck and not know why.
 //
+// AWAITING REVIEW IS NO REASON ONCE EVERY PULL REQUEST IS APPROVED AT ITS HEAD. Then the review it names has happened, and the run waits on something the status does not say: a11ign/announcement-emulator#32 (A11-342) read
+// approved and armed while a cancelled run of its required check held it BLOCKED, and nothing on the card said so. Such a run needs a line, as any other status does ({@link explainsItself}).
+//
 // The scenarios end with every worker done, so a run still In progress with nothing said is not a run at work: the board has lost track of it.
 import { checkNote, promptNote, queueNote, reasonOf } from "../board-view/run-reason.ts";
 import { isParked, overrideNote, rebaseNote, retargetNote, runStatus, stackedOn, stackNote, verdictNote, waitNote, waitsOn, workingNote } from "../board-view/pull-status-and-notes.ts";
@@ -17,15 +20,24 @@ import { readoptNote } from "../board-view/readopt-note.ts";
 import { cutListNote } from "../board-view/overlap-hold.ts";
 import { learnsLine } from "../board-view/ticket-change.ts";
 import { conflictNote } from "../board-view/pull-conflict.ts";
-import type { RunStatus } from "../board-view/view-types-and-filters.ts";
+import { openPulls, type RunStatus } from "../board-view/view-types-and-filters.ts";
 import type { Entry, Queue } from "../queue/queue-entries-and-outcomes.ts";
 import { logOf, type RunEvent } from "../queue/run-log.ts";
 
 /** The statuses that say by themselves where a run is: settled, or waiting on a review or a merge. */
 export const SELF_EXPLAINED: ReadonlySet<RunStatus> = new Set<RunStatus>(["completed", "checked", "cancelled", "awaiting-review", "not-merging", "ready-to-merge", "published"]);
 
-/** One run as the scenario left it: its key, its status, the reason its card shows (null for none), and its run log. */
-export type RunVerdict = Readonly<{ key: string; status: RunStatus; reason: string | null; log: readonly RunEvent[] }>;
+/** One run as the scenario left it: its key, its status, whether that status says by itself where the run is, the reason its card shows (null for none), and its run log. */
+export type RunVerdict = Readonly<{ key: string; status: RunStatus; explained: boolean; reason: string | null; log: readonly RunEvent[] }>;
+
+/** Whether every open pull request of the run was last read approved at its head. False for a run with none. PURE. */
+function approvedAtHeads(entry: Entry): boolean {
+  const heads = openPulls(entry).map(({ url }) => entry.pullHeads?.[url]);
+  return heads.length > 0 && heads.every((head) => head?.approved === true || head?.review === "approved");
+}
+
+/** Whether `status` says by itself where the run is: one of {@link SELF_EXPLAINED}, except Awaiting review over pull requests already approved at their heads. PURE. */
+const explainsItself = (entry: Entry, status: RunStatus): boolean => SELF_EXPLAINED.has(status) && !(status === "awaiting-review" && approvedAtHeads(entry));
 
 /** The keys of the queued runs that wait on `entry` while it is a crashed run, as the card counts them for its line on the crash (A11-399). PURE. */
 function waitingOnCrash(entry: Entry, entries: readonly Entry[]): string[] {
@@ -60,11 +72,14 @@ export function shownReason(entry: Entry, entries: readonly Entry[], now: number
 
 /** Every run of `queue`, as its card reads at `now`, with its run log. PURE. */
 export function verdicts(queue: Queue, now: number): RunVerdict[] {
-  return queue.entries.map((entry) => ({ key: entry.ticket.key, status: runStatus(entry, queue.entries), reason: shownReason(entry, queue.entries, now), log: logOf(queue, entry.ticket.key) }));
+  return queue.entries.map((entry) => {
+    const status = runStatus(entry, queue.entries);
+    return { key: entry.ticket.key, status, explained: explainsItself(entry, status), reason: shownReason(entry, queue.entries, now), log: logOf(queue, entry.ticket.key) };
+  });
 }
 
 /** Whether a run is stuck with no reason shown: a status that does not say why by itself, and no line that does. PURE. */
-export const isStuck = (verdict: RunVerdict): boolean => !SELF_EXPLAINED.has(verdict.status) && verdict.reason === null;
+export const isStuck = (verdict: RunVerdict): boolean => !verdict.explained && verdict.reason === null;
 
 /** One scenario's result: its name, what it injected, every run as it left it, and the lines the board wrote to its journal (stderr) while it ran. */
 export type ScenarioResult = Readonly<{ name: string; faults: string; runs: readonly RunVerdict[]; journal: readonly string[] }>;
