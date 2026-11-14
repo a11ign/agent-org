@@ -1,5 +1,0 @@
----
-"agent-org": patch
----
-
-A disputed review reaches a person (A11-213). The atomic reviewer is given the ticket's explicit decisions (a `## Decisions` or `## Behaviour` section, or a line marked as the chairman's decision) and told that they override a general direction: where a rule it holds (such as "permissions only shrink") goes against one, it says so, quotes the decision, and does not request changes for it. The reviewer contract is 1.4 (`ReviewBrief.decisions`, optional). A review round whose worker judges a requested change wrong, or already settled by the ticket, replies on the pull request quoting the ticket and ends `needs-human` naming the pull request and the finding, and never ends `reviewed` while that review still blocks the head. The board stamps when it first reads a pull request changes-requested at a head (`PullHead.blockedSince`), and a finished run whose pull request has sat blocked for more than 30 minutes with no push and no run is handed back, so it reads Needs you.

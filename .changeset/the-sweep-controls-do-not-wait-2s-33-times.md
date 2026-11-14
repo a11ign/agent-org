@@ -1,5 +1,0 @@
----
-"agent-org": patch
----
-
-The three process-form sweep tests (`arm-refuses-an-ejected-pr`, `arm-refuses-open-blocker`, `pipeline-lane-authorship`) no longer wait the sweep's real 2 s between re-reads (a11ign/a11ign#3768). They spawn the whole `auto-arm-sweep.mjs` against a fake `gh` that never changes its answer, so no injected `sleep` reached the wait and each read exhausted its retries in real time. `waitBetweenReads` now takes the wait from `AGENT_ORG_SWEEP_WAIT_MS` when it is a whole number of milliseconds, and the three tests set it to `0` in the spawned sweep's environment. Unset, empty or malformed is the real wait (`CONFIRM_ARMED_WAIT_MS` and `MERGED_MEANWHILE_WAIT_MS`, both still `2_000`), so production is unchanged: no unit, workflow or non-test source sets it, and `sweep-wait-override.test.ts` pins that, the default and the garbage-is-not-zero rule. Measured with an `Atomics.wait` preload on the same host: 33 waits of 2 s before (12, 12 and 9), the same 33 calls at 0 ms after; wall 25.5 s, 26.0 s and 19.4 s before, 3.3 s, 4.1 s and 2.7 s after.
