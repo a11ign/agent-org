@@ -5,6 +5,7 @@ import { pathToFileURL } from "node:url";
 import { resolveProviders } from "../ticket-mode/providers.ts";
 import { depsFor, importEnabled, loadEnabled, settingsOfBlock } from "./loader.ts";
 import { createCallLedger } from "../ticket-mode/call-outcomes.ts";
+import { createOutsideClient } from "../ticket-mode/outside-client.ts";
 import type { PluginDeps, PluginModule } from "./manifest.ts";
 import { fakePluginDeps } from "./fakes/deps.ts";
 import { buildCatalog, type PackageFiles } from "./registry.ts";
@@ -46,7 +47,8 @@ test("the loader imports only the bundled plugins a host enables, by file URL, a
   assert.deepEqual(urls, [urlOf("my-tracker")], "my-publisher is not enabled, so its code is not read");
   const [[settings, given]] = created as [[unknown, PluginDeps]];
   assert.deepEqual(settings, {});
-  assert.deepEqual({ ...given, fetch: DEPS.fetch, retryFetch: undefined }, { ...DEPS, retryFetch: undefined }, "the deps, with the tracker's fetch counted and a retryFetch added (depsFor)");
+  assert.deepEqual({ ...given, outside: undefined }, { ...DEPS, outside: undefined }, "the deps, with the outside client added for the tracker (depsFor)");
+  assert.equal(typeof given.outside, "function");
   assert.deepEqual(result.loaded.map(({ plugin, implementation }) => [plugin.name, implementation]), [["my-tracker", "the tracker"]]);
   assert.deepEqual(result.refusals, []);
 });
@@ -122,24 +124,15 @@ test("A11-160: importing an unsupported contract major is refused by name, and i
   assert.deepEqual([urls, result.modules, result.refusals.map(({ plugin }) => plugin)], [[], [], ["my-tracker"]]);
 });
 
-test("A11-363: the tracker plugin is given a fetch and a freshFetch that count every request as the board's tracker figure, and every other plugin is given its deps as they are", async () => {
+test("A11-436: the tracker plugin is given the outside client, whose calls count once each as the board's tracker figure, and every other plugin is given its deps as they are", async () => {
   const ledger = createCallLedger(() => 1_000);
-  const answer = (async () => new Response("", { status: 503 })) as typeof fetch;
-  const deps = { fetch: answer, freshFetch: answer } as unknown as PluginDeps;
-  assert.equal(depsFor("codeHost", deps, ledger), deps);
-  const tracker = depsFor("tracker", deps, ledger);
-  await tracker.fetch("https://tracker.example/graphql");
-  await tracker.freshFetch!("https://tracker.example/graphql");
-  assert.deepEqual(ledger.figures().linear, { calls: 2, failures: 2, failuresPer100: 100 });
-  await tracker.retryFetch!("https://tracker.example/graphql");
-  assert.deepEqual(ledger.figures().linear, { calls: 2, failures: 2, failuresPer100: 100 }, "A11-345: the attempt that retries a failed call is not a call of its own");
-  assert.equal((await tracker.retryFetch!("https://tracker.example/graphql")).status, 503, "and it answers as the fetch does");
-});
-
-test("A11-345: a tracker with no freshFetch has its retries sent through its fetch, uncounted", async () => {
-  const ledger = createCallLedger(() => 1_000);
+  const client = createOutsideClient({ ledger, sleep: async () => undefined });
+  const deps = fakePluginDeps();
+  assert.equal(depsFor("codeHost", deps, client), deps);
+  const tracker = depsFor("tracker", deps, client);
   let sent = 0;
-  const fetch = (async () => { sent += 1; return new Response("", { status: 503 }); }) as typeof globalThis.fetch;
-  await depsFor("tracker", { fetch } as unknown as PluginDeps, ledger).retryFetch!("https://tracker.example/graphql");
-  assert.deepEqual([sent, ledger.figures().linear.calls], [1, 0]);
+  const answer = await tracker.outside!(async () => new Response("", { status: (sent += 1) === 1 ? 503 : 200 }), { statusOf: (response) => response.status });
+  assert.deepEqual([answer.status, sent], [200, 2], "the 503 was tried again");
+  assert.deepEqual(ledger.figures().linear, { calls: 1, failures: 1, failuresPer100: 100 }, "A11-345: one call, failed because its first attempt did, though its retry was answered");
+  assert.deepEqual(ledger.figures().github, { calls: 0, failures: 0, failuresPer100: 0 });
 });

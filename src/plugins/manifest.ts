@@ -9,6 +9,7 @@
 // A PLUGIN IMPORTS CORE'S TYPES ONLY (ADR 0001). Every runtime helper reaches it through `create(settings, deps)`.
 import type { Secret } from "../messaging/secret.ts";
 import type { SchemaEntry } from "../ticket-mode/config-schema.ts";
+import type { CallOptions } from "../ticket-mode/outside-client.ts";
 import type { PickScope } from "../ticket-mode/settings.ts";
 import type { Concern } from "./concerns.ts";
 import type { CodeHost, HostPlace, ReviewTrust } from "./contracts/code-host.ts";
@@ -273,6 +274,9 @@ export type ProbeRequest = Readonly<{ host: string; port: number; tls: boolean; 
  */
 export type HostPlaceReading = Readonly<{ kind: "place"; place: HostPlace }> | Readonly<{ kind: "no-project" }> | Readonly<{ kind: "unreadable"; reason: string }> | Readonly<{ kind: "skipped" }>;
 
+/** One call through the outside client to the plugin's own service: see {@link PluginDeps.outside}. */
+export type ServiceCall = <T>(attempt: (signal: AbortSignal) => Promise<T>, options?: CallOptions<T>) => Promise<T>;
+
 /**
  * What a plugin is given by core to do its work: every runtime helper reaches it here, because it imports core's types only. `fetch` and `exec` are the two seams a plugin's I/O goes
  * through (a test injects each); `readFile` and `mode` read a file's text and permission bits (null when it cannot be read); `pick` is the board's `tickets.pick` scope, which a tracker
@@ -286,10 +290,11 @@ export type PluginDeps = Readonly<{
   /** A `fetch` that opens a connection for each call and closes it after, so no call reuses a socket the far end closed while it sat idle (A11-359). The board's deps give one; a plugin that makes calls the board's loop waits on uses it in place of `fetch` where it is there. */
   freshFetch?: typeof fetch;
   /**
-   * The `fetch` for an attempt that retries a call whose first attempt failed (A11-345). The board's tracker figure counts calls, so it counts what goes through `fetch` and `freshFetch` and leaves this one out: a call tried
-   * four times while the host's network is down is one failed call, not four. It is `freshFetch` (or `fetch`) without the count, though the board still notes whether the attempt got through. A tracker that retries sends its retries through it where it is there.
+   * The board's one client for outside calls (A11-436), bound to the plugin's service: it runs `attempt` with a signal cut at the service's time, tries it again when the one rule (`failureKindOf`) says another
+   * try can get past the failure, refuses at once while the service's breaker is open, and counts the call once in the board's call figure. The loader gives it to a tracker, whose calls are the `linear` figure.
+   * A plugin with none makes each call once.
    */
-  retryFetch?: typeof fetch;
+  outside?: ServiceCall;
   /** True in the board's own process only (A11-359): a tracker plugin keeps the rate of its failed calls in the state folder for doctor, which a short-lived process (`pr:open` in a worker's pane) must not overwrite with its own few calls. */
   recordCalls?: boolean;
   /**

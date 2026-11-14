@@ -15,7 +15,7 @@ import { type BlockReport, DEFAULT_PROVIDER, type Providers } from "../ticket-mo
 import type { Catalog, CatalogPlugin, LoadedPlugin, PluginDeps, PluginModule, PluginSettings } from "./manifest.ts";
 import { blockSettings, pluginNamed } from "./registry.ts";
 import { readsConcernContract, unreadMajorRefusal } from "./version.ts";
-import { callOutcomes, countedFetch, observedFetch, type CallLedger } from "../ticket-mode/call-outcomes.ts";
+import { outsideClient, type OutsideClient } from "../ticket-mode/outside-client.ts";
 
 /**
  * What loading found: the plugins that loaded, and one refusal for each that did not, naming it. A plugin whose module imported but whose `create` threw is a refusal and also
@@ -28,17 +28,12 @@ export type LoadResult = Readonly<{
 }>;
 
 /**
- * The deps a plugin of `concern` is given: a tracker's `fetch` and `freshFetch` count every request it makes as the board's `linear` figure (A11-363), since core names no tracker's address; its `retryFetch` is the
- * same `fetch` not counted, for an attempt that retries a call already counted as failed, so one call is one entry in the figure however often it is tried; it still tells the ledger whether the attempt got through (A11-345). Every other plugin gets `deps` as they are.
+ * The deps a plugin of `concern` is given: a tracker is given the board's outside client bound to the `linear` figure (A11-436), since core names no tracker's address: its calls are timed, retried, held off by
+ * the breaker and counted once there (A11-345, A11-363). Every other plugin gets `deps` as they are.
  */
-export function depsFor(concern: Concern, deps: PluginDeps, ledger: CallLedger = callOutcomes): PluginDeps {
+export function depsFor(concern: Concern, deps: PluginDeps, client: OutsideClient = outsideClient): PluginDeps {
   if (concern !== "tracker") return deps;
-  return {
-    ...deps,
-    fetch: countedFetch(deps.fetch, ledger, "linear"),
-    ...(deps.freshFetch === undefined ? {} : { freshFetch: countedFetch(deps.freshFetch, ledger, "linear") }),
-    retryFetch: observedFetch(deps.freshFetch ?? deps.fetch, ledger, "linear"),
-  };
+  return { ...deps, outside: (attempt, options) => client.call("linear", attempt, options) };
 }
 
 /** Imports a module by its file URL: the default is `import()`, and a test passes its own. */
