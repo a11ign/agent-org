@@ -103,7 +103,7 @@ function deps(over: Partial<DoctorDeps> = {}): DoctorDeps {
     healthy: async (port) => port === 7318, unitProblem: () => null,
     probe: async ({ port }) => (port === 4800 || port === 4801 ? 200 : null),
     hostPlace: async () => ({ kind: "unreadable", reason: "this test reads no host place" }),
-    platform: "linux", arch: "x64", herdrPlace: () => UNIT_PLACE, guards: () => ({ watchdog: false, dropIn: false, readCacheDropIn: false }), updateStatus: () => ({ kind: "absent" }), drain: () => ({ kind: "none" }),
+    platform: "linux", arch: "x64", herdrPlace: () => UNIT_PLACE, guards: () => ({ watchdog: false, dropIn: false, readCacheDropIn: false }), ghWrapperDeclared: async () => true, updateStatus: () => ({ kind: "absent" }), drain: () => ({ kind: "none" }),
     herdrIntegrations: integrationsSaying(INTEGRATIONS), herdrVersion: () => "herdr 0.9.3", herdrPlugins: () => null, herdrStatus: () => ({ kind: "absent" }),
     uiBuild: () => ({ found: "/home/me/.agent-org/tool/versions/v0.280.0/ui-build", declared: true, looked: "/home/me/.agent-org/tool/versions/v0.280.0/ui-build", version: "v0.280.0" }),
     runs: () => [], longWaits: () => [], boardFigures: async () => null, reliabilityWatches: () => null, watchdog: () => null, instanceVersion: () => "v0.280.0", pluginCopies: () => [], releaseTags: () => [],
@@ -242,7 +242,7 @@ test("doctor passes every check on a working install, and never prints the key",
   const checks = await diagnose(deps());
   assert.deepEqual(checks.map(({ name, ok }) => [name, ok]), [
     ["node", true], ["pnpm", true], ["launcher", true], ["agent-org command", true], ["host file", true], ["herdr", true], ["herdr claude integration", true], ["herdr codex integration", true], ["herdr version", true], ["ticket writer", true], ["instance service", true],
-    ["instance answering", true], ["herdr service", true], ["herdr scope", true], ["ui service", true], ["ui answering", true], ["ui build", true], ["terminal address", true], ["terminal service", true],
+    ["instance answering", true], ["herdr service", true], ["herdr scope", true], ["keep-herdr.conf", true], ["gh-wrapper watchdog", true], ["gh-read-cache-off.conf", true], ["ui service", true], ["ui answering", true], ["ui build", true], ["terminal address", true], ["terminal service", true],
     ["terminal answering", true], ["tracker key", true], ["linear mcp", true], ["linear calls", true], ["tracker (linear)", true], ["gh wrapper", true], ["gh stack", true], ["code host (github)", true],
     ["publisher (none)", true], ["reviewer (none)", true], ["local ports", true], ["local terminal", true], ["exposure (local)", true], ["messaging (none)", true], ["pairing", true],
     ["auto-update service", true], ["watchdog service", true], ["update lag", true], ["flaky tests", true], ["chromium", true], ["chromium headless shell", true],
@@ -492,27 +492,55 @@ test("A11-169: with no herdr server running, herdr scope passes while the herdr 
   assert.equal(unregistered["herdr service"].fix, "run `agent-org start herdr`");
 });
 
-test("A11-169: the keep-herdr.conf and watchdog rows fail while either guard stands on a host whose herdr runs in its unit, and are absent otherwise", async () => {
-  const clean = byName(await diagnose(deps()));
-  assert.equal(clean["keep-herdr.conf"], undefined);
-  assert.equal(clean["gh-wrapper watchdog"], undefined);
-  const guarded = byName(await diagnose(deps({ guards: () => ({ watchdog: true, dropIn: true, readCacheDropIn: false }) })));
-  assert.equal(guarded["keep-herdr.conf"].ok, false);
-  assert.equal(guarded["gh-wrapper watchdog"].ok, false);
-  assert.match(guarded["keep-herdr.conf"].fix ?? "", /agent-org start herdr --move/);
-  const notYet = byName(await diagnose(deps({ guards: () => ({ watchdog: true, dropIn: true, readCacheDropIn: false }), herdrPlace: () => ({ kind: "instance", where: "/i" }) })));
-  assert.equal(notYet["keep-herdr.conf"], undefined, "the drop-in is still what keeps herdr alive until the move: its row waits for the unit");
+const GUARD_NAMES = ["keep-herdr.conf", "gh-wrapper watchdog", "gh-read-cache-off.conf"] as const;
+const ALL_GUARDS = { watchdog: true, dropIn: true, readCacheDropIn: true };
+
+test("A11-444: with all three interim guards retired, all three guard rows pass and say so", async () => {
+  const rows = byName(await diagnose(deps({ ghWrapperDeclared: async () => { throw new Error("no guard stands, so no proof is asked"); } })));
+  for (const name of GUARD_NAMES) {
+    assert.equal(rows[name].ok, true, name);
+    assert.equal(rows[name].warning, undefined, name);
+    assert.match(rows[name].detail, /^retired: /, name);
+  }
 });
 
-test("A11-172: the gh-read-cache-off.conf row fails while the drop-in stands, with the command that retires it, and is absent once it is gone, whatever herdr's place", async () => {
-  const gone = byName(await diagnose(deps()));
-  assert.equal(gone["gh-read-cache-off.conf"], undefined);
+test("A11-444: a read-cache drop-in whose replacement is proven fails its row, saying it can be removed, with the command that removes it", async () => {
+  const row = byName(await diagnose(deps({ guards: () => ({ watchdog: false, dropIn: false, readCacheDropIn: true }), ghWrapperDeclared: async () => true })))["gh-read-cache-off.conf"];
+  assert.equal(row.ok, false);
+  assert.match(row.detail, /still turns the gh read cache off, and the review claim reads past the cache .*so the guard can be removed$/);
+  assert.equal(row.fix, "run `agent-org onboard`, which removes it; the instance picks the change up at its next restart");
+});
+
+test("A11-444: a guard whose replacement is not proven fails as kept, naming what proves it, so no row passes before its guard is gone, whatever herdr's place for the read-cache drop-in", async () => {
   for (const herdrPlace of [() => UNIT_PLACE, () => ({ kind: "instance" as const, where: "/i" })]) {
-    const standing = byName(await diagnose(deps({ guards: () => ({ watchdog: false, dropIn: false, readCacheDropIn: true }), herdrPlace })));
-    assert.equal(standing["gh-read-cache-off.conf"].ok, false);
-    assert.equal(standing["gh-read-cache-off.conf"].detail, "the instance unit still turns the gh read cache off, which the review claim no longer needs");
-    assert.equal(standing["gh-read-cache-off.conf"].fix, "run `agent-org onboard`, which retires it");
+    const rows = byName(await diagnose(deps({ guards: () => ALL_GUARDS, ghWrapperDeclared: async () => false, herdrPlace })));
+    for (const name of ["gh-wrapper watchdog", "gh-read-cache-off.conf"]) {
+      assert.equal(rows[name].ok, false, name);
+      assert.match(rows[name].detail, /^kept: the installed gh wrapper is not the one host\.json declares/, name);
+      assert.match(rows[name].fix ?? "", /agent-org host:install/, name);
+    }
   }
+});
+
+test("A11-169: the keep-herdr.conf row fails as removable once herdr runs in its unit, and as kept while the drop-in still keeps herdr alive", async () => {
+  const proven = byName(await diagnose(deps({ guards: () => ALL_GUARDS })));
+  for (const name of GUARD_NAMES) assert.equal(proven[name].ok, false, name);
+  assert.match(proven["keep-herdr.conf"].fix ?? "", /agent-org start herdr --move/);
+  assert.match(proven["gh-wrapper watchdog"].detail, /the start-time wrapper check replaced it .*so the guard can be removed$/);
+  const notYet = byName(await diagnose(deps({ guards: () => ALL_GUARDS, herdrPlace: () => ({ kind: "instance", where: "/i" }) })))["keep-herdr.conf"];
+  assert.equal(notYet.ok, false);
+  assert.match(notYet.detail, /^kept: the KillMode drop-in still keeps herdr alive/, "the drop-in is still what keeps herdr alive until the move");
+  assert.match(notYet.fix ?? "", /agent-org start herdr --move/);
+});
+
+test("A11-444: the guard rows are Linux's only", async () => {
+  const mac = byName(await diagnose(deps({ platform: "darwin", guards: () => ALL_GUARDS })));
+  for (const name of GUARD_NAMES) assert.equal(mac[name], undefined, name);
+});
+
+test("A11-444: herdr's place is not asked for the KillMode drop-in's row when the instance is not registered, so the drop-in is kept as unproven", async () => {
+  const unregistered = byName(await diagnose(deps({ guards: () => ALL_GUARDS, serviceState: (name) => (name === "instance" ? "not-registered" : "running"), herdrPlace: () => { throw new Error("not asked"); } })));
+  assert.match(unregistered["keep-herdr.conf"].detail, /^kept: /, "unproven without a registered instance");
 });
 
 test("A11-90: the herdr scope check is asked only when the instance is registered", async () => {
