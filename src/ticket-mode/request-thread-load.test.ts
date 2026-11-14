@@ -65,7 +65,7 @@ test("while a synchronous call holds the board thread, every read the request th
     assert.match(stderr, /the request thread cannot listen on 127\.0\.0\.1:\d+: listen EADDRINUSE/);
     assert.doesNotMatch(stderr, /started again/, "it is not started again");
   } finally {
-    instance.stop();
+    await instance.stop();
   }
 });
 
@@ -81,6 +81,6 @@ test("A11-282: while the tick's herdr listing is held, the board thread goes on:
     });
     assert.deepEqual(callsIn(instance.ghDoneLog), [], "and the listing is still held: the board thread was free, not the listing done");
   } finally {
-    instance.stop();
+    await instance.stop();
   }
 });
