@@ -3,7 +3,7 @@ import { dirname, join, relative, resolve } from "node:path";
 import { UI_ROOT } from "../site.ts";
 
 // PARITY.md (docs/design/atomaut/) lists everything the old board (src/ticket-mode/ui.html, retired by A11-202) did, and where Atomaut does it (A11-220). This holds the file to its own rules: every feature
-// row has a location, a ticket and a board or a pattern. (Until A11-202 it also held every element id and imported name of ui.html to a row; that was run once, on the last commit that held the file.)
+// row has a location, a ticket, and a board or its designed captures (no `pattern:` row since A11-446). (Until A11-202 it also held every element id and imported name of ui.html to a row; that was run once, on the last commit that held the file.)
 
 const REPO = join(UI_ROOT, "..");
 const PARITY = join(REPO, "docs", "design", "atomaut", "PARITY.md");
@@ -74,16 +74,20 @@ describe("PARITY.md rows", () => {
   });
 });
 
+/** The rows A11-446 designed: the 36 pattern rows of `0d450e9`, and the two rows it added for herdr not opening and the Claude plugins tab. */
+const DESIGNED_BY_A11_446 = 38;
+
 describe("PARITY.md's designed rows (A11-446)", () => {
   const CAPTURES = join(UI_ROOT, "captures");
   const designed = rows.filter(({ cells }) => capturesOf(cells[4] ?? "").length > 0);
 
-  it("link each capture to a PNG in ui/captures/ that is there", () => {
+  it("link each capture to a 1440x900 PNG in ui/captures/ that is there, with its 390x844 capture beside it", () => {
     const missing = designed.flatMap(({ cells, line }) =>
       capturesOf(cells[4]).flatMap((link) => {
         const file = resolve(dirname(PARITY), link);
         const inCaptures = !relative(CAPTURES, file).startsWith("..") && file.endsWith(".png");
         if (!inCaptures || !existsSync(file)) return [`row at line ${line} (${cells[0]}) links ${link}, which is no PNG in ui/captures/`];
+        if (phoneCaptureOf(link) === link) return [`row at line ${line} (${cells[0]}) links ${link}, which is not a 1440x900 capture`];
         return existsSync(resolve(dirname(PARITY), phoneCaptureOf(link))) ? [] : [`row at line ${line} (${cells[0]}) links ${link}, which has no 390x844 capture beside it`];
       }),
     );
@@ -97,7 +101,7 @@ describe("PARITY.md's designed rows (A11-446)", () => {
 
   it("leaves no pattern row: every feature the boards do not draw is designed and captured", () => {
     expect(rows.filter(({ cells }) => /^pattern:/.test(cells[4] ?? "")).map(({ cells }) => cells[0])).toEqual([]);
-    expect(designed.length).toBeGreaterThanOrEqual(38);
+    expect(designed.length).toBeGreaterThanOrEqual(DESIGNED_BY_A11_446);
   });
 });
 
@@ -128,6 +132,7 @@ describe("the checks on a row", () => {
     expect(capturesOf(designed)).toEqual(["../../../ui/captures/a/one-1440x900.png", "../../../ui/captures/a/two-1440x900.png"]);
     expect(capturesOf("pattern: status banner")).toEqual([]);
     expect(phoneCaptureOf("../../../ui/captures/a/one-1440x900.png")).toBe("../../../ui/captures/a/one-390x844.png");
+    expect(phoneCaptureOf("../../../ui/captures/a/one-390x844.png")).toBe("../../../ui/captures/a/one-390x844.png");
   });
 
   it("fails a designed row that links nothing", () => {

@@ -10,7 +10,7 @@ A row whose last cell names a board (`AtomautRuns`) is drawn as the board draws 
 
 A row whose last cell starts `designed:` is a state the boards do not draw that has been designed in the code from its neighbours' patterns (A11-446). Its links are the captures of each of its states in `ui/captures/`, at 1440px; the 390px capture has the same name with `390x844`. The page test that writes each capture names it: most are `ui/test/parity/parity.page.test.ts`, which writes `ui/captures/parity/`.
 
-Until A11-446 a feature with no board was a `pattern: <name>` row, kept in a neighbouring pattern (a status banner, a disclosure) and listed as something to draw later. A11-446 designed all 40 of them, so none is left, and the test refuses a new one: a feature the boards do not draw is designed and captured when it is built.
+Until A11-446 a feature with no board was a `pattern: <name>` row, kept in a neighbouring pattern (a status banner, a disclosure) and listed as something to draw later. A11-446 designed all 36 of them, so none is left, and the test refuses a new one: a feature the boards do not draw is designed and captured when it is built.
 
 ## How the rows are written
 

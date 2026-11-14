@@ -51,6 +51,12 @@ async function open(scene: Scene, width: number): Promise<Open> {
 
 const openAll = (page: Page) => page.evaluate(() => document.querySelectorAll("details").forEach((node) => { node.open = true; }));
 
+/** This machine's instance, offering models, as the Settings and Plugins pages read it. */
+const machineWithModels = (): Parameters<typeof serveInstance>[1] => ({ stand: { ...machineStand(), instances: { here: { ...machineStand().instances?.here, config: modelsConfig() } } } });
+
+/** How long the page is given to draw an answer that has ended, before a check says it drew nothing of it: well over one render, and far under a poll (5 s). */
+const SETTLE_MS = 300;
+
 /** What "Everything this run noted" lists on Run detail. */
 const notedOf = (page: Page) => page.locator(".disclosure", { hasText: "Everything this run noted" }).textContent();
 
@@ -68,7 +74,7 @@ const CONNECTIONS_REFUSAL = "connections.json is not valid JSON: Unexpected toke
 const RESTARTING = { status: 503, contentType: "application/json", body: JSON.stringify({ error: "the instance is restarting" }) };
 
 /** Two instances whose tickets differ, so a page shows which one it read. */
-const TWO_INSTANCES = (): Stand => ({
+const twoInstances = (): Stand => ({
   connections: [HERE, PERSONAL],
   instances: {
     here: { ...ticketsStand().instances?.personal, tickets: [ticket({ key: "A11-1", title: "A ticket on this machine" }), ticket({ key: "A11-2", title: "Another ticket on this machine" })] },
@@ -104,7 +110,7 @@ const PLUGINS_NOTE = "host.json could not be read (Unexpected end of JSON input)
 
 /** Settings and Plugins states (A11-446): the settings read's notes, an instance older than the page, and the plugins read's host note. */
 function settingsScenes(): Scene[] {
-  const instance = (): Parameters<typeof serveInstance>[1] => ({ stand: { ...machineStand(), instances: { here: { ...machineStand().instances?.here, config: modelsConfig() } } } });
+  const instance = machineWithModels;
   return [
     {
       name: "settings-models-notes", path: "/settings/models", stand: instance, routes: (context) => routeSettings(context, settingsOf({ view: () => viewOf({ ...BOARD_FILES, notes: [SETTINGS_NOTE] }) })),
@@ -143,7 +149,7 @@ const SCENES: readonly Scene[] = [
     ready: (page) => page.locator("[data-key=A11-301]").waitFor(),
   },
   {
-    name: "settings-machine-restore", path: "/settings/machine", stand: () => ({ stand: { ...machineStand(), instances: { here: { ...machineStand().instances?.here, config: modelsConfig() } } } }),
+    name: "settings-machine-restore", path: "/settings/machine", stand: machineWithModels,
     routes: (context) => routeSettings(context, settingsOf({ view: machineView })),
     ready: (page) => page.getByRole("button", { name: "Restore the backup of host.json" }).waitFor(), drive: openAll,
   },
@@ -239,7 +245,7 @@ describe("the states A11-446 designs, as their captures show them", () => {
       const context = await browser.newContext({ viewport: screen });
       try {
         await context.addInitScript(() => localStorage.setItem("ticket-mode.open", JSON.stringify(["Backlog"])));
-        await serveInstance(context, { stand: TWO_INSTANCES() });
+        await serveInstance(context, { stand: twoInstances() });
         // This machine's tickets answer only once the switch has been made, as a slow read does.
         let release = (): void => undefined;
         const released = new Promise<void>((done) => { release = done; });
@@ -256,10 +262,11 @@ describe("the states A11-446 designs, as their captures show them", () => {
         await page.locator("[data-key=A11-9]").waitFor();
         release();
         await ended;
-        await page.evaluate(() => new Promise((done) => setTimeout(done, 300)));
+        await page.evaluate((wait) => new Promise((done) => setTimeout(done, wait)), SETTLE_MS);
         expect(await page.locator("[data-key=A11-1], [data-key=A11-2]").count()).toBe(0);
         expect(await page.locator("[data-key=A11-9]").count()).toBe(1);
         await page.evaluate(() => document.fonts.ready.then(() => undefined));
+        expect(overflowProblem({ route: "/tickets (tickets-other-instance-dropped)", width: screen.width, ...(await widthOf(page)) })).toBeNull();
         mkdirSync(CAPTURES, { recursive: true });
         writeFileSync(join(CAPTURES, `tickets-other-instance-dropped-${screen.width}x${screen.height}.png`), await page.screenshot({ fullPage: true }));
       } finally {
