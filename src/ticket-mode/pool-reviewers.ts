@@ -16,11 +16,14 @@
 // look, and the brief carries the changed lines and the replies. That takes something new each time, and for a pull request a run holds, each re-review is one of the run's rounds (`countRereview`), started only once its worker has
 // stopped working, in whatever state the run is (`mayRereview`, A11-274), and while a round is left: a dispute ends at the cap, handed to a person.
 
-import { earlierReviewWord, type Look, readReviewerMemory, replyAuthorsOf, type Repost, REVIEWER_LOGIN, reviewedRepositoriesOf, type ReviewerPort, type ReviewState, reviewPostedAt, reviewVerdict, splitHeadKey, reviewWordAt, standingBlock, warmOrigins, writeReviewerMemory } from "./reviewer-port.ts";
+import { earlierReviewWord, type Look, readReviewerMemory, replyAuthorsOf, type Repost, REVIEWER_LOGIN, reviewedRepositoriesOf, type ReviewerPort, type ReviewState, newestReviewOn, reviewPostedAt, reviewVerdict, splitHeadKey, reviewWordAt, standingBlock, warmOrigins, writeReviewerMemory } from "./reviewer-port.ts";
 import { log, messageOf, update } from "./pool-state.ts";
 import { REVIEW_LEASE_MS } from "../ticket-port/review-claim.ts";
 import { type Entry } from "./queue/queue-entries-and-outcomes.ts";
 import { recordVerdictNotPosted, roundsLeft } from "./queue/queue-transitions.ts";
+import { holdsReview, recordOutcomeRun, reviewEndOf, reviewTurnsAfter, type SeenReview } from "./outcomes/review-end.ts";
+import { reviewerTurns } from "./outcomes/reviewer-tokens.ts";
+import { appendOutcomeSaying } from "./outcomes/append-record.ts";
 import { recordReviewerRefusal } from "./queue/queue-reviewer-refusal.ts";
 import { bodyAnswersBlock, countRereview, handBackRereview, mayRereview } from "./queue/queue-rereview.ts";
 import { diffLines } from "./board-view/ticket-change.ts";
@@ -477,6 +480,7 @@ async function closeAnsweredReviewer(ctx: PoolContext, reviewer: ReviewerPort, u
   const key = `${url}@${head}`;
   const verdict = reviewVerdict(state.reviews, head);
   const awaitingOwn = reviewerRereviewed.has(key) && verdict === "not-convinced" && await reviewer.settled(ref) === "working";
+  if (verdict !== null && !awaitingOwn) recordReviewBeside(ctx, { pr: url, head, verdict, posted: newestReviewOn(state.reviews, head)?.at ?? ctx.now() });
   if (verdict === null || awaitingOwn || !await reviewer.live(ref)) return;
   const answer = await reviewer.close(ref);
   if ("refusal" in answer) {
@@ -484,6 +488,43 @@ async function closeAnsweredReviewer(ctx: PoolContext, reviewer: ReviewerPort, u
     closing.delete(key);
   } else if (answer.state === "busy") closing.set(key, ref);
   else closing.delete(key);
+}
+
+/** The reviews whose sessions are being read, by pool: a look that comes meanwhile does not read them again. */
+const recordingReviews = new WeakMap<PoolContext, Set<string>>();
+
+/**
+ * {@link recordReview}, not waited for: the reviewer's sessions are read from disk, and the look that saw the verdict goes on to close the reviewer meanwhile. One review is read once at a time.
+ */
+function recordReviewBeside(ctx: PoolContext, seen: SeenReview): void {
+  const busy = recordingReviews.get(ctx) ?? new Set<string>();
+  recordingReviews.set(ctx, busy);
+  const key = `${seen.pr}@${seen.head}@${seen.posted}`;
+  if (busy.has(key)) return;
+  busy.add(key);
+  void recordReview(ctx, seen)
+    .catch((err: unknown) => log(`${seen.pr}: the reviewer's tokens for its review at ${seen.head.slice(0, 8)} could not be recorded (${messageOf(err)})`))
+    .finally(() => busy.delete(key));
+}
+
+/**
+ * Adds the review the board sees to the outcome record of the run that holds its pull request, with the reviewer's Codex tokens since that pull request's review before it, and appends the
+ * record (A11-430). A run with no record yet, or one that holds this review already, is left alone before any session is read, so each look of a reviewed head costs nothing more.
+ */
+export async function recordReview(ctx: PoolContext, seen: SeenReview): Promise<void> {
+  const held = heldBy(ctx, seen.pr);
+  if (held?.outcomeRun === undefined || holdsReview(held.outcomeRun, seen)) return;
+  const label = [...ctx.reviewerMemory.heads].find(([, head]) => head === seen.head)?.[0];
+  const read = label === undefined
+    ? { unreadable: `the board holds no reviewer seat for ${seen.pr} at ${seen.head.slice(0, 8)}` }
+    : await reviewerTurns({ dir: ctx.codexSessions, label, after: reviewTurnsAfter(held.outcomeRun, seen.pr), now: ctx.now() });
+  // Read again after the sessions were read: the loop ran meanwhile, and a round may have ended and grown the run.
+  const entry = ctx.store.get().entries.find(({ ticket }) => ticket.key === held.ticket.key);
+  const ended = entry === undefined ? null : reviewEndOf(entry, seen, read, ctx.now());
+  if (entry === undefined || ended === null) return;
+  update(ctx, (queue) => recordOutcomeRun(queue, entry.ticket.key, ended.outcomeRun));
+  if ("unreadable" in read) log(`${entry.ticket.key}: the reviewer's tokens for its review of ${seen.pr} could not be read: ${read.unreadable}`);
+  appendOutcomeSaying(ctx.settings.stateDir, ended.record);
 }
 
 /** The prefix of the `refusedHeads` key under which a claim problem is said, by its reason (A11-172). A reason is not a `url@head`, so no head's key can clash with it. */
