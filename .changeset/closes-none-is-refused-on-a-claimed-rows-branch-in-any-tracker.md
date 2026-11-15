@@ -1,5 +1,0 @@
----
-"agent-org": patch
----
-
-`Closes: none` on the branch a claim record names is refused whichever declared tracker holds the row, and `pr:open` refuses it before anything is sent (agent-org#744, a11ign#4437). `closes-mismatch-check.ts` read the claimed rows of the default tracker alone, so a pull request that was the deliverable of a row of another tracker (the machinery rows of `a11ign/agent-org`) could declare `Closes: none -- <reason>`, merge, and leave the row open with a worker holding its claim: agent-org#475 and #560 and a11ign#4874 were three of the fifteen idle worker panes the chairman counted. `lookupOpenClaimedRows` takes the tracker it reads, `lookupClaimedRowsOfTrackers` reads the one the pull request's repository files into and then every declared tracker, and a tracker that cannot be read is named as "could not tell" and never read as "no claim" (a match in a readable tracker still refuses). `pr:open` runs the same comparison for a `Closes: none` body and refuses with the remedy: declare `Closes <row>` in full form and file what remains as its own row; an unreadable tracker prints `UNCHECKED` and CI asks again.
