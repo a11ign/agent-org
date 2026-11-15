@@ -185,10 +185,9 @@ button.plugin-head:hover {
   background: var(--color-surface);
 }
 
-/* A check: the dot, what was checked, what it found, and the fix to run. */
+/* A check: the dot, what was checked, what it found, and the fix to run. The dot stays beside its words at every width, so a narrow card never draws it alone on a line above them. */
 .plugin-check {
   display: flex;
-  flex-wrap: wrap;
   align-items: flex-start;
   gap: var(--space-6) var(--space-12);
 }
@@ -202,7 +201,7 @@ button.plugin-head:hover {
   height: var(--pool-dot-size);
 }
 .plugin-check-text {
-  flex: 1 1 var(--measure-alert-text);
+  flex: 1 1 0;
   min-width: 0;
 }
 .plugin-check-name {

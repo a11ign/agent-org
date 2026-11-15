@@ -8,7 +8,7 @@
 // named here once, and a test pins it.
 //
 // One service per machine, for the one session ticket mode runs in, on loopback only: another machine's board reaches it through the SSH tunnel
-// `ticket:ui` already opens (README, "Connect a second machine over SSH"). The plugin's state and config directories carry the session's name, so
+// `ticket:ui` already opens (docs/guide/other-machines.md, "Connect a second machine over SSH"). The plugin's state and config directories carry the session's name, so
 // they never share a file with a web ui a person runs for herdr's default session.
 //
 // PURE: what is installed is read by the caller and passed in.
@@ -92,7 +92,7 @@ function exposureTerminal(host: unknown): unknown {
 /** The directory herdr web ui keeps its settings in for `session`: `HERDR_PLUGIN_CONFIG_DIR`, where its token and `pair` read them. */
 export const pluginConfigDir = (home: string, session: string) => join(home, ".config", `herdr-web-ui-${session}`);
 
-/** How a person pairs a new device, for the board and for the worker terminal: `onboard`'s last message, `doctor`'s `pairing` check and the README say it. */
+/** How a person pairs a new device, for the board and for the worker terminal: `onboard`'s last message, `doctor`'s `pairing` check and docs/guide/ticket-mode.md say it. */
 export const PAIRING_STEPS = "to pair a new device, run `agent-org ticket:pair` for the board, and `agent-org ticket:pair --terminal` for the worker terminal; with `tickets.serve` set, `agent-org ticket:pair` prints both codes";
 
 export type TerminalProgram = Readonly<{ argv: string[]; environment: Record<string, string>; workingDirectory: string }>;
