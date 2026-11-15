@@ -1,7 +1,12 @@
 // no-token: none -- `exec` is a recorder: no GitHub CLI runs
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { GH_TIMEOUT_MS, GhFailure, accountRunner, ghRunner } from "./gh.ts";
+import type { ExecOptions, ExecResult } from "../../src/plugins/manifest.ts";
+import { depsFor } from "../../src/plugins/loader.ts";
+import { fakePluginDeps } from "../../src/plugins/fakes/deps.ts";
+import { createCallLedger } from "../../src/ticket-mode/call-outcomes.ts";
+import { BREAKER_FAILURES, RETRY_WAITS_MS, ServiceUnavailable, createOutsideClient, isTransient } from "../../src/ticket-mode/outside-client.ts";
+import { GH_TIMEOUT_MS, GhFailure, accountRunner, asyncAccountRunner, asyncGhRunner, ghRunner, isRead } from "./gh.ts";
 
 type Call = { file: string; args: readonly string[]; options: unknown };
 
@@ -85,4 +90,76 @@ test("an account's runner says why a call failed even when gh printed nothing, a
   assert.deepEqual(accountRunner({ exec: warned.exec }, {})(["extension", "list"]), { status: 0, stdout: "listed\n", stderr: "" });
   const missing = recording({ status: null, stderr: "spawn gh ENOENT" });
   assert.deepEqual(accountRunner({ exec: missing.exec }, {})(["extension", "list"]), { status: null, stdout: "", stderr: "spawn gh ENOENT" });
+});
+
+/** The code host's deps as the board's loader makes them (`depsFor`), over a client with its own ledger whose waits take no time, and an `execAsync` that answers `answers` in turn (the last one again). */
+function boardGh(...answers: Partial<ExecResult>[]) {
+  const ledger = createCallLedger(() => 1_000);
+  const waits: number[] = [];
+  const runs: ExecOptions[] = [];
+  const execAsync = async (_file: string, _args: readonly string[], options: ExecOptions = {}): Promise<ExecResult> => {
+    runs.push(options);
+    const answer = answers[Math.min(runs.length, answers.length) - 1];
+    return { status: answer.status ?? 0, stdout: answer.stdout ?? "", stderr: answer.stderr ?? "" };
+  };
+  const deps = depsFor("codeHost", { ...fakePluginDeps(), execAsync }, createOutsideClient({ ledger, sleep: async (ms) => { waits.push(ms); } }));
+  return { deps, ledger, waits, runs };
+}
+
+test("A11-436: the board's gh call that met a connection reset is tried again through the outside client, answers the try that worked, and is one failed call in the figure", async () => {
+  const { deps, ledger, waits, runs } = boardGh({ status: 1, stderr: "read tcp: connection reset by peer\n" }, { status: 0, stdout: "worker-bot\n" });
+  assert.equal(await asyncGhRunner(deps)(["api", "user", "--jq", ".login"]), "worker-bot\n");
+  assert.deepEqual(waits, [RETRY_WAITS_MS[0]]);
+  assert.deepEqual(runs.map(({ countedByCaller, timeoutMs }) => [countedByCaller, timeoutMs]), [[true, GH_TIMEOUT_MS], [true, GH_TIMEOUT_MS]], "the client counts the call, so exec does not count it again");
+  assert.deepEqual(ledger.figures().github, { calls: 1, failures: 1, failuresPer100: 100 });
+});
+
+test("A11-436: a gh answer GitHub gave (a 404) is not tried again, and still rejects with the GhFailure a reader looks for HTTP 404 in", async () => {
+  const { deps, ledger, runs } = boardGh({ status: 1, stderr: "gh: Not Found (HTTP 404)\n" });
+  await assert.rejects(asyncGhRunner(deps)(["api", "repos/a/b/branches/x"]), (error: unknown) => error instanceof GhFailure && /HTTP 404/.test(error.message) && !isTransient(error));
+  assert.equal(runs.length, 1);
+  assert.deepEqual(ledger.figures().github, { calls: 1, failures: 0, failuresPer100: 0 });
+});
+
+test("A11-436: given gh fails 10 times in a row on a connection reset, the board's next gh call is refused at once and says GitHub is unavailable", async () => {
+  const { deps, runs } = boardGh({ status: 1, stderr: "read tcp: connection reset by peer\n" });
+  const gh = asyncGhRunner(deps);
+  await assert.rejects(gh(["pr", "list"]), (error: unknown) => error instanceof GhFailure && isTransient(error), "every try failed: the last try's failure, transient");
+  await assert.rejects(gh(["pr", "list"]), GhFailure);
+  await assert.rejects(gh(["pr", "list"]), ServiceUnavailable);
+  assert.equal(runs.length, BREAKER_FAILURES);
+  await assert.rejects(gh(["pr", "view", "1"]), /GitHub is unavailable/);
+  assert.equal(runs.length, BREAKER_FAILURES, "refused at once: gh did not run");
+  const doctor = await asyncAccountRunner(deps, {})(["extension", "list"]);
+  assert.deepEqual([doctor.status, runs.length], [1, BREAKER_FAILURES + 1], "a doctor row asks gh itself and says what it answers now, not the loop's breaker");
+});
+
+test("A11-436: a runner with no outside client (a process that is not the board) runs gh once, and exec counts it", async () => {
+  const runs: ExecOptions[] = [];
+  const execAsync = async (_file: string, _args: readonly string[], options: ExecOptions = {}): Promise<ExecResult> => { runs.push(options); return { status: 1, stdout: "", stderr: "HTTP 502\n" }; };
+  await assert.rejects(asyncGhRunner({ execAsync })(["pr", "list"]), GhFailure);
+  assert.deepEqual(runs, [{ timeoutMs: GH_TIMEOUT_MS, env: {} }]);
+});
+
+test("A11-436: the client cuts a gh attempt only after gh's own cut, so a gh that runs past its time answers as it always did, a GhFailure with no status", async () => {
+  let asked: { attemptMs?: number } = {};
+  const outside = async <T>(attempt: (signal: AbortSignal) => Promise<T>, options?: { attemptMs?: number }): Promise<T> => { asked = options ?? {}; return attempt(new AbortController().signal); };
+  const execAsync = async (): Promise<ExecResult> => ({ status: null, stdout: "", stderr: "spawn gh ETIMEDOUT" });
+  await assert.rejects(asyncGhRunner({ execAsync, outside }, {}, { timeoutMs: 120_000 })(["api", "x"]), (error: unknown) => error instanceof GhFailure && error.status === null);
+  assert.equal(asked.attemptMs !== undefined && asked.attemptMs > 120_000, true);
+});
+
+test("A11-436: a gh write that failed on the network is made once, because a second try could repeat it (a comment posted twice); the breaker and the figure still see it", async () => {
+  const { deps, ledger, runs, waits } = boardGh({ status: 1, stderr: "HTTP 502: Bad Gateway\n" });
+  await assert.rejects(asyncGhRunner(deps)(["api", "-X", "POST", "repos/a/b/issues/1/comments", "-f", "body=hi"]), GhFailure);
+  assert.deepEqual([runs.length, waits], [1, []]);
+  assert.deepEqual(ledger.figures().github, { calls: 1, failures: 1, failuresPer100: 100 });
+});
+
+test("A11-436: a gh call is a read only when it cannot change anything: an api GET or a GraphQL query, or a command that only views or lists", () => {
+  const reads = [["api", "--paginate", "repos/a/b/pulls"], ["api", "user", "--jq", ".login"], ["api", "-X", "GET", "repos/a/b/labels", "-f", "per_page=100"], ["api", "graphql", "-f", "query=query { viewer { login } }"],
+    ["pr", "view", "3"], ["pr", "checks", "3"], ["run", "view", "9"], ["extension", "list"], ["search", "prs", "x"]];
+  const writes = [["api", "-X", "POST", "repos/a/b/issues/1/comments", "-f", "body=x"], ["api", "repos/a/b/issues/1/labels", "-f", "labels[]=x"], ["api", "--method", "PUT", "repos/a/b/pulls/1/update-branch"],
+    ["api", "graphql", "-f", "query=mutation { x }"], ["pr", "merge", "1"], ["pr", "close", "1"], ["run", "rerun", "9", "--failed"], ["workflow", "run", "arm-approved"], ["stack", "link"]];
+  assert.deepEqual([reads.map(isRead), writes.map(isRead)], [reads.map(() => true), writes.map(() => false)]);
 });
