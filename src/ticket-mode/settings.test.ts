@@ -329,7 +329,7 @@ test("a machine names how a new ticket is written from a person's request: the w
 test("A11-124: the writer's instruction may name the board's mode with {mode}, which is optional, and the shipped example and its fixtures name no mode", () => {
   const withMode = "Run the a11ign:create-ticket skill, {mode}, for this request: {request}. Write each draft under {dir}/drafts.";
   assert.deepEqual(parseTicketSettings({ clones, tickets: { writer: { run: withMode } } }).writer?.run, withMode, "{mode} is accepted, and not required");
-  // The shipped example is the schema's words for `tickets.writer.run`: the README's key table no longer carries example values (A11-141).
+  // The shipped example is the schema's words for `tickets.writer.run`: the key table in docs/guide/configuration.md no longer carries example values (A11-141).
   const writerRun = SCHEMA.find((entry) => entry.key === "tickets.writer.run")?.explanation ?? "";
   const example = /Run the a11ign:create-ticket skill[^"`]*\{dir\}\./.exec(writerRun)?.[0];
   assert.ok(example, "POSITIVE CONTROL: the schema's example is found");
