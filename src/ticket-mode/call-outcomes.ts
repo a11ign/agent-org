@@ -1,15 +1,15 @@
 // @ts-check
 // module: how many calls the board made to Linear and to GitHub in the last hour, and how many failed (A11-363) -- the figure `/api/health` calls failures per 100 calls
 //
-// THE CALLS ARE COUNTED WHERE THEY LEAVE THE PROCESS, not where they are written: `realExec` and `realExecAsync` count each `gh` program, the `fetch` core hands every plugin counts each request to `api.github.com`
-// (which the GitHub plugin never calls today), and the TRACKER plugin's calls are counted as the `linear` figure by the outside client the loader hands it (`depsFor` in `src/plugins/loader.ts`, `outside-client.ts`: a call
-// is counted once however often it is tried, and each retry is only observed: A11-345, A11-436).
+// THE CALLS ARE COUNTED WHERE THEY LEAVE THE PROCESS, not where they are written: the TRACKER plugin's calls are counted as the `linear` figure, and the CODE HOST's `gh` calls that its
+// loop runners make as the `github` figure, by the outside client the loader hands each (`depsFor` in `src/plugins/loader.ts`, `outside-client.ts`: a call is counted once however often it is tried, and each retry is
+// only observed: A11-345, A11-436); `realExec` and `realExecAsync` count every other `gh` program (`countProgram`, by the client's one rule), and the `fetch` core hands every plugin counts each request to
+// `api.github.com` (which the GitHub plugin never calls today).
 // Core names no tracker's address (`src/plugins/boundary.test.ts`): the figure is the tracker's, whichever plugin that is. Nothing at a call site changes, and a call that no seam sees is not counted.
 //
 // A FAILURE IS A CALL THAT DID NOT REACH THE SERVICE, OR THE SERVICE FAILED IT: a `fetch` that threw (a reset socket, a timeout), a 429 or a 5xx; a `gh` that could not start, was cut at its limit, or exited non-zero
-// with stderr that names the network or the service failing (`HTTP 502`, `connection reset`, `timeout`). A `gh` exits non-zero for plenty the service answered (`gh pr checks` while checks are pending, a 404), and
+// with stderr that names the network or the service failing (`HTTP 502`, `connection reset`, `timeout`), as `programKindOf` in `outside-client.ts` reads it. A `gh` exits non-zero for plenty the service answered (`gh pr checks` while checks are pending, a 404), and
 // those are not a sick board. Each thread counts its own calls; the board thread's are the figure.
-import { basename } from "node:path";
 import { rollingCount, type RollingCount } from "./rolling-count.ts";
 
 export type CallService = "linear" | "github";
@@ -94,23 +94,6 @@ export function countedFetch<F extends typeof fetch>(fetchImpl: F, ledger: CallL
       throw err;
     }
   }) as F;
-}
-
-/** What `gh` answered, as far as telling a failed call from a refused one needs it. */
-export type ProgramAnswer = Readonly<{ status: number | null; stderr: string }>;
-
-/** What `gh` prints when the network or GitHub failed the call, not when GitHub answered it. */
-const SERVICE_FAILURE = /\bHTTP (?:429|5\d\d)\b|timed? ?out|ECONN|ETIMEDOUT|ENOTFOUND|EAI_AGAIN|connection (?:reset|refused)|unexpected EOF|TLS|no such host|dial tcp|rate limit|temporarily unavailable/i;
-
-/** Whether a `gh` call failed: it could not start or was cut (no status), or it exited non-zero saying the network or GitHub failed it. PURE. */
-export function ghFailed({ status, stderr }: ProgramAnswer): boolean {
-  if (status === 0) return false;
-  return status === null || SERVICE_FAILURE.test(stderr);
-}
-
-/** Counts a finished program into `ledger` when it is `gh`; any other program is not a call to GitHub. */
-export function countProgram(file: string, answer: ProgramAnswer, ledger: CallLedger = callOutcomes): void {
-  if (basename(file) === "gh") ledger.record("github", ghFailed(answer));
 }
 
 /** Two threads' figures added together, the failures per 100 worked out again from the sums. PURE. */
