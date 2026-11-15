@@ -1,5 +1,0 @@
----
-"agent-org": patch
----
-
-The managers App is recognised where a reader decides by the owner's login (a11ign/agent-org#796, follow-up of a11ign#4911). `lane-ownership.ts`'s `ROLE_LOGIN.ceo` names the App in its third spelling too (`app/a11ign-managers`, `gh pr list`'s), through one `MANAGERS_APP_LOGINS`. `work-gate.ts`'s `pipelineCodeownerReviewMissing` counts a review as the code owner's when its author is `a11ign-ai-leads`, or is the managers App and the body's last `<!-- decided-by: ceo run: … -->` marker names `ceo` (`ceo`'s ruling on the row): a `product-manager` or `orchestrator` review by the same App no longer clears it, and authorship is not extended, so an App-authored PR is not the owner's own. `pr:open`'s `loginThrough` answers `app:<role>` from `AGENT_ORG_GH_ROLE` when `gh api user` and the GraphQL `viewer` both fail, which `ownsReviewOnlyLane` resolves through `APP_ROLE_LANE_OWNER`, so the review-only-lane check still decides instead of refusing "could not say who is opening it". `pr-review-verdict.sh` says what it does when `gh api user` is refused (exit 4, nothing posted).
