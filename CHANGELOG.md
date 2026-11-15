@@ -1,5 +1,12 @@
 # agent-org
 
+**This copy on `main` stops at 0.2.0, and that is expected: the newest release's changelog is not here.** A release writes its own section, listing every changeset it
+consumed, into `CHANGELOG.md` on the release commit its tag points at, and the same section is its GitHub Release's notes. That commit is on no branch, so `main` is never
+written (`.github/workflows/release.yml` says how a release is cut). To read the changelog:
+
+- every release, newest first: `git show v<version>:CHANGELOG.md`, with the newest tag from `git tag --list 'v*' --sort=-v:refname | head -1`;
+- one release: its notes on https://github.com/a11ign/agent-org/releases.
+
 ## 0.2.0
 
 ### Minor Changes
