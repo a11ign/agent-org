@@ -1,5 +1,0 @@
----
-"agent-org": patch
----
-
-The gate no longer only PRINTS a circular wait: a pull request that closes a row waiting on a row B4 shelves because of that pull request (agent-org#878 shelving #884 while its worker waited for #884, 1h45m red, agent-org#5009). The first tick that reads the cycle wakes the pull request's holder once, with the two ways out (narrow the pull request off the overlapping file, or take the shelved row's change into it when it is small and in Region). A cycle still standing on the next tick files a `b4-deadlock` ledger event, writes a comment on both rows it names and wakes `orchestrator`; a pull request nobody is known to hold goes straight there. `b4-cycle.ts` gains `advanceDeadlocks` (pure: wake, escalate, broken) and `blocking-impact.ts` keeps the cycles in `blocking-impact.json` (`deadlocks`, and `brokenDeadlocks` for 24 hours) and exports `deadlockSummary` for the daily pass. The `DEADLOCK` line, `deadlocksAmong` and `deadlocksOf` are unchanged. A gap in observation or an unwritable record makes no order, as it makes no incident.
