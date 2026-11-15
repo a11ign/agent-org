@@ -1605,7 +1605,8 @@ test("A11-298: doctor says nothing of waits when none is long, or the queue cann
 // A11-363: the board's rolling health figures and the watchdog's record, flagged where they are over their limits.
 const FIGURES: HealthFigures = {
   at: 0, uptimeMs: 3_600_000, loop: { lastMinute: { p50Ms: 1, p99Ms: 18 }, lastHour: { p50Ms: 2, p99Ms: 40 } }, syncHolds: { lastHour: 2, holdMs: 100 },
-  calls: { linear: { calls: 400, failures: 2, failuresPer100: 0.5 }, github: { calls: 1_000, failures: 0, failuresPer100: 0 } },
+  calls: { linear: { calls: 400, failures: 2, failuresPer100: 0.5 }, github: { calls: 1_000, failures: 0, failuresPer100: 0 }, herdr: { calls: 600, failures: 0, failuresPer100: 0 } },
+  outsideCalls: { calls: 2_000, failures: 2, failuresPer100: 0.1 },
   runs: { sinceLastStartMs: 60_000, startable: 0, freeSlots: 1, starting: 0, oldestStartingMs: null, holding: null }, fill: { sinceLastCompletedMs: 3_000, lastEarlyReturn: null, held: [] },
 };
 const boardRows = async (over: Partial<DoctorDeps>) => Object.entries(byName(await diagnose(deps(over)))).filter(([name]) => name.startsWith("board "));

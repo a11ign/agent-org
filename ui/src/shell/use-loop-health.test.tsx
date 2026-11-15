@@ -38,7 +38,7 @@ describe("useLoopHealth", () => {
   });
 
   it("carries the rolling figures and the watchdog's record when the instance serves them (A11-363)", async () => {
-    const figures = { at: 1, uptimeMs: 2, loop: { lastMinute: { p50Ms: 1, p99Ms: 2 }, lastHour: { p50Ms: 1, p99Ms: 3 } }, syncHolds: { lastHour: 0, holdMs: 100 }, calls: { linear: { calls: 0, failures: 0, failuresPer100: 0 }, github: { calls: 0, failures: 0, failuresPer100: 0 } },
+    const figures = { at: 1, uptimeMs: 2, loop: { lastMinute: { p50Ms: 1, p99Ms: 2 }, lastHour: { p50Ms: 1, p99Ms: 3 } }, syncHolds: { lastHour: 0, holdMs: 100 }, calls: { linear: { calls: 0, failures: 0, failuresPer100: 0 }, github: { calls: 0, failures: 0, failuresPer100: 0 }, herdr: { calls: 0, failures: 0, failuresPer100: 0 } }, outsideCalls: { calls: 0, failures: 0, failuresPer100: 0 },
       runs: { sinceLastStartMs: null, startable: 0, freeSlots: 3, starting: 0, oldestStartingMs: null, holding: null }, fill: { sinceLastCompletedMs: 1_000, lastEarlyReturn: null } };
     const watchdog = { restartsLastHour: 0, restartsLastDay: 1, restartsTotal: 1, last: null };
     const fetch = healthFetch(async () => json(200, { loop: { board: BOARD }, blocking: [], figures, watchdog }));

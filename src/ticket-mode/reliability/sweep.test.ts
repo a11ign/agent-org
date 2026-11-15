@@ -17,7 +17,8 @@ const LABELLED = { description: DESCRIPTION, labels: [{ name: "board-reliability
 
 const figures = (holds: number, linear = { calls: 100, failures: 0, failuresPer100: 0 }): HealthFigures => ({
   at: 0, uptimeMs: 0, loop: { lastMinute: { p50Ms: 1, p99Ms: 9 }, lastHour: { p50Ms: 1, p99Ms: 40 } }, syncHolds: { lastHour: holds, holdMs: 100 },
-  calls: { linear, github: { calls: 0, failures: 0, failuresPer100: 0 } },
+  calls: { linear, github: { calls: 0, failures: 0, failuresPer100: 0 }, herdr: { calls: 0, failures: 0, failuresPer100: 0 } },
+  outsideCalls: linear,
   runs: { sinceLastStartMs: null, startable: 0, freeSlots: 3, starting: 0, oldestStartingMs: null, holding: null }, fill: { sinceLastCompletedMs: null, lastEarlyReturn: null, held: [] },
 });
 
