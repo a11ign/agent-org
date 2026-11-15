@@ -12,7 +12,7 @@ import { request as httpRequest } from "node:http";
 import { request as httpsRequest } from "node:https";
 import { basename } from "node:path";
 import { RUN_ROOT_ENV } from "../private-tmp.ts";
-import { countProgram } from "../ticket-mode/call-outcomes.ts";
+import { countProgram } from "../ticket-mode/outside-client.ts";
 import type { ExecOptions, ExecResult, HostPlaceReading, ProbeRequest } from "./manifest.ts";
 
 /** How long a program may run when its caller names no limit: a Keychain prompt a person is reading, or a marketplace add, takes minutes. */
@@ -52,7 +52,7 @@ const notStarted = (why: string): ExecResult => ({ status: null, stdout: "", std
  */
 export function realExec(file: string, args: readonly string[], options: ExecOptions = {}): ExecResult {
   const answer = execOnce(file, args, options);
-  countProgram(file, answer);
+  if (options.countedByCaller !== true) countProgram(file, answer);
   return answer;
 }
 
@@ -75,7 +75,7 @@ function execOnce(file: string, args: readonly string[], options: ExecOptions): 
  */
 export async function realExecAsync(file: string, args: readonly string[], options: ExecOptions = {}): Promise<ExecResult> {
   const answer = await execAsyncOnce(file, args, options);
-  countProgram(file, answer);
+  if (options.countedByCaller !== true) countProgram(file, answer);
   return answer;
 }
 
