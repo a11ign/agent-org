@@ -43,7 +43,8 @@ const FIGURES: HealthFigures = {
   at: 1_761_400_000_000, uptimeMs: 7_200_000,
   loop: { lastMinute: { p50Ms: 1, p99Ms: 18 }, lastHour: { p50Ms: 2, p99Ms: 40 } },
   syncHolds: { lastHour: 3, holdMs: 100 },
-  calls: { linear: { calls: 400, failures: 2, failuresPer100: 0.5 }, github: { calls: 1_000, failures: 0, failuresPer100: 0 } },
+  calls: { linear: { calls: 400, failures: 2, failuresPer100: 0.5 }, github: { calls: 1_000, failures: 0, failuresPer100: 0 }, herdr: { calls: 600, failures: 0, failuresPer100: 0 } },
+  outsideCalls: { calls: 2_000, failures: 2, failuresPer100: 0.1 },
   runs: { sinceLastStartMs: 180_000, startable: 2, freeSlots: 1, starting: 0, oldestStartingMs: null, holding: null },
   fill: { sinceLastCompletedMs: 4_000, lastEarlyReturn: null, held: [] },
 };
@@ -58,7 +59,7 @@ describe("the figures under the loop line (A11-363)", () => {
   it("shows the loop over a minute and an hour with the holds, the failed calls per 100, the last start, the startable runs and free slots, and the last fill", () => {
     expect(figureDetails(FIGURES)).toEqual([
       "Loop p50/p99: 1 ms / 18 ms over 1 min, 2 ms / 40 ms over 1 h; 3 holds an hour",
-      "Failed calls per 100: Linear 0.5, GitHub 0",
+      "Failed calls per 100: 0.1 (Linear 0.5, GitHub 0, herdr 0)",
       "Last run start 3 min ago; 2 startable runs, 1 free slot; last fill 4 s ago",
     ]);
   });

@@ -26,7 +26,7 @@ const GH_CALLS: GithubCallCounts = { since: "2026-10-28T00:00:00.000Z", total: 4
 test("the health view is the loop's reading as board's, and the ten sites that held it the longest", () => {
   const asked: number[] = [];
   const hour = { p50Ms: 1, p99Ms: 90, maxMs: 2_020, windowMs: 3_600_000 };
-  const calls = { linear: { calls: 200, failures: 3, failuresPer100: 1.5 }, github: { calls: 0, failures: 0, failuresPer100: 0 } };
+  const calls = { linear: { calls: 200, failures: 3, failuresPer100: 1.5 }, github: { calls: 0, failures: 0, failuresPer100: 0 }, herdr: { calls: 0, failures: 0, failuresPer100: 0 } };
   const view = healthView({ read: () => READING, readHour: () => hour }, { worst: (count) => { asked.push(count); return SITES.slice(0, count); } }, { holds: { total: () => 12 }, calls: { figures: () => calls } });
   assert.deepEqual(asked, [HEALTH_SITES]);
   assert.equal(HEALTH_SITES, 10);
@@ -83,7 +83,7 @@ test("the request thread counts and says each synchronous spawn after it listens
 });
 
 // A11-363: the rolling figures cross from the board thread to the request thread in the snapshot, and `/api/health` serves them beside the watchdog's record.
-const CALLS = { linear: { calls: 400, failures: 2, failuresPer100: 0.5 }, github: { calls: 0, failures: 0, failuresPer100: 0 } };
+const CALLS = { linear: { calls: 400, failures: 2, failuresPer100: 0.5 }, github: { calls: 0, failures: 0, failuresPer100: 0 }, herdr: { calls: 100, failures: 0, failuresPer100: 0 } };
 const POOL = {
   runs: { sinceLastStartMs: 60_000, startable: 2, freeSlots: 1, starting: 0, oldestStartingMs: null, holding: null },
   fill: { sinceLastCompletedMs: 4_000, lastEarlyReturn: { reason: "a read of the tracker or the code host failed: fetch failed", agoMs: 9_000 } },
@@ -97,7 +97,7 @@ test("the board thread's snapshot carries the figures: the loop over a minute an
   assert.deepEqual(snapshot.figures, {
     at: 1_761_400_100_000, uptimeMs: 100_000,
     loop: { lastMinute: { p50Ms: READING.p50Ms, p99Ms: READING.p99Ms }, lastHour: { p50Ms: 2, p99Ms: 80 } },
-    syncHolds: { lastHour: 7, holdMs: 100 }, calls: CALLS, ...POOL,
+    syncHolds: { lastHour: 7, holdMs: 100 }, calls: CALLS, outsideCalls: { calls: 500, failures: 2, failuresPer100: 0.4 }, ...POOL,
   });
   assert.equal(figuresOf({ pool: {} } as unknown as Parameters<typeof figuresOf>[0], health, 5, 0), null, "a pool that keeps none gives none");
 });
@@ -107,9 +107,10 @@ test("/api/health serves the figures as the latest snapshot holds them, with the
   const watchdog = { restartsLastHour: 1, restartsLastDay: 1, restartsTotal: 1, last: { at: 1, reason: "no-fill" as const, detail: "no fill() pass has completed for 5.2 min" } };
   const view = requestHealthView(READING, { snapshot: { loop: READING, blocking: [], figures }, receivedAt: 1_000 }, 4_000, 0, watchdog);
   assert.deepEqual([view.figures, view.boardSnapshotAgeMs, view.watchdog], [figures, 3_000, watchdog]);
-  const page = { linear: { calls: 100, failures: 100, failuresPer100: 100 }, github: { calls: 0, failures: 0, failuresPer100: 0 } };
+  const page = { linear: { calls: 100, failures: 100, failuresPer100: 100 }, github: { calls: 0, failures: 0, failuresPer100: 0 }, herdr: { calls: 0, failures: 0, failuresPer100: 0 } };
   const joined = requestHealthView(READING, { snapshot: { loop: READING, blocking: [], figures }, receivedAt: 1_000 }, 4_000, 0, null, page);
   assert.deepEqual(joined.figures?.calls.linear, { calls: 100, failures: 100, failuresPer100: 100 }, "the page's reads are the instance's calls too");
+  assert.deepEqual(joined.figures?.outsideCalls, { calls: 100, failures: 100, failuresPer100: 100 }, "the one failure figure is worked out again with the page's calls in it (A11-436)");
 });
 
 test("the page's thread reads the watchdog's record from its file at most every few seconds, and says nothing of a watchdog that never acted or whose file cannot be read", () => {

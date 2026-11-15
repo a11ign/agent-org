@@ -1,10 +1,11 @@
 // @ts-check
-// module: how many calls the board made to Linear and to GitHub in the last hour, and how many failed (A11-363) -- the figure `/api/health` calls failures per 100 calls
+// module: how many calls the board made to Linear, to GitHub and to herdr in the last hour, and how many failed (A11-363, A11-436) -- the figure `/api/health` calls failures per 100 calls, by service and in total
 //
 // THE CALLS ARE COUNTED WHERE THEY LEAVE THE PROCESS, not where they are written: the TRACKER plugin's calls are counted as the `linear` figure, and the CODE HOST's `gh` calls that its
 // loop runners make as the `github` figure, by the outside client the loader hands each (`depsFor` in `src/plugins/loader.ts`, `outside-client.ts`: a call is counted once however often it is tried, and each retry is
 // only observed: A11-345, A11-436); `realExec` and `realExecAsync` count every other `gh` program (`countProgram`, by the client's one rule), and the `fetch` core hands every plugin counts each request to
-// `api.github.com` (which the GitHub plugin never calls today).
+// `api.github.com` (which the GitHub plugin never calls today). The pool's herdr calls go through the same client as the `herdr` figure (`pool-herdr.ts`, A11-436 step 3), and every other `herdr` program,
+// synchronous or not, is counted by `countProgram` as a `gh` is.
 // Core names no tracker's address (`src/plugins/boundary.test.ts`): the figure is the tracker's, whichever plugin that is. Nothing at a call site changes, and a call that no seam sees is not counted.
 //
 // A FAILURE IS A CALL THAT DID NOT REACH THE SERVICE, OR THE SERVICE FAILED IT: a `fetch` that threw (a reset socket, a timeout), a 429 or a 5xx; a `gh` that could not start, was cut at its limit, or exited non-zero
@@ -12,8 +13,8 @@
 // those are not a sick board. Each thread counts its own calls; the board thread's are the figure.
 import { rollingCount, type RollingCount } from "./rolling-count.ts";
 
-export type CallService = "linear" | "github";
-export const CALL_SERVICES: readonly CallService[] = ["linear", "github"];
+export type CallService = "linear" | "github" | "herdr";
+export const CALL_SERVICES: readonly CallService[] = ["linear", "github", "herdr"];
 /** How far back the figure looks, in ms. */
 export const CALL_WINDOW_MS = 3_600_000;
 
@@ -96,6 +97,13 @@ export function countedFetch<F extends typeof fetch>(fetchImpl: F, ledger: CallL
   }) as F;
 }
 
+/** Every service's calls as one figure: the calls and the failures summed, and the failures per 100 worked out again from the sums (A11-436, the one failure figure `/api/health` serves). PURE. */
+export function totalOf(figures: CallFigures): CallFigure {
+  const calls = CALL_SERVICES.reduce((sum, service) => sum + figures[service].calls, 0);
+  const failures = CALL_SERVICES.reduce((sum, service) => sum + figures[service].failures, 0);
+  return { calls, failures, failuresPer100: per100(failures, calls) };
+}
+
 /** Two threads' figures added together, the failures per 100 worked out again from the sums. PURE. */
 export function addCallFigures(a: CallFigures, b: CallFigures): CallFigures {
   return Object.fromEntries(CALL_SERVICES.map((service) => {
@@ -109,8 +117,9 @@ export function addCallFigures(a: CallFigures, b: CallFigures): CallFigures {
 const lastFailed = ({ ok, failed }: LastCalls): boolean => failed !== undefined && (ok === undefined || failed >= ok);
 
 /**
- * Whether the board's own network calls work again after `crashedAt` (A11-399): some call to a service succeeded after it, and neither service's latest call failed. A service the board has not called in the window is
- * not failing. PURE.
+ * Whether the board's own network calls work again after `crashedAt` (A11-399): some call to a service succeeded after it, and no service's latest call failed: herdr's too, since a start
+ * that crashed on herdr not answering would crash again while it still does (A11-436). A service the board has not
+ * called in the window is not failing. PURE.
  */
 export function networkUpSince(ledger: CallLedger, crashedAt: number): boolean {
   const calls = CALL_SERVICES.map((service) => ledger.lastCalls(service));

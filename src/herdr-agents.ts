@@ -7,7 +7,7 @@
 // `wake.ts` can both import it without one importing the other). `wake.ts` is not importable from a leaf: it
 // already imports `claim-stall.ts` (line 76 there), and a leaf that imported its own importer would be a cycle.
 // So this file is the shared home instead: `node:*`, the pure `derived-name.ts` (itself `node:*` only) and, for the async forms (A11-379), `plugins/real-seams.ts` (which reaches `node:*` and two leaf modules, `private-tmp.ts` and
-// `ticket-mode/call-outcomes.ts`) only, importable from both.
+// `ticket-mode/outside-client.ts`), and `ticket-mode/outside-client.ts` itself, which counts a synchronous herdr call and names the exit it is classed by (A11-436), only, importable from both.
 //
 // THE CALLS THAT OPEN A WORKSPACE, START AN AGENT IN IT AND CLOSE IT LIVE HERE TOO (`openPane`, `agentStartArgs`, `closedNote`, with the
 // `herdrReason` they quote a failure through), moved out of `wake.ts` unchanged so that ticket mode (`src/ticket-mode/`) runs the same
@@ -22,6 +22,7 @@ import { execFileSync } from "node:child_process";
 import { HERDR_AGENT_RULE, derivedName } from "./derived-name.ts";
 import type { ExecResult } from "./plugins/manifest.ts";
 import { realExecAsync } from "./plugins/real-seams.ts";
+import { countProgram, type ProgramExit } from "./ticket-mode/outside-client.ts";
 import { privateTmpEnv, TMPDIR_ENV } from "./session-tmp.ts";
 
 /** The herdr session the org runs in, and the default of every call in this file. */
@@ -46,24 +47,39 @@ const GONE_CODES = ["agent_not_found", "pane_not_found"];
  */
 export function herdrRun(args: string[], timeout: number = 30_000): string {
   try {
-    return execFileSync("herdr", args, { encoding: "utf8", timeout, stdio: ["ignore", "pipe", "pipe"] });
+    const stdout = execFileSync("herdr", args, { encoding: "utf8", timeout, stdio: ["ignore", "pipe", "pipe"] });
+    countProgram("herdr", { status: 0, stderr: "" });
+    return stdout;
   } catch (err) {
-    const stderr = String((err as { stderr?: unknown } | null)?.stderr ?? "");
+    const failed = (err ?? {}) as { stderr?: unknown; status?: unknown; code?: unknown };
+    const stderr = String(failed.stderr ?? "");
+    // The exit the one rule classes the failure by (A11-436): a herdr cut at its bound or that could not start has no status, and its reason is its code (`ETIMEDOUT`, `ENOENT`).
+    const exit: ProgramExit = { status: typeof failed.status === "number" ? failed.status : null, stderr: stderr || String(failed.code ?? "") };
+    countProgram("herdr", exit);
     if (stderr && !GONE_CODES.some((code) => stderr.includes(code))) process.stderr.write(stderr);
-    throw err;
+    throw typeof err === "object" && err !== null ? Object.assign(err, { exit }) : err;
   }
 }
 
 /**
  * {@link herdrRun} without holding the loop (A11-379): the same program, bound and stderr rule, run through `realExecAsync` so the event loop goes on while herdr answers. It resolves stdout. A non-zero exit, a
- * timeout or a herdr that cannot start rejects with {@link programFailure}'s error, and a refusal's stderr is written to this process's stderr unless it holds a {@link GONE_CODES} code.
+ * timeout or a herdr that cannot start rejects with {@link herdrAnswer}'s error. It is made once and counted by `realExecAsync`, outside the board's client: the pool's own herdr calls go through that client
+ * (`ticket-mode/pool-herdr.ts`).
  */
 export async function herdrRunAsync(args: string[], timeout: number = 30_000): Promise<string> {
-  const answer = await realExecAsync("herdr", args, { timeoutMs: timeout });
+  return herdrAnswer(args, await realExecAsync("herdr", args, { timeoutMs: timeout }));
+}
+
+/**
+ * herdr's stdout when `answer` succeeded; else it throws {@link programFailure}'s error carrying the `exit` the one rule classes it by (`failureKindOf`, A11-436: a herdr cut at its bound is transient, a refusal
+ * is herdr answering), and, when `echo` is on, writes a refusal's stderr to this process's stderr unless it holds a {@link GONE_CODES} code. `agent start`'s busy-pane retry turns the echo off: each refusal
+ * it waits through is expected.
+ */
+export function herdrAnswer(args: readonly string[], answer: ExecResult, { echo = true }: { echo?: boolean } = {}): string {
   if (answer.status === 0) return answer.stdout;
-  const failure = programFailure("herdr", args, answer);
+  const failure = Object.assign(programFailure("herdr", args, answer), { exit: { status: answer.status, stderr: answer.stderr } satisfies ProgramExit });
   const stderr = failure.stderr ?? "";
-  if (stderr && !GONE_CODES.some((code) => stderr.includes(code))) process.stderr.write(stderr);
+  if (echo && stderr && !GONE_CODES.some((code) => stderr.includes(code))) process.stderr.write(stderr);
   throw failure;
 }
 
@@ -384,7 +400,7 @@ export function openPane(run: (args: string[]) => string, label: string, env: Re
 }
 
 /** {@link openPane} without holding the loop (A11-379): the same call, the same answers, over an async runner. */
-export async function openPaneAsync(run: (args: string[]) => Promise<string>, label: string, env: Record<string, string>, cwd?: string, { session = ORG_SESSION, tmpBase }: PaneOption = {}): Promise<{ pane: string; workspace: string; } | { refusal: string; }> {
+export async function openPaneAsync(run: (args: string[]) => Promise<string>, label: string, env: Record<string, string>, cwd?: string, { session = ORG_SESSION, tmpBase }: PaneOption = {}): Promise<{ pane: string; workspace: string; } | { refusal: string; cause?: unknown; }> {
   const create = paneCreateArgs(label, env, cwd, { session, tmpBase });
   let created;
   try {
@@ -407,7 +423,7 @@ function paneCreateArgs(label: string, env: Record<string, string>, cwd: string 
 }
 
 /** The refusal for a `workspace create` herdr would not answer. */
-const paneRefusal = (label: string, err: unknown) => ({ refusal: `herdr could not open a pane for "${label}" (${herdrReason(err)})` });
+const paneRefusal = (label: string, err: unknown) => ({ refusal: `herdr could not open a pane for "${label}" (${herdrReason(err)})`, cause: err });
 
 /**
  * What `workspace create` answered: the pane and workspace, or a refusal. A WORKSPACE WITH NO PANE ID IS STILL A WORKSPACE, so the refusal names it (`workspace`) for the caller to close rather than leave behind: an
