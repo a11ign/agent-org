@@ -116,6 +116,31 @@ test("A11-179: a check red on another run's pull request in the same repository 
   assert.deepEqual([...(await mineAgain(mine, URL_1)).names], [], "a run's own pull request is not another's");
 });
 
+test("A11-429: a check main reports passing is the run's own even when other runs' pull requests fail it too, so a batch that failed one check together does not hold itself for ever", async () => {
+  const { ctx, host } = world({ [job(1)]: TEST_FAILED });
+  const mine = own();
+  const other = { entry: own("A11-150", ["agent-org:src/other/"], URL_2), open: [{ url: URL_2, read: feedback(["ui"], ["src/other/thing.ts"]) }] };
+  const answer = () => answerAfterRerun(ctx, mine, [{ url: URL_1, read: feedback(["ui"]) }], foreignRedsOf(ctx, [{ entry: mine, open: [{ url: URL_1, read: feedback(["ui"]) }] }, other]));
+  host.seedDefaultBranch("a11ign/agent-org", [], { passing: ["ui"] });
+  assert.equal((await answer()).heads[URL_1]?.step, "round", "main passes ui: the other pull request's failure is no evidence, and the run gets its round");
+  host.seedDefaultBranch("a11ign/agent-org", []);
+  assert.equal((await answer()).heads[URL_1]?.step, "not-ours", "POSITIVE CONTROL: a host that cannot say main passes it holds it, as before");
+  host.seedDefaultBranch("a11ign/agent-org", ["ui"], { passing: [] });
+  assert.equal((await answer()).heads[URL_1]?.step, "not-ours", "and so does main failing it");
+});
+
+test("A11-429: a ticket the error lines name is no owner once the board holds it as settled, so the check gets the board's fix ticket and is not held under a ticket that will never merge again", async () => {
+  const owned = async (trackerState: string | undefined) => {
+    const { ctx } = world({ [job(1)]: REFUSAL });
+    const settled = { ticket: { key: "A11-127" }, phase: "finished", ...(trackerState === undefined ? {} : { trackerState }) };
+    const withStore = { ...ctx, store: { get: () => ({ entries: [settled] }) } } as unknown as PoolContext;
+    return (await answerChecks(withStore, own(), [{ url: URL_1, read: feedback(["refusalOwners"]) }], redOn(["refusalOwners"]))).heads[URL_1]?.notOurs;
+  };
+  assert.deepEqual(await owned("completed"), { refusalOwners: null }, "A11-127 is done on the board: no owner");
+  assert.deepEqual(await owned("canceled"), { refusalOwners: null }, "and so is a canceled one");
+  assert.deepEqual(await owned(undefined), { refusalOwners: "A11-127" }, "POSITIVE CONTROL: a ticket the board does not hold as settled still owns it");
+});
+
 test("A11-179: the ticket that owns a red check is the one a Blocked-by line names, else one the check's refusal names, never the run's own, and none when none is named", async () => {
   const owned = async (log: string, body: string | undefined, key = "A11-177") => {
     const { ctx } = world({ [job(1)]: log });
