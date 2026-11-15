@@ -100,7 +100,8 @@ describe("every route renders inside the shell", () => {
     await sidebarOf(page).waitFor();
     // The sidebar is in the static HTML, but `/runs/<key>` is served as the runs page: its heading and title name the run only once the island has hydrated.
     await expectSettled(page, { h1, title });
-    expect((await currentItems(page)).sort()).toEqual([...current].sort());
+    // Polled as the heading is: the island marks the active items as it hydrates, and a one-shot read after the heading settled saw none on a loaded runner (#2031, #2035).
+    await expect.poll(async () => (await currentItems(page)).sort(), { timeout: HYDRATION_MS }).toEqual([...current].sort());
     await context.close();
   });
 
