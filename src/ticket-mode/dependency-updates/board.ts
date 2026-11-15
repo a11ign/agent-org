@@ -3,7 +3,7 @@
 import { dirname, join } from "node:path";
 import type { CodeHost } from "../../plugins/contracts/code-host.ts";
 import type { Queue, RunChoice } from "../queue/queue-entries-and-outcomes.ts";
-import { cloneKeyForRepository, reviewedRepositoriesOf, warmOrigins } from "../reviewer-port.ts";
+import { cloneKeyForRepository, type OriginReader, reviewedRepositoriesOf, warmOrigins } from "../reviewer-port.ts";
 import type { TicketSettings } from "../settings.ts";
 import type { Ticket, TicketSource } from "../source.ts";
 import { dependencyUpdateSweep } from "./sweep.ts";
@@ -31,9 +31,9 @@ export type BoardDependencies = Readonly<{
 }>;
 
 /** The key the clone of `repository` is listed under, or undefined when the reviewer gate is not loaded: the form then names the repository's own name, as it did before the gate was asked (A11-360). */
-function gateCloneKeyOf(clones: Readonly<Record<string, string>>, repository: string): string | undefined {
+function gateCloneKeyOf(clones: Readonly<Record<string, string>>, repository: string, remote: OriginReader): string | undefined {
   try {
-    return cloneKeyForRepository(clones, repository);
+    return cloneKeyForRepository(clones, repository, remote);
   } catch (err) {
     void err; // a host that cannot load the gate is told so by the sweep's own read of the repositories
     return undefined;
@@ -56,18 +56,20 @@ export function defectRequestsOf(path: string, now: number): ReturnType<typeof d
 /** The sweep over the board's own collaborators. Its writer is `tickets.writer` on the model and effort the Settings page chose for it, and a ticket it queues runs on the saved choice. */
 export function boardDependencySweep(board: BoardDependencies): () => Promise<void> {
   const { settings, choice } = board;
+  // The reader of the clones' origins the last warming answered, which each sweep refreshes before it starts.
+  let remote: OriginReader = () => undefined;
   const sweep = dependencyUpdateSweep({
     codeHost: board.codeHost, source: board.source, store: board.store, statePath: join(dirname(board.queuePath), DEPENDENCY_TICKETS_FILE),
-    repositories: board.repositories ?? (() => reviewedRepositoriesOf(settings.clones)), clones: settings.clones, cloneKeyOf: (repository) => gateCloneKeyOf(settings.clones, repository),
+    repositories: board.repositories ?? (() => reviewedRepositoriesOf(settings.clones, remote)), clones: settings.clones, cloneKeyOf: (repository) => gateCloneKeyOf(settings.clones, repository, remote),
     writer: () => (settings.writer === null ? null : { model: choice().writerModel ?? settings.writer.model, effort: choice().writerEffort ?? settings.writer.effort }),
     runChoice: () => ({ model: choice().model, effort: choice().effort }),
     queueTickets: board.queueTickets, wake: board.wake, now: board.now, log: (line) => process.stderr.write(`ticket:serve: ${line}\n`),
     // The watchdog's record is read at every sweep: an hour with more than two restarts is asked for once (A11-363). A check that holds pull requests as red on main with no owner is asked one fix ticket for (A11-428), unless the machine turned that off.
     requests: (tickets) => [...defectRequestsOf(watchdogPath(settings.stateDir), board.now()), ...(settings.fixRedMain === true ? fixRequests(board.store.get(), tickets) : [])],
   });
-  // The clones' origins are read beside the loop first, so the sweep's repositories come from the cache and not from a `git` it waits on for each clone (A11-282).
+  // The clones' origins are read beside the loop first, so the sweep's repositories and clone keys come from the cache and not from a `git` it waits on for each clone (A11-282, A11-433).
   return async () => {
-    if (board.repositories === undefined) await warmOrigins(settings.clones).catch(() => undefined);
+    remote = await warmOrigins(settings.clones);
     return sweep();
   };
 }
