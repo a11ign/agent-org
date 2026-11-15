@@ -113,6 +113,13 @@ export const BREAKER_FAILURES = 10;
 export const BREAKER_OPEN_MS = 30_000;
 const MS_PER_SECOND = 1_000;
 
+/**
+ * How long an outage of a service counts as one failed call in the call figure, in ms (A11-345). A call that fails while an outage that another call began is younger than this is the same outage, and is only
+ * observed: a host that loses its network for a minute or two is one failed call, not one for each call the board made into it. Past this, every failed call is counted again, as before, so a service that
+ * stays down reads as failing.
+ */
+export const OUTAGE_COUNTED_ONCE_MS = 5 * 60_000;
+
 /** The error a call fails with when its service's breaker is open: the service is unavailable, and it is not asked. Transient ({@link isTransient}). */
 export class ServiceUnavailable extends Error {
   readonly service: OutsideService;
@@ -168,6 +175,7 @@ export type OutsideClientDeps = Readonly<{
   retryWaitsMs?: readonly number[];
   breakerFailures?: number;
   breakerOpenMs?: number;
+  outageCountedOnceMs?: number;
 }>;
 
 /** A service's circuit breaker: whether it refuses a call now, and what an attempt came to. */
@@ -188,6 +196,27 @@ function breakerFor(service: OutsideService, limit: number, openMs: number, now:
       failures = kind !== null && RETRIED.has(kind) ? failures + 1 : 0;
       if (failures >= limit) openUntil = now() + openMs;
     },
+  };
+}
+
+/**
+ * A service's outage, as the call figure counts it: it begins when a call that was counted as failed fails for good on a failure a retry could have got past, and ends at the service's next answer.
+ */
+type Outage = Readonly<{
+  /** Whether an outage is going on now that began under {@link OUTAGE_COUNTED_ONCE_MS} ago: a call that fails in it is the failure already counted. */
+  brief: () => boolean;
+  /** A call counted as failed at `countedAt` has failed for good: the outage begins then, unless one is going on. */
+  begin: (countedAt: number) => void;
+  /** The service answered: the outage is over. */
+  end: () => void;
+}>;
+
+function outageFor(countedOnceMs: number, now: () => number): Outage {
+  let began: number | null = null;
+  return {
+    brief: () => began !== null && now() - began < countedOnceMs,
+    begin: (countedAt) => { began ??= countedAt; },
+    end: () => { began = null; },
   };
 }
 
@@ -233,26 +262,47 @@ async function tryOnce<T>(service: OutsideService, ms: number, attempt: (signal:
  * in {@link RETRIED} is tried again after a wait that grows ({@link RETRY_WAITS_MS}), up to three times, and any other failure is the caller's at once. The last answer, or the last throw, is the caller's: an
  * answer whose status failed it after the last try is returned, for the caller to read as it reads any answer. The call is counted once in the ledger, as failed when its first attempt failed (A11-345: a host
  * that loses its network for half a minute fails one call four times, and that is one failed call); every later attempt is only observed, so the ledger still learns that the service answers again (A11-399).
+ * A call that starts while a brief outage goes on, and fails, is only observed too: the outage is counted once ({@link OUTAGE_COUNTED_ONCE_MS}).
  */
 export function createOutsideClient(deps: OutsideClientDeps = {}): OutsideClient {
   const { ledger = callOutcomes, now = Date.now, sleep = (ms: number) => new Promise<void>((done) => { setTimeout(done, ms); }), attemptMs = ATTEMPT_MS, retryWaitsMs = RETRY_WAITS_MS,
-    breakerFailures = BREAKER_FAILURES, breakerOpenMs = BREAKER_OPEN_MS } = deps;
+    breakerFailures = BREAKER_FAILURES, breakerOpenMs = BREAKER_OPEN_MS, outageCountedOnceMs = OUTAGE_COUNTED_ONCE_MS } = deps;
   const breakers = new Map<OutsideService, Breaker>();
   const breakerOf = (service: OutsideService): Breaker => breakers.get(service) ?? breakers.set(service, breakerFor(service, breakerFailures, breakerOpenMs, now)).get(service) as Breaker;
+  const outages = new Map<OutsideService, Outage>();
+  const outageOf = (service: OutsideService): Outage => outages.get(service) ?? outages.set(service, outageFor(outageCountedOnceMs, now)).get(service) as Outage;
+
   async function call<T>(service: OutsideService, attempt: (signal: AbortSignal) => Promise<T>, options: CallOptions<T> = {}): Promise<T> {
     const breaker = breakerOf(service);
+    const outage = outageOf(service);
+    const startedInBriefOutage = outage.brief();
+    let countedAt: number | null = null;
+    /** The call ends failed on a failure a retry could have got past: the service is down. A call that was counted begins the outage at its count; one only observed was part of an outage already counted. */
+    const failedForGood = (): void => { if (countedAt !== null) outage.begin(countedAt); };
     for (let tries = 0; ; tries += 1) {
       const refusal = breaker.refusal();
-      if (refusal !== null) throw refusal;
+      if (refusal !== null) {
+        if (tries > 0) failedForGood();
+        throw refusal;
+      }
       const tried = await tryOnce(service, options.attemptMs ?? attemptMs[service], attempt, options);
       const failed = tried.failure !== null;
       breaker.note(tried.kind);
+      // A failure a retry could get past (the network, a 5xx, a 429): the service is failing. An answer, or a refusal such as a 401, is the service working, and ends an outage.
+      const serviceFailing = tried.kind !== null && tried.kind !== "refused";
+      if (!serviceFailing) outage.end();
       // The first attempt is the call, counted once; each retry is only an observation (A11-345, A11-399).
-      if (tries === 0) ledger.record(service, failed);
-      else ledger.observe(service, failed);
+      if (tries > 0) ledger.observe(service, failed);
+      else if (!failed) ledger.record(service, false);
+      else if (startedInBriefOutage && serviceFailing) ledger.observe(service, true); // the same outage, already counted
+      else {
+        ledger.record(service, true);
+        countedAt = now();
+      }
       const retry = options.once !== true && tried.kind !== null && RETRIED.has(tried.kind) && tries < retryWaitsMs.length;
       options.onAttempt?.({ failed, failure: tried.failure, kind: tried.kind, threw: tried.threw, retryInMs: retry ? retryWaitsMs[tries] : null });
       if (!retry) {
+        if (serviceFailing) failedForGood();
         if (tried.threw) throw tried.failure;
         return tried.value as T;
       }

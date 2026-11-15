@@ -4,7 +4,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createCallLedger, networkUpSince } from "./call-outcomes.ts";
-import { BREAKER_FAILURES, BREAKER_OPEN_MS, RETRY_WAITS_MS, ServiceUnavailable, countProgram, createOutsideClient, failureKindOf, isTransient, programKindOf } from "./outside-client.ts";
+import { BREAKER_FAILURES, BREAKER_OPEN_MS, OUTAGE_COUNTED_ONCE_MS, RETRY_WAITS_MS, ServiceUnavailable, countProgram, createOutsideClient, failureKindOf, isTransient, programKindOf } from "./outside-client.ts";
 import { isTransient as attachIsTransient } from "./attach-retry.ts";
 import { isRetryableWrite } from "./result-write-retry.ts";
 import { crashRetryAfter } from "./crash-retry.ts";
@@ -70,7 +70,7 @@ test("Given a service fails 10 times in a row on a connection reset, its breaker
   assert.equal(made, BREAKER_FAILURES, "no attempt is made once ten in a row have failed");
   const refused = await client.call("github", failing).then(() => null, (err: unknown) => err);
   assert.ok(refused instanceof ServiceUnavailable);
-  assert.match(refused.message, /GitHub is unavailable: 10 calls in a row failed/);
+  assert.match(refused.message, /^GitHub is unavailable: 10 calls in a row failed/);
   assert.equal(made, BREAKER_FAILURES, "refused at once: the service is not asked");
   assert.equal(isTransient(refused), true, "a refusal of the breaker is transient: a run that meets it is not a crash");
   assert.equal(await client.call("linear", async () => "answered"), "answered", "each service has its own breaker");
@@ -175,6 +175,101 @@ test("A11-399: a retry that got through is not a call of its own, but it shows t
   assert.equal(networkUpSince(ledger, 500), true, "the answered retry is the ledger's latest call");
 });
 
+/** A connect timeout as Node's `fetch` throws it when the host has no route: what the board logged at 00:12Z on 2026-11-15. */
+const noRoute = () => new TypeError("fetch failed", { cause: Object.assign(new Error("connect ETIMEDOUT"), { code: "ETIMEDOUT" }) });
+const unreachable = async (): Promise<string> => { throw noRoute(); };
+const answered = async (): Promise<string> => "answered";
+
+/** `count` answered calls to Linear. */
+async function answer(client: ReturnType<typeof world>["client"], count: number): Promise<void> {
+  for (let n = 0; n < count; n += 1) await client.call("linear", answered);
+}
+
+test("A11-345, fourth reopen: three Linear calls made one after another into one network drop count as one failed call", async () => {
+  // The 2026-11-15 00:12Z reading: 140 answered calls in the hour, then the host lost its route and three calls failed in a row (the third refused part-way by the breaker). Counted one per call, that read
+  // 3 of 143, 2.1%, and reopened the ticket.
+  const { client, ledger, advance } = world();
+  await answer(client, 140);
+  for (let call = 0; call < 3; call += 1) {
+    await assert.rejects(client.call("linear", unreachable));
+    advance(5_000);
+  }
+  assert.deepEqual(ledger.figures().linear, { calls: 141, failures: 1, failuresPer100: 0.7 }, "the outage is one failed call; the calls made into it are only observed");
+});
+
+test("An outage ends at the service's next answer, and a failure after it is counted again", async () => {
+  const { client, ledger } = world();
+  await assert.rejects(client.call("linear", unreachable));
+  await assert.rejects(client.call("linear", unreachable));
+  assert.deepEqual(ledger.figures().linear, { calls: 1, failures: 1, failuresPer100: 100 });
+  await answer(client, 1);
+  await assert.rejects(client.call("linear", unreachable));
+  assert.deepEqual(ledger.figures().linear, { calls: 3, failures: 2, failuresPer100: 66.7 }, "a new outage, counted");
+});
+
+test("An outage that outlasts OUTAGE_COUNTED_ONCE_MS has every failed call counted again, so a service that stays down reads as failing", async () => {
+  const { client, ledger, advance } = world();
+  await assert.rejects(client.call("linear", unreachable));
+  advance(OUTAGE_COUNTED_ONCE_MS - 1);
+  await assert.rejects(client.call("linear", unreachable));
+  assert.deepEqual(ledger.figures().linear, { calls: 1, failures: 1, failuresPer100: 100 }, "still the one outage");
+  advance(1);
+  for (let call = 0; call < 3; call += 1) {
+    await assert.rejects(client.call("linear", unreachable));
+    advance(BREAKER_OPEN_MS);
+  }
+  assert.deepEqual(ledger.figures().linear, { calls: 4, failures: 4, failuresPer100: 100 }, "each call counted, as before");
+});
+
+test("A call only observed in one outage, that fails for good after an answer ended it, begins no outage: the next failure is counted", async () => {
+  const { client, ledger } = world();
+  await assert.rejects(client.call("linear", unreachable));
+  let attempts = 0;
+  const failsWhileAnotherIsAnswered = client.call("linear", async () => {
+    attempts += 1;
+    if (attempts === 2) await client.call("linear", answered); // another call is answered while this one retries
+    throw noRoute();
+  });
+  await assert.rejects(failsWhileAnotherIsAnswered);
+  assert.deepEqual(ledger.figures().linear, { calls: 2, failures: 1, failuresPer100: 50 }, "observed, as part of the first outage");
+  await assert.rejects(client.call("linear", unreachable));
+  assert.deepEqual(ledger.figures().linear, { calls: 3, failures: 2, failuresPer100: 66.7 }, "a new outage, counted");
+});
+
+test("A failure its retry covered begins no outage: the next failure is counted", async () => {
+  const { client, ledger } = world();
+  assert.equal((await client.call("linear", answering(503, 200).attempt, byStatus)).status, 200);
+  await assert.rejects(client.call("linear", unreachable));
+  assert.equal(ledger.figures().linear.failures, 2);
+});
+
+test("A 4xx is the service answering: it begins no outage, and it ends one that is going on", async () => {
+  const refusing = world();
+  const unauthorised = async () => (await refusing.client.call("linear", answering(401).attempt, byStatus)).status;
+  assert.equal(await unauthorised(), 401);
+  await assert.rejects(refusing.client.call("linear", unreachable));
+  assert.equal(refusing.ledger.figures().linear.failures, 1, "a 401 is the service answering: no outage, so the network failure is counted");
+  assert.equal(await unauthorised(), 401);
+  await assert.rejects(refusing.client.call("linear", unreachable));
+  assert.equal(refusing.ledger.figures().linear.failures, 2, "and a 401 inside an outage ends it, since the service answered");
+});
+
+test("A thrown 4xx inside an outage is counted as the base counts it, and ends the outage", async () => {
+  const { client, ledger } = world();
+  await assert.rejects(client.call("linear", unreachable));
+  await assert.rejects(client.call("linear", async () => { throw Object.assign(new Error("Linear answered 401"), { status: 401 }); }), /401/);
+  assert.deepEqual(ledger.figures().linear, { calls: 2, failures: 2, failuresPer100: 100 }, "the 401 is not the outage: it is counted");
+  await assert.rejects(client.call("linear", unreachable));
+  assert.equal(ledger.figures().linear.failures, 3, "the service answered, so the next network failure is a new outage");
+});
+
+test("An outage is one service's: GitHub failing begins no outage of Linear", async () => {
+  const { client, ledger } = world();
+  await assert.rejects(client.call("github", unreachable));
+  await assert.rejects(client.call("linear", unreachable));
+  assert.deepEqual([ledger.figures().github.failures, ledger.figures().linear.failures], [1, 1]);
+});
+
 /** A `gh` answer as `exec` gives it. */
 const ghExit = (status: number | null, stderr = "") => ({ status, stdout: "", stderr });
 
@@ -208,7 +303,7 @@ test("Given gh fails 10 times in a row on a connection reset, the board's next g
   assert.equal(made, BREAKER_FAILURES);
   await assert.rejects(client.call("github", reset, byExit), /GitHub is unavailable: 10 calls in a row failed/);
   assert.equal(made, BREAKER_FAILURES, "refused at once: gh is not run");
-  assert.deepEqual(ledger.figures().github, { calls: 3, failures: 3, failuresPer100: 100 }, "each call is counted once, and a call the breaker refused is not counted");
+  assert.deepEqual(ledger.figures().github, { calls: 1, failures: 1, failuresPer100: 100 }, "the reset is one brief outage of GitHub, counted once (A11-345), however many calls failed in it, and a call the breaker refused is not counted");
 });
 
 test("A gh answer GitHub gave (a 404) is not tried again, does not trip the breaker and is not a failed call; one that failed on GitHub is tried again with the call's own time", async () => {
