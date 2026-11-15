@@ -9,6 +9,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fakePluginDeps } from "../../src/plugins/fakes/deps.ts";
 import type { TicketSource } from "../../src/plugins/contracts/tracker.ts";
+import type { ServiceCall } from "../../src/plugins/manifest.ts";
 import { FAKE_REPO, type FakeIssue, fakeGitHub, fakeIssue } from "./fake-github.ts";
 import { create } from "./index.ts";
 import { numberOf, priorityOf, stateOf, ticketLabelsOf } from "./mapping.ts";
@@ -113,4 +114,18 @@ test("the settings are refused by name: a repository that is not owner/name, a p
   assert.throws(() => create({ repo: "tracker" }, deps), /tickets\.providers\.tracker\.repo must name the repository/);
   assert.throws(() => create({ repo: FAKE_REPO, prefix: "G H" }, deps), /tickets\.providers\.tracker\.prefix must be letters/);
   assert.throws(() => create({ repo: FAKE_REPO, token: { path: "/k/none" } }, deps), /the GitHub token file \/k\/none cannot be read/);
+});
+
+test("every call goes through the board's outside client (A11-436), which owns timing and retries, and a POST is made once so a comment is never posted twice", async () => {
+  const github = fakeGitHub([fakeIssue(1)]);
+  const calls: { once: boolean }[] = [];
+  const outside: ServiceCall = (attempt, options) => {
+    calls.push({ once: options?.once === true });
+    return attempt(new AbortController().signal);
+  };
+  const readFile = (path: string): string => (path === TOKEN_FILE ? "ghp_x\n" : (() => { throw new Error(`ENOENT: ${path}`); })());
+  const source = create({ repo: FAKE_REPO, token: { path: TOKEN_FILE } }, fakePluginDeps({ fetch: github.fetch, readFile, outside }));
+  await source.comment!("GH-1", "a note");
+  assert.equal(calls.length, github.requests.length, "no request bypasses the client");
+  assert.deepEqual(calls.map(({ once }) => once), github.requests.map(({ method }) => method === "POST"), "a POST is made once, every other call may be tried again");
 });

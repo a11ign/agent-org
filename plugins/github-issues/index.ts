@@ -7,17 +7,15 @@
 // IT IMPORTS CORE'S TYPES ONLY (ADR 0001). GitHub is asked, and the token read, through `deps` (`exec`, `readFile`, `fetch`), so the contract suite runs it without the network.
 import type { PluginCheck, PluginDeps, PluginSettings } from "../../src/plugins/manifest.ts";
 import type { TicketSource } from "../../src/plugins/contracts/tracker.ts";
+import { callOnce } from "./client.ts";
 import { tokenCheck } from "./checks.ts";
 import { issuesSettings, readToken } from "./settings.ts";
 import { issuesSource } from "./source.ts";
 
-const wait = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
-
 /** The GitHub Issues source for a tracker block. REFUSES, by name, a block whose settings are of the wrong shape, and a token that cannot be read. */
 export function create(settings: PluginSettings, deps: PluginDeps): TicketSource {
   const read = issuesSettings(settings);
-  const request = deps.freshFetch ?? deps.fetch;
-  const client = { token: readToken(read.token, deps), request, retryRequest: deps.retryFetch ?? request, sleep: wait, log: deps.log };
+  const client = { token: readToken(read.token, deps), request: deps.freshFetch ?? deps.fetch, outside: deps.outside ?? callOnce };
   return issuesSource({ owner: read.owner, repo: read.repo, prefix: read.prefix, client, pick: deps.pick, readFile: deps.readFile });
 }
 
