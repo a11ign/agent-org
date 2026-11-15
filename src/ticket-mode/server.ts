@@ -47,6 +47,7 @@ import { EFFORTS, MODELS } from "./settings-read.ts";
 import { type Change, type EditFile, previewEdit, restoreBackup, saveEdit } from "./settings-edit.ts";
 import { type PluginsApi, pluginsApi, type PluginsSeam } from "./plugins-api.ts";
 import { PluginCommandRefusal } from "../plugins/manage.ts";
+import { SecretRefusal } from "./secrets.ts";
 import { isObject } from "./json-value.ts";
 import type { Json } from "./local-http.ts";
 import type { Ticket, TicketSource } from "./source.ts";
@@ -82,7 +83,7 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 const BIN = join(HERE, "..", "bin.ts");
 const TICK_MS = 30_000;
 /** How often the tracker is asked whether finished runs' tickets are done. A merge is not urgent news, and every read is a Linear request. */
-const TRACKER_MS = 120_000;
+export const TRACKER_MS = 120_000;
 /** How often the open pull requests of runs Ready to merge are read for new feedback. Each is one GitHub request per pull request. */
 export const FEEDBACK_MS = 180_000;
 /**
@@ -525,14 +526,15 @@ async function settingsEditRoute(board: Board, method: string, path: string, bod
 
 /**
  * The Plugins section's actions (A11-163): install, enable, disable and uninstall a plugin, written as `agent-org plugin` writes them, through the one writer. A refusal is the CLI's sentence and
- * nothing is written. The change takes effect when the board restarts, which the answer says.
+ * nothing is written. The change takes effect when the board restarts, which the answer says. `/api/plugins/secret` stores a secret typed on the page (A11-445): its answer and its refusals never
+ * carry the value, and nothing on this route logs the body.
  */
 async function pluginActionRoute(board: Board, method: string, path: string, body: Json): Promise<[number, unknown] | undefined> {
-  if (method !== "POST" || path !== "/api/plugins/action") return undefined;
+  if (method !== "POST" || (path !== "/api/plugins/action" && path !== "/api/plugins/secret")) return undefined;
   try {
-    return [200, await board.plugins.act(body)];
+    return [200, path === "/api/plugins/secret" ? await board.plugins.secret(body) : await board.plugins.act(body)];
   } catch (error) {
-    if (!(error instanceof PluginCommandRefusal)) throw error;
+    if (!(error instanceof PluginCommandRefusal) && !(error instanceof SecretRefusal)) throw error;
     return [400, { error: error.message }];
   }
 }

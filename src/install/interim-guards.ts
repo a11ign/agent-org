@@ -60,7 +60,7 @@ function herdrSessionOf(env: Env, home: string): string {
 }
 
 /** Whether the installed `gh` wrapper is the one the host file declares, asked of the code host plugin's wrapper; a host that cannot be asked (no declaration, a plugin the loader refuses) has not proven it. */
-async function wrapperDeclared(): Promise<boolean> {
+export async function wrapperDeclared(): Promise<boolean> {
   try {
     const { activateCodeHost } = await import("../plugins/activate-host.ts");
     await activateCodeHost();

@@ -2,13 +2,13 @@
 // module: the rolling health figures `GET /api/health` serves and the watchdog and the board's header read (A11-363)
 //
 // ON 2026-10-27 THE ONLY DETECTOR OF A STALLED BOARD WAS THE CHAIRMAN. These are the numbers a detector reads, kept by the board itself so no one has to look at a log: how long the event loop waits (a minute and an hour), how many
-// synchronous calls held it, how many calls to Linear and GitHub failed, how long it has been since a run started, how many queued runs could start and how many slots are free, and how long since a `fill()` pass last
+// synchronous calls held it, how many calls to Linear, GitHub and herdr failed (each, and all of them as one figure, A11-436), how long it has been since a run started, how many queued runs could start and how many slots are free, and how long since a `fill()` pass last
 // completed and why the last one gave up early.
 //
 // THE BOARD THREAD KEEPS THEM and posts them in its snapshot (`thread-messages.ts`); the request thread serves them. A figure that needs the queue is worked out from the queue (`runFiguresOf`, PURE) and from the pool's memory
 // of its passes (`pool-figures.ts`); the loop, the holds and the calls are measured where they happen (`loop-delay.ts`, `blocking-ledger.ts`, `call-outcomes.ts`).
 import { HOLD_MS } from "./blocking-ledger.ts";
-import type { CallFigures } from "./call-outcomes.ts";
+import { totalOf, type CallFigure, type CallFigures } from "./call-outcomes.ts";
 import type { LoopReading, LoopSpan } from "./loop-delay.ts";
 import type { Queue } from "./queue/queue-entries-and-outcomes.ts";
 import { slotsHeld } from "./queue/queue-transitions.ts";
@@ -73,7 +73,10 @@ export type HealthFigures = Readonly<{
   uptimeMs: number;
   loop: Readonly<{ lastMinute: Percentiles; lastHour: Percentiles }>;
   syncHolds: Readonly<{ lastHour: number; holdMs: number }>;
+  /** Each service's calls over the last hour: Linear, GitHub and herdr. */
   calls: CallFigures;
+  /** The one failure figure (A11-436): every call to an outside service over the last hour, each counted once however often it was tried, and how many failed. */
+  outsideCalls: CallFigure;
   runs: RunFigures;
   fill: FillFigures;
 }>;
@@ -85,7 +88,7 @@ export type MeasuredFigures = Readonly<{ loop: LoopReading; hour: LoopSpan; hold
 export function healthFigures(measured: MeasuredFigures, pool: PoolFigures, startedAt: number, now: number): HealthFigures {
   const { loop, hour } = measured;
   return { at: now, uptimeMs: Math.max(0, now - startedAt), loop: { lastMinute: { p50Ms: loop.p50Ms, p99Ms: loop.p99Ms }, lastHour: { p50Ms: hour.p50Ms, p99Ms: hour.p99Ms } },
-    syncHolds: { lastHour: measured.holds, holdMs: HOLD_MS }, calls: measured.calls, runs: pool.runs, fill: pool.fill };
+    syncHolds: { lastHour: measured.holds, holdMs: HOLD_MS }, calls: measured.calls, outsideCalls: totalOf(measured.calls), runs: pool.runs, fill: pool.fill };
 }
 
 const sinceOrNull = (at: number | undefined | null, now: number): number | null => (at === undefined || at === null ? null : Math.max(0, now - at));

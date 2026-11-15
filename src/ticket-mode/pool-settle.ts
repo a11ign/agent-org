@@ -41,7 +41,8 @@ import { CONCLUDED, HANDED_BACK, RESULT_KINDS, pullsOf, type PullHead } from "./
 import { findTranscript } from "./pool-transcripts.ts";
 import { readTurns } from "./outcomes/round-tokens.ts";
 import { type RoundEnd, roundEndsOf } from "./outcomes/round-end.ts";
-import { appendOutcome, type OutcomeRun, outcomesPath } from "./outcomes/outcome-record.ts";
+import type { OutcomeRun } from "./outcomes/outcome-record.ts";
+import { appendOutcomeSaying } from "./outcomes/append-record.ts";
 import { isParked } from "./board-view/pull-status-and-notes.ts";
 import { settledByPulls } from "./board-view/pull-settled.ts";
 // eslint-disable-next-line clean-code/no-duplication -- import list: the rule matches statement shape, and imports are not duplicated logic
@@ -835,7 +836,7 @@ function finishRun(ctx: PoolContext, entry: Entry, { outcome, movedTo }: Ending)
   const { name } = runPlace(ctx, entry);
   const record = id === undefined ? {} : { session: id };
   const members = runMembers(ctx, entry);
-  const ends = roundEndsAt(ctx, entry, members, () => outcome.kind);
+  const ends = roundEndsAt(ctx, entry, members, () => outcome.kind, "prs" in outcome ? (outcome.prs ?? []).map(({ url }) => url) : []);
   // A batch's run spent its tokens once: each ticket carries its share of them (`batchShare`), so they add up to the run's and none is counted twice.
   updateEach(ctx, members, (queue, key) => {
     const recorded = { ...record, ...recordedRound(ends, key) };
@@ -856,11 +857,11 @@ function finishRun(ctx: PoolContext, entry: Entry, { outcome, movedTo }: Ending)
  * What the end of this round records for each ticket of the run (A11-430): its transcript is read once, by the session herdr reported for its workspace. A run that never had an agent has no round to
  * record, and none is.
  */
-function roundEndsAt(ctx: PoolContext, entry: Entry, members: readonly Entry[], outcomeOf: (key: string) => string): Map<string, RoundEnd> {
+function roundEndsAt(ctx: PoolContext, entry: Entry, members: readonly Entry[], outcomeOf: (key: string) => string, pulls: readonly string[] = []): Map<string, RoundEnd> {
   if (entry.workspace === undefined) return new Map();
   const id = ctx.claudeSessions.get(entry.workspace);
   const read = id === undefined ? { unreadable: `herdr reported no Claude session for its workspace ${entry.workspace}` } : readTurns(findTranscript(ctx.transcripts, id));
-  return roundEndsOf({ members, watched: entry, read, outcomeOf, ...(id === undefined ? {} : { session: id }), now: ctx.now() });
+  return roundEndsOf({ members, watched: entry, read, outcomeOf, pulls, ...(id === undefined ? {} : { session: id }), now: ctx.now() });
 }
 
 /** The run of `key` with this round added, for the queue: its tokens and its outcome record so far (A11-430). Nothing when the round recorded nothing. PURE. */
@@ -880,17 +881,9 @@ function reportedUnread(queue: Queue, ends: ReadonlyMap<string, RoundEnd>, key: 
  * there too: the run's end, which the queue already holds, is not undone for it.
  */
 function appendOutcomes(ctx: PoolContext, ends: ReadonlyMap<string, RoundEnd>): void {
-  const path = outcomesPath(ctx.settings.stateDir);
   for (const [key, roundEnd] of ends) {
-    if ("unread" in roundEnd) {
-      log(`${key}: no outcome record was written for this round, because its tokens could not be read: ${roundEnd.unread}`);
-      continue;
-    }
-    try {
-      appendOutcome(path, roundEnd.record);
-    } catch (err) {
-      log(`${key}: its outcome record could not be written to ${path} (${messageOf(err)})`);
-    }
+    if ("unread" in roundEnd) log(`${key}: no outcome record was written for this round, because its tokens could not be read: ${roundEnd.unread}`);
+    else appendOutcomeSaying(ctx.settings.stateDir, roundEnd.record);
   }
 }
 
