@@ -12,7 +12,7 @@ import type { CodeHost, MergeFlow } from "../plugins/contracts/code-host.ts";
 import { type ReviewerState, reviewerStateOf, startsReviewers } from "./concern-states.ts";
 import type { Publisher } from "../plugins/contracts/publisher.ts";
 import type { Reviewer } from "../plugins/contracts/reviewer.ts";
-import { defaultHerdr, defaultHerdrAsync, defaultHerdrCall, defaultWait, type Herdr, type HerdrAsync, type HerdrService } from "./pool-herdr.ts";
+import { defaultHerdr, defaultHerdrAsync, defaultHerdrCall, defaultHerdrProbe, defaultWait, type Herdr, type HerdrAsync, type HerdrService } from "./pool-herdr.ts";
 import { log } from "./pool-state.ts";
 import { newHostAlertState, type HostAlertReads, type HostAlertState } from "./host-alerts.ts";
 import { newLegacySweepState, type LegacySweepState, type LegacyTmp } from "./legacy-tmp.ts";
@@ -155,6 +155,8 @@ export type PoolContext = Readonly<{
   herdrAsync: HerdrAsync;
   /** The async herdr calls whose refusal is read or said (a start's pane and listings, a workspace close): herdr's own reason on the error (A11-282). */
   herdrCall: HerdrAsync;
+  /** The listing that says whether the session's server is up (`ensureSession`): asked directly, outside the board's client and its breaker (A11-436). */
+  herdrProbe: HerdrAsync;
   wait: (ms: number) => Promise<void>;
   now: () => number;
   /** The board's calls to Linear and GitHub, as they went (A11-399). */
@@ -290,6 +292,7 @@ export function newPoolContext(store: QueueStore, deps: PoolDeps): PoolContext {
   const injected = deps.herdr;
   const herdrAsync: HerdrAsync = deps.herdrAsync ?? (injected ? async (args, timeoutMs) => injected(args, timeoutMs) : defaultHerdrAsync);
   const herdrCall: HerdrAsync = deps.herdrAsync ?? (injected ? async (args, timeoutMs) => injected(args, timeoutMs) : defaultHerdrCall);
+  const herdrProbe: HerdrAsync = deps.herdrAsync ?? (injected ? async (args, timeoutMs) => injected(args, timeoutMs) : defaultHerdrProbe);
   const wait = deps.wait ?? defaultWait;
   const now = deps.now ?? Date.now;
   const gate = createGate(settings.preflight, deps.preflight ?? shellPreflight, now);
@@ -355,7 +358,7 @@ export function newPoolContext(store: QueueStore, deps: PoolDeps): PoolContext {
   /** The new-ticket runs whose drafts are being read, by id, so a tick that sees the same outcome meanwhile reads them once. */
   const finishing = new Set<string>();
   return {
-    store, settings, source, codeHost, hook, deps, herdr, herdrAsync, herdrCall, wait, now, calls: deps.calls ?? callOutcomes, gate, transcripts, git, feedbackIgnores, hostFile, stallMs, session, misses, answered, rebasing: new Set<string>(),
+    store, settings, source, codeHost, hook, deps, herdr, herdrAsync, herdrCall, herdrProbe, wait, now, calls: deps.calls ?? callOutcomes, gate, transcripts, git, feedbackIgnores, hostFile, stallMs, session, misses, answered, rebasing: new Set<string>(),
     startedHere, attaching, cloning: new Map<string, Promise<string>>(), cloneSweep: { busy: false }, attachRetries, writeRetries, telling: new Set<string>(), answering: new Set<string>(), pendingMoves, removing, batches, reviewerOn, reviewerFile, reviewerMemory, reviewer, reviewerState, offPulls: new Set<string>(), publisher: deps.publisher, reviewerStarted, reviewerResumed,
     reviewerReposts, reviewerRereviewed, closing, pullReads, refusedHeads, greenSeen, reviewerDropped, claudeSessions, finishing, tickState: { busy: false, again: false }, fillState: newFillState(), ownLogin: { value: null }, flakes: flakeLog(settings.stateDir, now), repliesRead: new Set<string>(), baseMerges: new Map<string, BaseMerge>(), mergeFlows: new Map(), settledPulls: new Set<string>(), listingMs: deps.listingMs ?? 60_000, readMs: deps.readMs ?? READ_TIMEOUT_MS, idleSaid: { reason: null }, keptSweep: { busy: false, done: Promise.resolve() }, stackMergeAsked: new Map<string, StackMergeAsk>(), restacked: new Map<string, RestackDone>(), restackSaid: new Set<string>(), waitPolls: new Map(), pullReadAt: new Map<string, number>(), recordSaid: new Set<string>(), waitReading: new Set<string>(), restart: { read: false },
     reseating: new Map<string, Reseat>(), envLost: new Map<string, readonly string[]>(), paneEnv: deps.paneEnv ?? livePaneEnv(herdrCall, settings.herdrSession),
