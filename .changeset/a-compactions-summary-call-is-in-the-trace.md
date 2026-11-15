@@ -1,5 +1,0 @@
----
-"agent-org": patch
----
-
-A compaction's summary call is in the trace store where its usage is readable, and is `unmeasured` (never 0) where it is not. The transcript holds no usage for the call (0 of 1,351 compactions: the summary is a `user` record and `compact_boundary` carries `preTokens`, `postTokens` and `durationMs` only); the exporter's `api_request` with `query_source: "compact"` does. The receiver now keeps `query_source`, and the ingest joins a compaction to the request of its own session within 60 s of its summary record, storing `tokens`, `model` and a `costUsd` priced by `costOf` (null for an unpriced model) on the SAME event, so no event and no turn is added. A compaction no request reaches carries `costUsd: null` and `unmeasured: "no-usage-record"`; the aggregate's compaction line counts those apart as a floor with an ESTIMATED line, and `DEFINITIONS` says the spend is unmeasured and by how much a day it is estimated. A request that arrives after the transcript was read corrects the stored compaction on a later ingest. a11ign/agent-org#478.

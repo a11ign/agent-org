@@ -1,5 +1,0 @@
----
-"agent-org": minor
----
-
-Ticket mode: a worker that checked a ticket and found nothing to change ends on a new outcome, `{ "kind": "checked", "reason": "..." }` (A11-72). The board shows it as Checked with its reason, never in Needs you, it is not retried, and its workspace is closed as soon as the outcome is recorded, as a `planned` one's is. The worker's brief says when to write `checked` and that `needs-human` is only for a real question or decision only the person can make, and both planning briefs say that a ticket that is only a parent (an epic whose work is all in its children) gets a plan saying so, which suggests queueing its children instead. Every finished run now offers **Dismiss** (A11-73): it takes the run off the board and closes its workspace if it is still open, and never touches the ticket, its branch or its pull requests. A queued or live run is refused, and so is a run the publish run under way is posting. A parked (`needs-human`) run keeps its workspace open for the person's answer, as before, and can be dismissed too.
