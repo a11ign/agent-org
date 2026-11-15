@@ -41,6 +41,7 @@ The ticket was reopened again on 2026-10-29 at 15 an hour. The live ledger of th
 
 - A run can be stopped or ended while herdr answers, which the synchronous call made impossible. The waited-pulls watch no longer ends a run `needs-human` that was stopped, ended or started again after the prompt (`sameRun`), and `settleLostPush` returns when the run is not the one it started with.
 - Still synchronous: `sendToAgent` for `pool-watch.ts` (the idle and background-gone nudges, held by A11-374's plan), the resume prompt (`resumeRun`, from `resumeAfterRestart` and `reseatRuns`) and the plan send-back (`pool-plan-send-back.ts`), which are reached through synchronous chains and fire rarely. Their holds read as `pool-resume.ts:142` in the ledger.
+- Later (A11-433, step 3): the plan send-back was the last caller of the synchronous `sendToAgent`. It now prompts through `sendToAgentAsync`, inside the run's `attaching` hold, and checks `sameRun` before it counts the send. `sendToAgent` and `agentTarget` are removed.
 
 
 ## The board thread holds nothing the figure counts (A11-282, step 6)

@@ -11,7 +11,7 @@ import { ticketDir } from "./ticket-paths.ts";
 import { BRIEF_FILE } from "./worker-files.ts";
 import { reasonOf, resumeLine } from "./board-view/run-reason.ts";
 import { clockOf } from "./board-view/update-banner.ts";
-import { agentTarget, IDLE_RESUME_MS, readRestart, RESUME_PROMPT, resumePrompt, sendToAgent, type RestartReads } from "./pool-resume.ts";
+import { agentTargetAsync, IDLE_RESUME_MS, readRestart, RESUME_PROMPT, resumePrompt, sendToAgentAsync, type RestartReads } from "./pool-resume.ts";
 import { newPoolContext } from "./pool-context.ts";
 import { lostText } from "./brief-ticket-text.ts";
 import { runEnvOf } from "./run-env.ts";
@@ -230,18 +230,18 @@ test("A11-279: the restart is read from the boot id and herdr's start: the insta
   assert.equal(await readRestart(blind), null, "a value that cannot be read is no change");
 });
 
-test("A11-279: an agent is reached by its pane, or the root pane of the workspace herdr lists under its label, and never by its name", () => {
+test("A11-279: an agent is reached by its pane, or the root pane of the workspace herdr lists under its label, and never by its name", async () => {
   const made = poolFixture();
   made.status.set("t-nbf-7", "idle");
   const ctx = newPoolContext(made.store, { settings: made.settings, source: { assigned: async () => [], read: async () => { throw new Error("unused"); }, download: async () => [] }, codeHost: {} as never, hook: { node: "n", bin: "b" }, herdr: made.herdr.run });
-  assert.equal(agentTarget(ctx, { name: "t-nbf-7", pane: "w3:p1" }), "w3:p1");
-  assert.equal(agentTarget(ctx, { name: "t-nbf-7" }), "w7:p1");
-  assert.throws(() => agentTarget(ctx, { name: "t-nbf-8" }), /herdr lists no workspace for t-nbf-8/);
-  assert.equal(sendToAgent(ctx, { name: "t-nbf-7" }, "hello"), null);
+  assert.equal(await agentTargetAsync(ctx, { name: "t-nbf-7", pane: "w3:p1" }), "w3:p1");
+  assert.equal(await agentTargetAsync(ctx, { name: "t-nbf-7" }), "w7:p1");
+  await assert.rejects(agentTargetAsync(ctx, { name: "t-nbf-8" }), /herdr lists no workspace for t-nbf-8/);
+  assert.equal(await sendToAgentAsync(ctx, { name: "t-nbf-7" }, "hello"), null);
   assert.deepEqual(made.herdr.calls.at(-1), ["--session", "tickets", "agent", "prompt", "w7:p1", "hello"]);
-  assert.match(sendToAgent(ctx, { name: "t-nbf-8" }, "hello") ?? "", /no workspace for t-nbf-8/, "a run herdr does not list is a refusal, not a throw");
+  assert.match(await sendToAgentAsync(ctx, { name: "t-nbf-8" }, "hello") ?? "", /no workspace for t-nbf-8/, "a run herdr does not list is a refusal, not a throw");
   const refusing = newPoolContext(made.store, { ...ctx.deps, herdr: () => { throw Object.assign(new Error("herdr exited 1"), { stderr: "error: agent_blocked\n" }); } });
-  assert.equal(sendToAgent(refusing, { name: "t-nbf-7", pane: "w7:p1" }, "hello"), "error: agent_blocked", "herdr's own reason");
+  assert.equal(await sendToAgentAsync(refusing, { name: "t-nbf-7", pane: "w7:p1" }, "hello"), "error: agent_blocked", "herdr's own reason");
 });
 
 test("A11-279: the resume prompt is one line, and names a declared wait or a job the worker waits on", () => {

@@ -35,8 +35,11 @@ const planWith = (evidence: string): string => `# Plan\n\n## Approach\n\nDo it.\
 const GOOD = planWith("each machine's update log");
 const TOO_LONG = planWith("x".repeat(250));
 
-/** A pool over a planning run of NBF-1 (and NBF-2 with `batch`) over a tracker that holds both with a ticket whose After-merge line is {@link LINE}; herdr refuses every prompt while `herdrRefuses.on`. */
-async function planning({ batch = false }: { batch?: boolean } = {}) {
+/**
+ * A pool over a planning run of NBF-1 (and NBF-2 with `batch`) over a tracker that holds both with a ticket whose After-merge line is {@link LINE}; herdr refuses every prompt while `herdrRefuses.on`. With `asyncPrompts`, the
+ * synchronous herdr refuses every prompt (a prompt over it would hold the board loop, A11-433), and an async prompt waits while `heldPrompts.on`, until `heldPrompts.release()`.
+ */
+async function planning({ batch = false, asyncPrompts = false }: { batch?: boolean; asyncPrompts?: boolean } = {}) {
   const root = tmpDir("ticket-plan-send-back-");
   const settings = parseTicketSettings({ clones: { "agent-org": "/repos/agent-org" }, stateDir: join(root, "state"),
     tickets: { plan: "-plan-[^/]*\\.md$", planner: { run: batch ? "plan {keys} into {dir}" : "plan {key} into {dir}", state: "Planned" } } });
@@ -53,8 +56,18 @@ async function planning({ batch = false }: { batch?: boolean } = {}) {
     if (herdrRefuses.on && args.includes("agent") && args.includes("prompt")) throw Object.assign(new Error("herdr exited 1"), { stdout: JSON.stringify({ error: { message: "agent_blocked" } }) });
     return herdr.run(args);
   };
+  const isPrompt = (args: readonly string[]): boolean => args.includes("agent") && args.includes("prompt");
+  const heldPrompts = { on: false, waiting: [] as (() => void)[], release: () => { heldPrompts.on = false; heldPrompts.waiting.splice(0).forEach((go) => go()); } };
+  const syncRun = (args: string[]): string => {
+    if (isPrompt(args)) throw new Error("the synchronous herdr was asked for a prompt");
+    return run(args);
+  };
+  const asyncRun = async (args: string[]): Promise<string> => {
+    if (heldPrompts.on && isPrompt(args)) await new Promise<void>((go) => { heldPrompts.waiting.push(go); });
+    return run(args);
+  };
   const clock = { now: START };
-  const pool = createSettledPool(store, { settings, source, hook: { node: "/node", bin: "/tool/src/bin.ts" }, herdr: run, hostFile: "/work/.agent-org/host.json", now: () => clock.now, load: () => ({ load: 1, cores: 14 }),
+  const pool = createSettledPool(store, { settings, source, hook: { node: "/node", bin: "/tool/src/bin.ts" }, ...(asyncPrompts ? { herdr: syncRun, herdrAsync: asyncRun } : { herdr: run }), hostFile: "/work/.agent-org/host.json", now: () => clock.now, load: () => ({ load: 1, cores: 14 }),
     transcriptsRoot: join(root, "transcripts"), wait: async () => {}, pluginRecord: join(root, "no-plugin-record.json"), codeHost: createFakeCodeHost() });
   await pool.tick();
   store.set(pauseQueue(store.get()));
@@ -79,7 +92,7 @@ async function planning({ batch = false }: { batch?: boolean } = {}) {
   const tick = async () => { clock.now += 60_000; await pool.tick(); await settled(); };
   const prompts = () => herdr.calls.filter((args) => args.includes("agent") && args.includes("prompt")).map((args) => String(args.at(-1)));
   const entry = (key = KEY) => queue.entries.find((e) => e.ticket.key === key)!;
-  return { root, dir, settings, tick, herdrRefuses, writes, prompts, entry, attached, store, ctxFolder: ticketDir(settings, KEY), sent: () => JSON.parse(readFileSync(join(dir, SENT_BACK_FILE), "utf8")) as { count: number; refusals: string[] } };
+  return { root, dir, settings, tick, herdrRefuses, heldPrompts, writes, prompts, entry, attached, store, ctxFolder: ticketDir(settings, KEY), sent: () => JSON.parse(readFileSync(join(dir, SENT_BACK_FILE), "utf8")) as { count: number; refusals: string[] } };
 }
 
 test("A11-288: an over-long Evidence line is sent back to the planner, which fixes it and has the plan attached, with no Needs you", async () => {
@@ -134,6 +147,35 @@ test("A11-288: after two send-backs the third refusal goes to the person's sessi
   assert.match(run.entry().working?.reason ?? "", /^the board refused the plan's ## After-merge checks section 3 times$/);
   assert.equal(run.entry().working?.until, run.entry().working!.at + 24 * 60 * 60 * 1000, "24 hours from the hand-off");
   assert.equal(run.sent().count, 3);
+});
+
+test("A11-433: the send-back prompt goes over the async herdr, and a pass while herdr answers settles the same planned outcome no second time", async () => {
+  const run = await planning({ asyncPrompts: true });
+  run.heldPrompts.on = true;
+  await run.writes({ [KEY]: TOO_LONG });
+  assert.equal(run.heldPrompts.waiting.length, 1, "the prompt is asked over the async herdr, and waits for its answer");
+  assert.equal(existsSync(join(run.dir, SENT_BACK_FILE)), false, "no send is counted before herdr answers");
+  for (let i = 0; i < 3; i += 1) await run.tick();
+  assert.equal(run.heldPrompts.waiting.length, 1, "the passes meanwhile send no second prompt");
+  run.heldPrompts.release();
+  await run.tick();
+  assert.equal(run.sent().count, 1, "the send is counted once herdr answers");
+  assert.equal(run.prompts().length, 1);
+  for (let i = 0; i < 3; i += 1) await run.tick();
+  assert.equal(run.prompts().length, 1, "and the stale outcome is not sent back again");
+  assert.equal(run.entry().outcome, undefined);
+});
+
+test("A11-433: a run stopped while herdr answers the send-back is left as it is: the send is not counted", async () => {
+  const run = await planning({ asyncPrompts: true });
+  run.heldPrompts.on = true;
+  await run.writes({ [KEY]: TOO_LONG });
+  assert.equal(run.heldPrompts.waiting.length, 1);
+  const queue = run.store.get();
+  run.store.set({ ...queue, entries: queue.entries.map((e) => (e.ticket.key === KEY ? { ...e, phase: "queued" as const } : e)) });
+  run.heldPrompts.release();
+  await run.tick();
+  assert.equal(existsSync(join(run.dir, SENT_BACK_FILE)), false, "no send is counted for a run that is no longer the queue's");
 });
 
 test("A11-288: a prompt herdr refuses counts no send, and the next pass sends it", async () => {
