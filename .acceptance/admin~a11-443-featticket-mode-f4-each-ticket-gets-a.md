@@ -4,6 +4,7 @@ Acceptance:
 ```bash
 npx rstest run --config scripts/rstest/rstest.config.ts src/ticket-mode/readiness.test.ts src/ticket-mode/settings.test.ts src/ticket-mode/remote-proxy.test.ts src/ticket-mode/retro/retro.test.ts src/ticket-mode/config-schema.test.ts
 npx rstest run --config scripts/rstest/rstest.config.ts src/ticket-mode/server.test.ts -t "A11-443"
+pnpm --dir ui install --frozen-lockfile
 pnpm --dir ui exec rstest run --config rstest.config.ts src/tickets/tickets-readiness.test.tsx
 ```
 
