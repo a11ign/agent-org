@@ -217,6 +217,20 @@ test("A11-163: a manifest's secret setting must declare the command that sets it
   assert.equal(good?.settings.token.setCommand, "pass insert example");
 });
 
+test("A11-445: a setting entered on the page must be a secret, entered as a token, whose command names where it goes by default", () => {
+  const entry = { key: "tickets.providers.tracker.token", file: "host.json", group: "Tracker", type: "text", absent: "unset", default: null, secret: "path", setCommand: "write {value|~/.config/agent-org/x.key}", explanation: "e", breaks: "b", edit: { editable: false, why: "w" } };
+  const refusal = (over: Record<string, unknown>) => refusalOf(catalogOf({ bad: manifest({ settings: { token: { ...entry, ...over } } }) }), "bad") ?? "";
+  assert.match(refusal({ enter: "file" }), /agentOrg\.settings\.token\.enter must be "token", not "file"/);
+  assert.match(refusal({ enter: "token", secret: undefined }), /agentOrg\.settings\.token\.enter is for a secret/);
+  assert.match(refusal({ enter: "token", setCommand: "write {value}" }), /agentOrg\.settings\.token\.enter needs setCommand to name where the secret goes by default/);
+  assert.equal(pluginNamed(catalogOf({ ok: manifest({ settings: { token: { ...entry, enter: "token" } } }) }), "ok")?.settings.token.enter, "token");
+});
+
+test("A11-445: the bundled plugins take the Linear key and the Telegram bot token on the page, and nothing else", () => {
+  const entered = defaultCatalog().plugins.flatMap((plugin) => Object.entries(plugin.settings).filter(([, entry]) => entry.enter !== undefined).map(([name]) => `${plugin.name} ${name}`));
+  assert.deepEqual(entered, ["linear key.path", "linear key.keychain", "telegram tokenFile"]);
+});
+
 test("A11-163: every secret setting of this checkout's bundled plugins declares its command", () => {
   const secrets = defaultCatalog().plugins.flatMap((plugin) => Object.entries(plugin.settings).filter(([, entry]) => entry.secret !== undefined).map(([name, entry]) => [plugin.name, name, entry.setCommand]));
   assert.ok(secrets.length >= 6, "linear, github and telegram each declare secrets");

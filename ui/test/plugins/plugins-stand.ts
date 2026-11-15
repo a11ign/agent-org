@@ -11,7 +11,7 @@ import type { MessagingState } from "../../../src/plugins/view.ts";
 import { defaultSchema } from "../../../src/plugins/schema.ts";
 import { resolveProviders } from "../../../src/ticket-mode/providers.ts";
 import type { Fetch } from "../../src/api/request.ts";
-import type { PluginActionDone, PluginsAnswer } from "../../src/api/types.ts";
+import type { PluginActionDone, PluginsAnswer, SecretDone } from "../../src/api/types.ts";
 import { CONFLICT_SENTENCE } from "../../src/settings/settings-model.ts";
 import { settingsFetch, standOf as settingsOf, viewOf, type Files, type SettingsStand } from "../settings/settings-stand.ts";
 import { standFetch, type Failure, type Request, type Stand } from "../fixtures.ts";
@@ -58,17 +58,20 @@ const NO_PROJECT: MessagingState = { provider: null, why: "this machine declares
  * The answer of `/api/plugins` for a host, the doctor checks of each plugin by name, the Claude plugins the host lists, and what the project says of messaging, with when the checks finished
  * (just now, unless a check says otherwise) and whether they are running again.
  */
-export function answerOf({ host = BOARD_HOST, checks = {}, claude = NO_CLAUDE, note = null, messaging = NO_PROJECT, refused = [], checkedAt = new Date().toISOString(), checking = false }: Readonly<{
+export function answerOf({ host = BOARD_HOST, checks = {}, claude = NO_CLAUDE, note = null, messaging = NO_PROJECT, refused = [], checkedAt = new Date().toISOString(), checking = false, platform = "linux" }: Readonly<{
   host?: unknown; checks?: Readonly<Record<string, readonly PluginCheck[]>>; claude?: ClaudePlugins; note?: string | null; messaging?: MessagingState; refused?: readonly Readonly<{ plugin: string; why: string }>[];
-  checkedAt?: string | null; checking?: boolean;
+  checkedAt?: string | null; checking?: boolean; platform?: string;
 }> = {}): PluginsAnswer {
   const catalog = defaultCatalog();
-  const health = pluginHealth({ catalog: { ...catalog, refusals: [...catalog.refusals, ...refused] }, providers: resolveProviders(host, catalog), messaging, load: { loaded: [], unbuilt: [], refusals: [] }, checks, version: "v0.289.0" });
+  const health = pluginHealth({ catalog: { ...catalog, refusals: [...catalog.refusals, ...refused] }, providers: resolveProviders(host, catalog), messaging, load: { loaded: [], unbuilt: [], refusals: [] }, checks, version: "v0.289.0", platform });
   return { ...health, claude, attention: attentionOf(health, claude), note, bases: { "host.json": "base-1", "project.json": "base-p1" }, checkedAt, checking };
 }
 
 /** A failing doctor check, as a plugin reports one. */
 export const failing = (name: string, detail: string, fix: string): PluginCheck => ({ name, ok: false, detail, fix });
+
+/** What a secret saved on the page carries (A11-445). */
+export type SecretBody = Readonly<{ name: string; setting: string; value: string; base: string }>;
 
 /** What a request to act on a plugin carries. */
 export type ActionBody = Readonly<{ action: "install" | "enable" | "disable" | "uninstall"; name: string; base: string; confirmed?: boolean }>;
@@ -83,6 +86,8 @@ export type PluginsStand = {
   base: string;
   /** Replaces the instance's own answer to an action. */
   action?: (body: ActionBody) => PluginActionDone | Failure;
+  /** The instance's answer to a secret saved on the page (A11-445); by default it is stored, with no check rows. */
+  secret?: (body: SecretBody) => SecretDone | Failure;
   /** The queue's failure, as an SSH instance that cannot be reached answers it: this is what turns the page to Health unknown. */
   queueFails?: Failure;
 };
@@ -129,6 +134,10 @@ export function answerPlugins(state: PluginsStand, path: string, request: Readon
   if (request.method === "GET" && route === "/api/queue" && state.queueFails !== undefined) return answered(state.queueFails);
   if (request.method === "GET" && route === "/api/plugins") return state.fails === undefined ? reply(read(state)) : answered(state.fails);
   if (request.method === "POST" && route === "/api/plugins/action") return answered(answerAction(state, request.body as ActionBody));
+  if (request.method === "POST" && route === "/api/plugins/secret") {
+    const body = request.body as SecretBody;
+    return answered(state.secret?.(body) ?? { said: `stored ${body.setting} of ${body.name}`, inForce: [], backup: null, checks: [], checkedAt: new Date().toISOString() });
+  }
   return null;
 }
 

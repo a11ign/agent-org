@@ -249,3 +249,57 @@ test("A11-270: checks that never finish are one failing row after the time limit
   assert.deepEqual(linearChecks(answer), [{ name: "plugin linear", ok: false, detail: "its checks did not finish within 0.1 seconds", fix: "run agent-org doctor to see them" }]);
   assert.notEqual(answer.checkedAt, null);
 });
+
+// ---- A11-445: a secret typed on the page is stored, checked, and never given back
+
+const SECRET_TOKEN = "lin_api_0a1b2c3d4e5fWRITEONLY";
+
+/**
+ * The page's API over a scratch home whose tracker block names its key file, with a linear plugin whose doctor check reads that file and, as a careless check might, quotes it in its row:
+ * the store must scrub what the check says. Everything the board would log is kept in `logged`.
+ */
+function secretApi() {
+  const home = tmpDir("plugins-api-home-");
+  const agentOrgHome = join(home, ".agent-org");
+  const keyFile = join(agentOrgHome, "linear.key");
+  const logged: string[] = [];
+  const doctorChecks = () => {
+    try {
+      return [{ name: "tracker key", ok: false, detail: `Linear refused ${readFileSync(keyFile, "utf8").trim()}`, fix: "make a new key" }];
+    } catch {
+      return [{ name: "tracker key", ok: false, detail: "no key file", fix: "set the key" }];
+    }
+  };
+  const module = { doctorChecks } as unknown as PluginModule;
+  const { api, hostPath } = apiOver({ providers: { ...BLOCKS, tracker: { provider: "linear", enabled: true, key: { path: keyFile } } } }, {}, {
+    load: async () => ({ loaded: [], unbuilt: [{ plugin: LINEAR, module }], refusals: [] }), log: (line) => { logged.push(line); },
+    secrets: { home, agentOrgHome, platform: "linux", security: async () => ({ status: 0, stdout: "", stderr: "" }) },
+  });
+  return { api, hostPath, keyFile, logged };
+}
+
+test("A11-445: a saved secret is stored where the plugin reads it, its check runs at once, and neither the answer nor a later read nor the log carries it", async () => {
+  const { api, keyFile, logged } = secretApi();
+  const done = await api.secret({ name: "linear", setting: "key.path", value: SECRET_TOKEN, base: "" });
+  assert.equal(readFileSync(keyFile, "utf8"), `${SECRET_TOKEN}\n`);
+  assert.equal(done.said, `stored key.path of linear in the file ${keyFile}`);
+  assert.deepEqual(done.checks, [{ name: "tracker key", ok: false, detail: "Linear refused <redacted>", fix: "make a new key" }], "the plugin's own check ran on the stored key, and what it quoted is scrubbed");
+  assert.ok(logged.some((line) => line.includes("Linear refused <redacted>")), "the failing row was said on the board's log, scrubbed");
+  assert.ok(done.checkedAt !== null);
+  const read = await api.read();
+  for (const [what, text] of [["the answer", JSON.stringify(done)], ["a read after it", JSON.stringify(read)], ["the board's log", logged.join("\n")]]) {
+    assert.equal(text.includes(SECRET_TOKEN), false, `${what} does not carry the secret`);
+  }
+});
+
+test("A11-445: a refusal from storing is said without the secret, even when what refused it quoted it", async () => {
+  const { api } = secretApi();
+  await assert.rejects(api.secret({ name: "linear", setting: "key.path", value: "has space" }), /one line with no space/);
+  const echoing = apiOver({}, {}, { secrets: { platform: "darwin", security: async (input) => ({ status: 1, stdout: "", stderr: `bad item ${input}` }) } });
+  const base = (await echoing.api.read()).bases["host.json"];
+  await assert.rejects(echoing.api.secret({ name: "linear", setting: "key.keychain", value: SECRET_TOKEN, base }), (error: Error) => {
+    assert.match(error.message, /the macOS Keychain did not take it/);
+    assert.equal(error.message.includes(SECRET_TOKEN), false);
+    return true;
+  });
+});
