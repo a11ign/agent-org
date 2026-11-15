@@ -1539,7 +1539,7 @@ test("A11-292: doctor passes a declared repository whose clone the host lists un
 
 test("A11-360: doctor fails a `clones` entry that is no repository (not a declared key or name, and its origin names none), and passes one a remote or the declaration names", async () => {
   const remotes: Record<string, string> = { "/c/stopgap": "https://github.com/a11ign/.github.git" };
-  const rows = (await diagnose(deps({ readFile: () => withClones({ "agent-org": "/c/agent-org", ".github": "/c/github", stopgap: "/c/stopgap", bogus: "/c/bogus" }), declaredRepositories: DECLARED, cloneRemote: (path) => remotes[path] }))).filter((check) => check.name.startsWith("clone ") && !check.name.startsWith("clone of "));
+  const rows = (await diagnose(deps({ readFile: () => withClones({ "agent-org": "/c/agent-org", ".github": "/c/github", stopgap: "/c/stopgap", bogus: "/c/bogus" }), declaredRepositories: DECLARED, cloneRemotes: async () => (path) => remotes[path] }))).filter((check) => check.name.startsWith("clone ") && !check.name.startsWith("clone of "));
   assert.deepEqual(rows.map((row) => row.name), ["clone bogus"], "only the entry that names no repository");
   assert.match(rows[0].detail, /`bogus` in `clones` is no repository/);
   const unasked = (await diagnose(deps({ readFile: () => withClones({ bogus: "/c/bogus" }), declaredRepositories: DECLARED }))).filter((check) => check.name === "clone bogus");

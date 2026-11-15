@@ -7,7 +7,6 @@
 // plugin through `deps.reviewing` (`src/plugins/reviewing-helpers.ts`); the pool's own memory of its reviewers (`readReviewerMemory`, `writeReviewerMemory`); and the readers of a reviewer's
 // reviews, which the pool and the board's lines use. The reviewer posts as `a11ign-reviewer`, and its verdict is what the pool reads back to decide whether the worker goes round again.
 
-import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { repositoryOfClone } from "../declared-clone.ts";
@@ -137,18 +136,21 @@ export function earlierReviewWord(reviews: readonly Review[], head: string): Rea
   return reviewWordOf(reviews, (r) => r.commit !== head);
 }
 
-/** How long one clone's `origin` is read for, so a clone on a stalled mount holds the board's loop for no longer. */
+/** How long one clone's `origin` is read for, so a clone on a stalled mount keeps a sweep waiting for no longer. */
 const ORIGIN_TIMEOUT_MS = 3000;
-/** How long a read origin is kept: the sweeps ask every few minutes, and a clone's remote does not change under them. */
+/** How long a read origin is kept before {@link warmOrigins} reads it again: the sweeps ask every few minutes, and a clone's remote does not change under them. */
 const ORIGIN_KEPT_MS = 300_000;
 const origins = new Map<string, { at: number; url: string | undefined }>();
 
+/** The `origin` URL of the clone at a path, or undefined when it has none or is not a clone. */
+export type OriginReader = (path: string) => string | undefined;
+
 /**
- * Read the `origin` of every clone whose kept answer is older than {@link ORIGIN_KEPT_MS}, together and without holding the loop, and keep each where {@link originOf} finds it (A11-282). The sweeps ask `originOf` for every clone
- * at once, and each of those was a `git` the board thread waited on: a clone read every five minutes, on a host under load, was a hold of 100 ms and more for each. A sweep warms the answers first and then reads them
- * from the cache. Never rejects: a clone it cannot read is kept as having none, as `originOf` keeps it.
+ * Read the `origin` of every clone whose kept answer is older than {@link ORIGIN_KEPT_MS}, together and without holding the loop, and answer the reader of the kept answers (A11-282). The sweeps ask for every clone's
+ * origin at once, and each of those was a `git` the board thread waited on: a clone read every five minutes, on a host under load, was a hold of 100 ms and more for each. A sweep warms the answers first and then reads them
+ * from the cache. Never rejects: a clone it cannot read is kept as having none. THE READER IS THE ANSWER (A11-433): the lookups that need an origin take it as an argument, so none can read the cache before it is warmed.
  */
-export async function warmOrigins(clones: Clones, now: () => number = Date.now): Promise<void> {
+export async function warmOrigins(clones: Clones, now: () => number = Date.now): Promise<OriginReader> {
   const stale = [...new Set(Object.values(clones))].filter((path) => {
     const held = origins.get(path);
     return held === undefined || now() - held.at >= ORIGIN_KEPT_MS;
@@ -156,46 +158,41 @@ export async function warmOrigins(clones: Clones, now: () => number = Date.now):
   const env = sandboxGitEnv();
   const withoutEnv = Object.keys(process.env).filter((name) => !(name in env));
   await Promise.all(stale.map(async (path) => {
-    // A clone that is not on this machine has no origin to read, and asking `git` for it would only wait for the answer `originOf` gives: none.
+    // A clone that is not on this machine has no origin to read, and asking `git` for it would only wait for the answer `git` gives: none.
     if (!existsSync(path)) return void origins.set(path, { at: now(), url: undefined });
     const answer = await realExecAsync("git", ["-C", path, "remote", "get-url", "origin"], { env: Object.fromEntries(Object.entries(env).filter((pair): pair is [string, string] => pair[1] !== undefined)), withoutEnv, timeoutMs: ORIGIN_TIMEOUT_MS });
     origins.set(path, { at: now(), url: answer.status === 0 ? answer.stdout.trim() : undefined });
   }));
+  return keptOriginOf;
 }
 
-/** The `origin` URL of the clone at `path`, or undefined when it has none or is not a clone. */
-export function originOf(path: string, now: () => number = Date.now): string | undefined {
-  const held = origins.get(path);
-  if (held !== undefined && now() - held.at < ORIGIN_KEPT_MS) return held.url;
-  let url: string | undefined;
-  try {
-    url = execFileSync("git", ["-C", path, "remote", "get-url", "origin"], { encoding: "utf8", env: sandboxGitEnv(), stdio: ["ignore", "pipe", "ignore"], timeout: ORIGIN_TIMEOUT_MS }).trim();
-  } catch (err) {
-    void err; // no origin, no clone at that path, or no answer in time: it names no repository, and the caller takes the key for a name
-  }
-  origins.set(path, { at: now(), url });
-  return url;
+/**
+ * The `origin` URL of the clone at `path` as {@link warmOrigins} last read it. IT SPAWNS NOTHING (A11-433): it once read a clone the cache missed with a synchronous `git`, on the board thread. An answer older than
+ * {@link ORIGIN_KEPT_MS} is still the last one read, since a clone's remote does not change under the board.
+ */
+function keptOriginOf(path: string): string | undefined {
+  return origins.get(path)?.url;
 }
 
 /** Each clone of `clones` with the repository it is the checkout of: the declaration's, else its remote's, else its key taken as a name under the primary's owner (A11-360). */
-function repositoriesOfClones(clones: Clones, remote: (path: string) => string | undefined): { key: string; repository: string }[] {
+function repositoriesOfClones(clones: Clones, remote: OriginReader): { key: string; repository: string }[] {
   const { config, identity } = reviewerGate();
   const owner = identity.REPO.split("/")[0];
   const code = config.homeProjectDeclaration().code;
   return Object.entries(clones).map(([key, path]) => ({ key, repository: repositoryOfClone(key, path, { code, remote }) ?? `${owner}/${key}` }));
 }
 
-/** The key under which `clones` lists the clone of `repository` (`owner/name`), or undefined when it lists none: a writer places a ticket by this key. */
-export function cloneKeyForRepository(clones: Clones, repository: string, remote: (path: string) => string | undefined = originOf): string | undefined {
+/** The key under which `clones` lists the clone of `repository` (`owner/name`), or undefined when it lists none: a writer places a ticket by this key. `remote` is the reader {@link warmOrigins} answers. */
+export function cloneKeyForRepository(clones: Clones, repository: string, remote: OriginReader): string | undefined {
   return repositoriesOfClones(clones, remote).find((cloned) => cloned.repository === repository)?.key;
 }
 
 /**
  * The repositories whose open pull requests the pool reviews (A11-119): the primary's, the project's declared ones, and the repositories the host's clones are checkouts of. These are the repositories the reviewer plugin
- * gives a seat to, so a pull request of any other is one no reviewer could start for. A clone's repository is found from the declaration or its git remote, never from its key (A11-360: the key `github` of the clone
+ * gives a seat to, so a pull request of any other is one no reviewer could start for. A clone's repository is found from the declaration or its git remote (`remote`, the reader {@link warmOrigins} answers), never from its key (A11-360: the key `github` of the clone
  * of `.github` listed `a11ign/github`). A clone whose remote cannot be read is listed under its key as a name, as `clones` lists a clone (`doctor` fails a key that is no repository).
  */
-export function reviewedRepositoriesOf(clones: Clones, remote: (path: string) => string | undefined = originOf): string[] {
+export function reviewedRepositoriesOf(clones: Clones, remote: OriginReader): string[] {
   const { config, identity } = reviewerGate();
   return [...new Set([identity.REPO, ...config.homeProjectDeclaration().code.map((declared) => declared.repo), ...repositoriesOfClones(clones, remote).map(({ repository }) => repository)])];
 }
