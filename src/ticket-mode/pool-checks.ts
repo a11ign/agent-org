@@ -8,7 +8,7 @@ import type { FailingCheck, PullFeedback, UpdateBranchResult } from "../plugins/
 import type { Flake } from "./flakes.ts";
 import { callsUnrelated, saysUnrelated } from "./failure-words.ts";
 import { decisionsOf } from "./ticket-decisions.ts";
-import { type Entry } from "./queue/queue-entries-and-outcomes.ts";
+import { SETTLED, type Entry } from "./queue/queue-entries-and-outcomes.ts";
 import { type CheckHead } from "./board-view/view-types-and-filters.ts";
 import { NO_FOREIGN_REDS, type ForeignReds, type ForeignRedsRead } from "./pool-foreign-checks.ts";
 import { log, messageOf } from "./pool-state.ts";
@@ -145,9 +145,24 @@ async function heldCheckOf(ctx: PoolContext, key: string, body: string, check: F
   const known = previous?.unowned?.[check.name] ?? null;
   // An owner named at this head is the answer; so is "no owner", once its error lines are recorded or the board files no fixes and needs none.
   const answeredBefore = Object.hasOwn(owners, check.name) && (owners[check.name] !== null || known !== null || ctx.fixes === undefined);
-  if (answeredBefore) return { owner: owners[check.name] ?? null, lines: known };
+  const before = owners[check.name] ?? null;
+  // An owner recorded before is read again only when the board has since settled it (A11-429): then the check has no owner, and its log is read for the fix ticket.
+  const stillOwned = liveOwner(ctx, before) === before;
+  if (answeredBefore && stillOwned) return { owner: before, lines: known };
   const read = await readCheck(ctx, check);
-  return { owner: ownerOfRed(key, "", read.refusals), lines: read.lines.slice(-MAX_LINES) };
+  return { owner: liveOwner(ctx, ownerOfRed(key, "", read.refusals)), lines: read.lines.slice(-MAX_LINES) };
+}
+
+/**
+ * An owner the error lines name, kept only while the board does not hold that ticket as settled (completed, canceled or a duplicate). A failing test's title names the ticket it was written for (`… (A11-211)`), and that
+ * ticket was done long ago: held under it, the check got no fix ticket (A11-428 files one only for a check with no owner), and the hold was never let go, because a done ticket never merges again (A11-429). A ticket the
+ * board does not hold is kept as named: the board cannot say it is done.
+ */
+function liveOwner(ctx: PoolContext, named: string | null): string | null {
+  if (named === null) return null;
+  // A context built without the queue (a test's, or a caller that watches no board) knows of no ticket as settled.
+  const held = (ctx.store as PoolContext["store"] | undefined)?.get().entries.find((entry) => entry.ticket.key === named);
+  return held !== undefined && SETTLED.has(held.trackerState ?? "") ? null : named;
 }
 
 /** What the card says of a held check's owner: the ticket named, else the board's fix ticket (A11-428), or that one is being filed, else nothing. PURE. */

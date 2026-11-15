@@ -1,5 +1,5 @@
 import type { HealthFigures } from "../../../src/ticket-mode/health-figures.ts";
-import { healthFlags } from "../../../src/ticket-mode/health-flags.ts";
+import { healthFlags, SERVICE_WORDS } from "../../../src/ticket-mode/health-flags.ts";
 import type { LoopReading } from "../../../src/ticket-mode/loop-delay.ts";
 import type { WatchdogView } from "../../../src/ticket-mode/watchdog-record.ts";
 
@@ -31,12 +31,12 @@ const plural = (count: number, one: string, many: string): string => `${count} $
 
 /** The figures as short lines: the loop over a minute and an hour with the holds, the failed calls, and the runs and the fill passes. PURE. */
 export function figureDetails(figures: HealthFigures): readonly string[] {
-  const { loop, syncHolds, calls, runs, fill } = figures;
-  const failing = (["linear", "github"] as const).map((service) => `${service === "linear" ? "Linear" : "GitHub"} ${calls[service].failuresPer100}`).join(", ");
+  const { loop, syncHolds, calls, outsideCalls, runs, fill } = figures;
+  const failing = (Object.keys(SERVICE_WORDS) as (keyof typeof SERVICE_WORDS)[]).map((service) => `${SERVICE_WORDS[service]} ${calls[service].failuresPer100}`).join(", ");
   const early = fill.lastEarlyReturn === null ? "" : `; its last pass returned early: ${fill.lastEarlyReturn.reason}`;
   return [
     `Loop p50/p99: ${delayText(loop.lastMinute.p50Ms)} / ${delayText(loop.lastMinute.p99Ms)} over 1 min, ${delayText(loop.lastHour.p50Ms)} / ${delayText(loop.lastHour.p99Ms)} over 1 h; ${plural(syncHolds.lastHour, "hold", "holds")} an hour`,
-    `Failed calls per 100: ${failing}`,
+    `Failed calls per 100: ${outsideCalls.failuresPer100} (${failing})`,
     `Last run start ${runs.sinceLastStartMs === null ? "never" : `${ageText(runs.sinceLastStartMs)} ago`}; ${plural(runs.startable, "startable run", "startable runs")}, ${plural(runs.freeSlots, "free slot", "free slots")}; last fill ${fill.sinceLastCompletedMs === null ? "not yet" : `${ageText(fill.sinceLastCompletedMs)} ago`}${early}`,
   ];
 }
