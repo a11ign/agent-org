@@ -2,7 +2,7 @@
 //
 // ESLint's `--cache` is a file of results keyed by each file's content and by the ESLint version and the config it computed. A change to a PLUGIN'S CODE under the same
 // version string, or to a rule's behaviour behind an unchanged config, is not something that file can see, and a cache that serves a pass for a file a changed rule
-// would now fail hides a lint error. So the cache lives in a directory NAMED BY ITS INPUTS: the text of `eslint.config.ts`, the text of the lockfile, and the installed
+// would now fail hides a lint error. So the cache lives in a directory NAMED BY ITS INPUTS: the text of `eslint.config.ts` and of the data it reads, the text of the lockfile, and the installed
 // version of every package that is ESLint, a plugin of it, its config loader or the TypeScript the parser reads. Any of them changes, the key changes, the old cache is not
 // read (and is removed), and the next run lints every file it is given. The cache is under `node_modules/.cache/eslint`, which no commit carries.
 import { spawnSync } from "node:child_process";
@@ -29,6 +29,12 @@ const KEY_LENGTH = 16;
 /** The packages whose installed version is part of the key: ESLint itself, every plugin and config of it, the loader for `eslint.config.ts`, and TypeScript. */
 const KEYED_PACKAGE = /eslint|^jiti$|^typescript$/;
 
+/**
+ * The files whose text is part of the key: the config, the lockfile, and the data the config reads. `eslint.config.ts` reads `blocking-calls.baseline.json` for the files its blocking-call
+ * ban leaves out (A11-433), so a file dropped from that list must be linted again although neither it nor the config changed.
+ */
+const CONFIG_INPUTS = ["eslint.config.ts", "pnpm-lock.yaml", "blocking-calls.baseline.json"] as const;
+
 const readTextOrMissing = (path: string): string => (existsSync(path) ? readFileSync(path, "utf8") : "<missing>");
 
 /** The name of every dependency the manifest declares, of either kind. */
@@ -54,7 +60,8 @@ function installedVersion(root: string, name: string): string {
 /** The text every input of the cache key contributes, in a fixed order. Exported so a test can show what the key is made of. */
 export function lintCacheInputs(root: string): string[] {
   const versions = declaredPackages(root).filter((name) => KEYED_PACKAGE.test(name)).sort().map((name) => `${name}@${installedVersion(root, name)}`);
-  return [`eslint.config.ts\n${readTextOrMissing(join(root, "eslint.config.ts"))}`, `pnpm-lock.yaml\n${readTextOrMissing(join(root, "pnpm-lock.yaml"))}`, ...versions];
+  const files = CONFIG_INPUTS.map((path) => `${path}\n${readTextOrMissing(join(root, path))}`);
+  return [...files, ...versions];
 }
 
 /** The key the cache directory is named by: a hash of `lintCacheInputs`. */

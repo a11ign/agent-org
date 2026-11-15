@@ -4,7 +4,7 @@ import { replace, retry, type Outcome, type Queue, type Entry } from "./queue-en
 import { finish } from "./queue-transitions.ts";
 
 /** What `finish` records of the run that ended: its tokens and Claude session. */
-type RunRecord = Readonly<{ tokens?: Entry["tokens"]; session?: string }>;
+type RunRecord = Readonly<{ tokens?: Entry["tokens"]; session?: string; outcomeRun?: Entry["outcomeRun"] }>;
 
 /**
  * A run that ended `wrong-repo` naming `repo`, a repository of the organisation, is moved there and queued again at once: the outcome is logged as the run's ending, as any other would be, the repository becomes the one it is planned

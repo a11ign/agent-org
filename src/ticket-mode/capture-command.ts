@@ -21,6 +21,7 @@ import { pathToFileURL } from "node:url";
 import { parseArgs } from "node:util";
 import { chromium } from "playwright-core";
 import { refuseUnknownFlags } from "../lib/cli-flags.ts";
+import { stopChild } from "../lib/stop-child.ts";
 import { chromiumProblems, chromiumReport, type ChromiumReport } from "../install/chromium.ts";
 import { TOOL_ROOT } from "../install/paths.ts";
 import { pairingCode } from "./pair-command.ts";
@@ -207,7 +208,7 @@ function realListening(port: number): Promise<boolean> {
   });
 }
 
-/** A child process whose stderr is kept. It is stopped with SIGTERM, and with SIGKILL when it has not exited after `STOP_MS`. */
+/** A child process whose stderr is kept. It is stopped by `stopChild`: SIGTERM, SIGKILL after `STOP_MS`, resolved once it has exited. */
 function realSpawn(file: string, args: string[], env: Record<string, string>): Running {
   const child = spawn(file, args, { env, stdio: ["ignore", "ignore", "pipe"] });
   let stderr = "";
@@ -218,12 +219,7 @@ function realSpawn(file: string, args: string[], env: Record<string, string>): R
     stderr: () => stderr,
     exited: () => exited,
     kill: () => { if (!exited) child.kill("SIGTERM"); },
-    stop: () => new Promise<void>((done) => {
-      if (exited) return done();
-      child.kill("SIGTERM");
-      const timer = setTimeout(() => { child.kill("SIGKILL"); done(); }, STOP_MS);
-      child.once("exit", () => { clearTimeout(timer); done(); });
-    }),
+    stop: () => stopChild(child, STOP_MS),
   };
 }
 
