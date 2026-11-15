@@ -1,9 +1,16 @@
 // @ts-check
 // module: the herdr seam -- the calls the pool makes to herdr and their defaults, herdr's server command, and the names its runs are given
+//
+// THE POOL'S ASYNC herdr CALLS GO THROUGH THE BOARD'S OUTSIDE CLIENT (A11-436 step 3, `outside-client.ts`), as Linear's and `gh`'s do: one timeout, the one rule for which failures are transient, a breaker, and one counted
+// call. Unlike theirs, each herdr call is made once ({@link herdrThroughClient} says why).
+// The synchronous `defaultHerdr` makes its call once (a retry's wait would hold the loop) and is counted by `herdrRun`; the probe of whether the server is up is asked directly ({@link defaultHerdrProbe}).
 
-import { herdrAgentName, herdrRefusal, herdrRun, herdrRunAsync } from "../herdr-agents.ts";
-import { execFile, spawn } from "node:child_process";
+import { herdrAgentName, herdrAnswer, herdrRefusal, herdrRun } from "../herdr-agents.ts";
+import { spawn } from "node:child_process";
 import { defaultServiceDeps, serviceState, unitFor, type ServiceDeps } from "../install/service.ts";
+import type { ExecOptions, ExecResult } from "../plugins/manifest.ts";
+import { realExecAsync } from "../plugins/real-seams.ts";
+import { outsideClient, type OutsideClient } from "./outside-client.ts";
 
 export type Herdr =(args: string[], timeoutMs?: number) => string;
 
@@ -15,16 +22,46 @@ export const HERDR_CALL_MS = 30_000;
 /** herdr without holding the loop: the one slow call, `agent start`, so a start does not stop the board answering, and (A11-282) the listings every pass of the tick makes. */
 export type HerdrAsync = (args: string[], timeoutMs: number) => Promise<string>;
 
-export const defaultHerdrAsync: HerdrAsync = (args, timeoutMs) => new Promise((resolve, reject) => {
-  execFile("herdr", args, { encoding: "utf8", timeout: timeoutMs }, (err, stdout) => (err ? reject(Object.assign(err, { stdout })) : resolve(stdout)));
-});
+/**
+ * How much later than the program's own cut the client cuts an attempt, in ms: a herdr that runs past its time is stopped by `exec` and answers `ETIMEDOUT`, as it always did, and the client's cut only ends an
+ * attempt whose `exec` never answers.
+ */
+const CLIENT_CUT_GRACE_MS = 1_000;
+
+/** How a herdr call is run: the program, its arguments, and `exec`'s options. `realExecAsync` by default. */
+export type ExecAsync = (file: string, args: readonly string[], options: ExecOptions) => Promise<ExecResult>;
 
 /**
- * herdr without holding the loop, for the calls whose refusal is read or said (A11-282): the pane a start opens, the listings it settles on and the close of an ended run's workspace. `herdrRunAsync` carries herdr's own
- * stderr on the error and says it on this process's stderr, as the synchronous `herdrRun` did, so a card quotes herdr's reason and not the command line. `defaultHerdrAsync` is left bare: `agent start`'s
- * busy-pane retry reads its error as it is.
+ * herdr through the board's outside client (A11-436 step 3), the way the code host's `gh` goes through it: each attempt is cut at the call's own time, herdr's breaker refuses at once while herdr keeps failing
+ * (the client's `ServiceUnavailable`, transient, which says herdr is unavailable), and the call counts once in the `herdr` figure, so `exec` is told not to count it again. A failure rejects with
+ * {@link herdrAnswer}'s error, which carries the exit the one rule classes it by: a herdr that never answers fails as transient. `echo` says a refusal on this process's stderr.
+ *
+ * EVERY herdr CALL IS MADE ONCE: herdr is this host's own server, and a herdr that does not answer within a call's 30 s does not answer 200 ms later. Tried again, a hung herdr's listing would hold the pass four
+ * times as long (about two minutes) before the pool reads the run as unknown and reads again on its next pass, which every caller of a herdr read already does.
  */
-export const defaultHerdrCall: HerdrAsync = (args, timeoutMs) => herdrRunAsync(args, timeoutMs);
+export function herdrThroughClient({ outside = outsideClient, exec = realExecAsync, echo = true }: { outside?: OutsideClient; exec?: ExecAsync; echo?: boolean } = {}): HerdrAsync {
+  return async (args, timeoutMs) => {
+    const answer = await outside.call("herdr", () => exec("herdr", args, { timeoutMs, countedByCaller: true }),
+      { exitOf: (result) => result, attemptMs: timeoutMs + CLIENT_CUT_GRACE_MS, once: true });
+    return herdrAnswer(args, answer, { echo });
+  };
+}
+
+/** `agent start` through the board's outside client. Its refusal is not said: the busy-pane retry waits through `agent_pane_busy`, which it reads off the error's `stderr`. */
+export const defaultHerdrAsync: HerdrAsync = herdrThroughClient({ echo: false });
+
+/**
+ * herdr without holding the loop, for the calls whose refusal is read or said (A11-282): the pane a start opens, the listings it settles on and the close of an ended run's workspace. The error carries herdr's own
+ * stderr and says it on this process's stderr, as the synchronous `herdrRun` did, so a card quotes herdr's reason and not the command line. Through the board's outside client.
+ */
+export const defaultHerdrCall: HerdrAsync = herdrThroughClient();
+
+/**
+ * herdr asked directly, outside the board's client: the listing that says whether the session's server is up (`ensureSession`). It must say what herdr answers now, while herdr's breaker may be open from the
+ * failures that made the board ask, and its tries while a server starts must not open the breaker for the rest of the pool. It is not counted in the figure either: up to twenty refusals of a server that is
+ * starting are the board waiting for it, not herdr failing calls.
+ */
+export const defaultHerdrProbe: HerdrAsync = async (args, timeoutMs) => herdrAnswer(args, await realExecAsync("herdr", args, { timeoutMs, countedByCaller: true }));
 
 export const defaultWait = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 

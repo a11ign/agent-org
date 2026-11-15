@@ -136,14 +136,15 @@ async function startAgent(ctx: PoolContext, place: RunPlace, env: Record<string,
   if (closesOut(ctx)) await closesSettled(ctx);
   const run = readRunner(ctx);
   const opened = await openPaneAsync(run, place.name, env, place.folder, { ...session, tmpBase: ctx.runTmpBase });
-  if ("refusal" in opened) throw new Error(opened.refusal);
+  if ("refusal" in opened) throw new Error(opened.refusal, { cause: opened.cause });
   try {
     await startOnceShellReady(ctx, agentStartArgs(place.name, "claude", opened.pane, [...tail], session));
   } catch (err) {
     // A start can outlast its timeout and still succeed: ask the listing before calling it a failure.
     const listed = (await readAgentsAsync(run, session))?.find((agent) => agent.label === place.name);
     if (listed === undefined || listed.status === "unknown") {
-      throw new Error(`herdr could not start Claude for ${what} (${herdrRefusal(err)})${await closedNoteAsync(run, opened.workspace, session)}`);
+      // herdr's failure is the cause, so the one rule classes the crash by it (A11-436): a herdr that never answered is transient, and the board starts the run again by itself.
+      throw new Error(`herdr could not start Claude for ${what} (${herdrRefusal(err)})${await closedNoteAsync(run, opened.workspace, session)}`, { cause: err });
     }
   }
   startedHere.add(place.name);
@@ -896,9 +897,10 @@ async function startPublish(ctx: PoolContext): Promise<void> {
  * and survives every restart of it. Only a machine with no herdr service (a hand-run `ticket:serve`) spawns the server itself.
  */
 export async function ensureSession(ctx: PoolContext): Promise<void> {
-  const { deps, herdrCall, session, settings, wait } = ctx;
+  const { deps, herdrProbe, session, settings, wait } = ctx;
   // The listing is asked without holding the loop (A11-282): an instance checks the session at every start, and a herdr that is slow to answer held the board thread for each of up to twenty tries.
-  const run = (args: string[]): Promise<string> => herdrCall(args, START_READ_MS);
+  // It is asked directly, not through the board's client (A11-436): twenty tries while a server starts would open herdr's breaker, which would then refuse the try that finds it up.
+  const run = (args: string[]): Promise<string> => herdrProbe(args, START_READ_MS);
   if (await readAgentsAsync(run, session) !== null) return;
   const service = deps.herdrService ?? (deps.startServer === undefined ? herdrServiceOf(defaultServiceDeps()) : undefined);
   if (service?.registered()) service.start();
