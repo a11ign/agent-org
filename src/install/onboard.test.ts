@@ -2,7 +2,7 @@
 // notes are written into a temporary HOME, which is the fake home each test checks
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpDir } from "../lib/tmp-fixture.ts";
 import { CONNECTORS as LINEAR_CONNECTORS } from "../../plugins/linear/connectors.ts";
@@ -22,7 +22,6 @@ import { judgeShellCommand, readShellCommand, realShellDeps, shellContext, type 
 import type { CopyComparison } from "./tool-copy.ts";
 import type { ProfileRepo } from "./onboard-profile.ts";
 import { fakeAgentOrgPlugins } from "../plugins/fakes/doctor-seam.ts";
-import type { Replacements } from "./interim-guards.ts";
 import { PLAYWRIGHT_CLI, type ChromiumReport } from "./chromium.ts";
 import { createFakeCodeHost } from "../plugins/fakes/code-host.ts";
 import { PassThrough, Writable } from "node:stream";
@@ -146,7 +145,6 @@ function deps(over: Partial<OnboardDeps> = {}, answers: string[] = [], runOver: 
       writeFileSync(path, text, { mode: 0o600 });
     },
     exists: (path) => existsSync(path),
-    removeFile: (path) => rmSync(path, { force: true }),
     now: () => new Date("2026-10-20T10:00:00.000Z"),
     isDirectory: (path) => { try { return statSync(path).isDirectory(); } catch { return false; } },
     listDir: (path) => { try { return readdirSync(path); } catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return []; throw error; } },
@@ -167,7 +165,6 @@ function deps(over: Partial<OnboardDeps> = {}, answers: string[] = [], runOver: 
     },
     which: () => "/usr/local/bin/tool",
     ghAs: () => listedGh(),
-    replacements: async () => ({ ghWrapperDeclared: true, herdrInOwnUnit: true }),
     diagnose: async () => [], shell: { env: {}, home, type: () => null, read: () => null, readlink: () => null, which: () => null, compare: () => ({ kind: "no-install" }), hasInstall: () => false },
     chromium: () => BROWSERS_READY, isRoot: () => false,
     startServices: async (names) => { started.push(...names); return names.map((name) => ({ name, ok: true, line: `started the ${name} service`, address: name === "ui" ? "http://127.0.0.1:4748/" : null })); },
@@ -573,7 +570,7 @@ function greenDoctor(home: string): DoctorDeps {
     pnpmVersion: () => ({ version: "10.34.5", via: "npm exec" as const }),
     probe: async () => 200,
     hostPlace: async () => ({ kind: "no-project" }), platform: "linux", arch: "x64",
-    herdrPlace: () => ({ kind: "unit", where: "/user.slice/agent-org-herdr.service" }), guards: () => ({ watchdog: false, dropIn: false, readCacheDropIn: false }), ghWrapperDeclared: async () => true, updateStatus: () => ({ kind: "absent" }),
+    herdrPlace: () => ({ kind: "unit", where: "/user.slice/agent-org-herdr.service" }), updateStatus: () => ({ kind: "absent" }),
     herdrIntegrations: () => ({ status: 0, stdout: "claude: current (v10)\ncodex: current (v8)\n", stderr: "" }), herdrVersion: () => "herdr 0.9.3", herdrPlugins: () => null, herdrStatus: () => ({ kind: "absent" }),
     uiBuild: () => ({ found: "/t/ui-build", declared: true, looked: "/t/ui-build", version: "v0.280.0" }),
     drain: () => ({ kind: "none" }), runs: () => [], longWaits: () => [], boardFigures: async () => null, reliabilityWatches: () => null, watchdog: () => null, instanceVersion: () => "v0.280.0", pluginCopies: () => [], releaseTags: () => [],
@@ -709,43 +706,6 @@ function seedProfile(home: string, repo: string): void {
   mkdirSync(join(home, ".agent-org", "profiles"), { recursive: true });
   writeFileSync(join(home, ".agent-org", "profiles", "example-laptop.json"), JSON.stringify(profileOf({ name: "example-app", path: repo })));
 }
-
-/** Writes each file, as a placeholder a machine set up by hand left behind. */
-function seedFiles(paths: readonly string[]): void {
-  for (const path of paths) {
-    mkdirSync(join(path, ".."), { recursive: true });
-    writeFileSync(path, "guard");
-  }
-}
-
-/** The interim guards a machine set up by hand has, under `home`: the watchdog's three files, and the instance unit's drop-in. */
-function guardsIn(home: string): string[] {
-  const units = join(home, ".config", "systemd", "user");
-  return [join(units, "gh-wrapper-watchdog.timer"), join(units, "gh-wrapper-watchdog.service"), join(home, ".agent-org", "bin", "gh-wrapper-watchdog"), join(units, "agent-org-instance.service.d", "keep-herdr.conf")];
-}
-
-/** Onboard a Linux machine with the interim guards set by hand, with `replacements` answered: the guard files, and what was said and run. */
-async function onboardWithGuards(replacements: Replacements) {
-  const machine = deps({ platform: "linux", replacements: async () => replacements });
-  const guards = guardsIn(machine.home);
-  seedFiles(guards);
-  machine.stored.set("keychain:agent-org-linear", KEY);
-  await onboard(options({ repos: [machine.repo], keychain: "agent-org-linear", start: false, verbose: true }), machine.deps);
-  return { guards, printed: machine.printed, ran: machine.ran };
-}
-
-test("A11-145: the interim guards are retired on Linux once their replacements are proven, and kept with the fix named when they are not", async () => {
-  const proven = await onboardWithGuards({ ghWrapperDeclared: true, herdrInOwnUnit: true });
-  assert.ok(proven.guards.every((path) => !existsSync(path)), "every guard file is removed");
-  assert.ok(proven.ran.includes("systemctl --user disable --now gh-wrapper-watchdog.timer"));
-  assert.ok(proven.printed.includes("  ✓ Old workarounds retired"));
-  assert.ok(trimmed(proven.printed).some((line) => line.startsWith("retired the gh-wrapper watchdog")), "what was retired is for --verbose");
-
-  const unproven = await onboardWithGuards({ ghWrapperDeclared: false, herdrInOwnUnit: false });
-  assert.ok(unproven.guards.every((path) => existsSync(path)), "no guard is removed without its replacement");
-  assert.ok(unproven.printed.includes("  ✗ An old workaround is still in place"));
-  assert.ok(unproven.printed.some((line) => line.includes("Run `agent-org start herdr --move`")));
-});
 
 test("--no-start: onboard writes the host file and starts no service", async () => {
   const { deps: d, repo, started, stored } = deps();

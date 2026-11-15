@@ -3,13 +3,9 @@
 //
 // A SERVER THAT RUNS OUTSIDE THE UNIT is one an older instance started inside its own cgroup, or in the transient scope the `systemd-run` branch made. Moving it ends every pane and agent in it
 // (herdr restores the workspaces and resumes each worker with `claude --resume`, but a worker mid-tool-call loses that call), so it is done once, on purpose, at a quiet moment:
-// without `--move`, `start herdr` refuses while such a server runs and says how many runs are live; with it, the server is stopped (`herdr --session <s> server stop`), the unit is started,
-// and the interim guards are retired on their proof (`interim-guards.ts`): the `keep-herdr.conf` drop-in because herdr now runs in its own unit. A server already in the unit is left running,
-// and a start never restarts it.
-import { rmSync } from "node:fs";
+// without `--move`, `start herdr` refuses while such a server runs and says how many runs are live; with it, the server is stopped (`herdr --session <s> server stop`) and the unit is started.
+// A server already in the unit is left running, and a start never restarts it.
 import { dirname } from "node:path";
-import { homedir } from "node:os";
-import { retireGuards, replacementsNow, type GuardDeps } from "./interim-guards.ts";
 import { hostHerdrPlace, type HerdrPlace } from "./herdr-place.ts";
 import { defaultServiceDeps, herdrSessionOfHost, ServiceRefusal, startService, unitFor, type Started, type ServiceDeps } from "./service.ts";
 import { readLiveRuns } from "./instance-queue.ts";
@@ -21,16 +17,14 @@ export type MoveDeps = Readonly<{
   liveRuns: () => number | null;
   /** Where the server of `session` runs now. */
   placeOf: (session: string) => HerdrPlace;
-  /** Retire the interim guards on their proof. */
-  retire: () => Promise<string[]>;
   wait: (ms: number) => Promise<void>;
-  /** How long the unit's start and the guards' retirement may each take, in ms. Default 60 s; a test passes a short one. */
+  /** How long the unit's start may take, in ms. Default 60 s; a test passes a short one. */
   limitMs?: number;
 }>;
 
 const STOP_TRIES = 20;
 const STOP_WAIT_MS = 500;
-/** How long the unit's start and the guards' retirement may take, each, before the move says which one did not finish (A11-225). */
+/** How long the unit's start may take before the move says it did not finish (A11-225). */
 const DEFAULT_LIMIT_MS = 60_000;
 const MOVE_STEPS = 4;
 const STEP = { register: 1, stop: 2, start: 3, answer: 4 } as const;
@@ -43,8 +37,8 @@ function whereOf(place: HerdrPlace): string {
 
 /**
  * Start herdr's service. REFUSES, naming the live runs, while a server runs outside the unit and `move` is not given. With `move` it runs four steps, each said through `say` as it finishes
- * (so a failure or a hang leaves the earlier steps on screen): the unit is registered, the server outside it is stopped, the unit is started, and the server is seen answering in it. Then the guards
- * are retired and a result line ends it. A step that fails refuses with its number, what it was doing and the fix. Every wait is bounded.
+ * (so a failure or a hang leaves the earlier steps on screen): the unit is registered, the server outside it is stopped, the unit is started, and the server is seen answering in it. Then a result
+ * line ends it. A step that fails refuses with its number, what it was doing and the fix. Every wait is bounded.
  */
 export async function startHerdr({ move }: { move: boolean }, deps: MoveDeps, say: (line: string) => void = () => undefined): Promise<Started> {
   const session = herdrSessionOfHost(deps.services);
@@ -62,7 +56,7 @@ export async function startHerdr({ move }: { move: boolean }, deps: MoveDeps, sa
   return moveHerdr({ session, place, outside }, deps, say);
 }
 
-/** The move: the four steps, the guards' retirement and the result line, said through `say` as each finishes. */
+/** The move: the four steps and the result line, said through `say` as each finishes. */
 async function moveHerdr({ session, place, outside }: { session: string; place: HerdrPlace; outside: boolean }, deps: MoveDeps, say: (line: string) => void): Promise<Started> {
   const limitMs = deps.limitMs ?? DEFAULT_LIMIT_MS;
   const unit = unitFor("herdr", deps.services);
@@ -93,7 +87,6 @@ async function moveHerdr({ session, place, outside }: { session: string; place: 
   await step(STEP.answer, "waiting for the server in the unit", `Read ${logHint}, then run \`agent-org start herdr\``, async () => {
     report(STEP.answer, `the herdr server for session ${session} answers in the unit (${await answeringInUnit(session, deps)})`);
   });
-  for (const line of await bounded(limitMs, "retiring the interim guards", deps.retire())) say(line);
   say(`moved herdr into its service: the server for session ${session} runs in ${started.id}, and herdr restores its workspaces in it`);
   return started;
 }
@@ -134,15 +127,10 @@ async function answeringInUnit(session: string, deps: MoveDeps): Promise<string>
   throw new ServiceRefusal(`the herdr server for session ${session} is not running in the unit ${STOP_TRIES * STOP_WAIT_MS / MS_PER_SECOND}s after it started`);
 }
 
-/** The wiring of this machine: its services, its queue, its processes, and the guards' own reads. */
+/** The wiring of this machine: its services, its queue and its processes. */
 export function defaultMoveDeps(services: ServiceDeps = defaultServiceDeps()): MoveDeps {
-  const guards: GuardDeps = {
-    platform: services.platform, env: services.env, home: homedir(), exists: services.exists, remove: (path) => rmSync(path, { force: true }), run: services.run,
-    replacements: () => replacementsNow(services.env, services.home, services),
-  };
   return {
     services, liveRuns: () => readLiveRuns(), placeOf: (session) => hostHerdrPlace(services, session),
-    retire: () => retireGuards(guards),
     wait: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
   };
 }
