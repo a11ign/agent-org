@@ -8,10 +8,18 @@ import type { AddressInfo, Socket } from "node:net";
 import { freshFetch } from "../fresh-fetch.ts";
 import { LINEAR_API, linearSource } from "../../plugins/linear/linear.ts";
 import { createFakeTracker } from "../plugins/fakes/tracker.ts";
+import { createCallLedger } from "./call-outcomes.ts";
+import { ATTEMPT_MS, createOutsideClient } from "./outside-client.ts";
 import { poolFixture } from "./pool-fixture.ts";
 import type { TicketSource } from "./source.ts";
 
 /** A Linear on the loopback address. A connection that has carried a request is closed by this side when it is used again. The project read is answered 500 every time. */
+/** The outside client the board gives the tracker (A11-436), over a ledger of its own, with no wait between attempts and `attemptMs` for each. */
+function boardClient(attemptMs: number = ATTEMPT_MS.linear) {
+  const client = createOutsideClient({ ledger: createCallLedger(), sleep: async () => undefined, attemptMs: { ...ATTEMPT_MS, linear: attemptMs } });
+  return { outside: <T>(attempt: (signal: AbortSignal) => Promise<T>, options?: Parameters<typeof client.call<T>>[2]) => client.call("linear", attempt, options) };
+}
+
 async function linearThatResetsReuse() {
   const uses = new Map<Socket, number>();
   const queries: string[] = [];
@@ -40,7 +48,7 @@ async function linearThatResetsReuse() {
 test("A11-359: over the board's fresh-connection fetch, a Linear that closes the first reuse of a socket never resets a call: every call is on a socket of its own", async () => {
   const linear = await linearThatResetsReuse();
   try {
-    const source = linearSource({ key: "k", fetch: linear.transport, sleep: async () => undefined });
+    const source = linearSource({ key: "k", fetch: linear.transport, ...boardClient() });
     for (let call = 0; call < 4; call += 1) assert.deepEqual([...(await source.blockers!(["NBF-1"])).get("NBF-1") ?? []], [], `call ${call + 1}`);
     assert.equal(linear.resets(), 0, "no socket was used twice, so none was reset");
     assert.deepEqual([...linear.uses.values()], [1, 1, 1, 1], "four calls on four sockets");
@@ -53,7 +61,7 @@ test("A11-359: the same Linear resets a call on a pooled connection, so the test
   const linear = await linearThatResetsReuse();
   try {
     const pooled = (input: string | URL | Request, init?: RequestInit) => fetch(String(input).replace(LINEAR_API, linear.origin), init);
-    const source = linearSource({ key: "k", fetch: pooled as typeof fetch, sleep: async () => undefined, attemptMs: 2_000 });
+    const source = linearSource({ key: "k", fetch: pooled as typeof fetch, ...boardClient(2_000) });
     // The retry of the client is not the point here: with it, the pooled call is also made good, on a connection the pool opens again. What matters is the reset the board saw.
     for (let call = 0; call < 3; call += 1) await source.blockers!(["NBF-1"]);
     assert.equal(linear.resets() > 0, true, "a socket that was used again was closed by Linear");
@@ -66,7 +74,7 @@ test("A11-359: queued runs start while the project read fails and the blocker re
   const linear = await linearThatResetsReuse();
   try {
     const fake = createFakeTracker();
-    const tracker = linearSource({ key: "k", fetch: linear.transport, sleep: async () => undefined });
+    const tracker = linearSource({ key: "k", fetch: linear.transport, ...boardClient() });
     const source: TicketSource = { assigned: fake.assigned, read: fake.read, download: fake.download, keywords: fake.keywords, blockers: tracker.blockers, projectSummaries: tracker.projectSummaries };
     const { pool, entry } = poolFixture({ keys: ["NBF-1", "NBF-2"], max: 10, source });
     await pool.tick();

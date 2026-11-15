@@ -122,7 +122,7 @@ export { AnswerNotDelivered, type Answered } from "./pool-answer.ts";
 export { herdrName, herdrServerCommand, type Herdr, type HerdrAsync } from "./pool-herdr.ts";
 export { batchDir, batchFolder, publishDir, publishFolder, worktreesIn } from "./pool-paths.ts";
 export { isStartDialog } from "./pool-start.ts";
-export { countTokens, findFolderSession, findTranscript } from "./pool-transcripts.ts";
+export { findFolderSession, findTranscript } from "./pool-transcripts.ts";
 export { conflictLines, doneComment, feedbackSince, parseOutcome, publishResult } from "./pool-outcome.ts";
 export { readEdit } from "./outcome.ts";
 export { startsReviewers, type PoolDeps, type QueueStore } from "./pool-context.ts";
