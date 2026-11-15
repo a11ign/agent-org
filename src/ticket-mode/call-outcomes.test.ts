@@ -1,7 +1,7 @@
 // no-token: gh -- the clock and the fetch are injected; nothing is spawned or sent
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { addCallFigures, CALL_WINDOW_MS, countedFetch, countProgram, createCallLedger, ghFailed, networkUpSince, observedFetch, per100, serviceOfUrl, statusFailed } from "./call-outcomes.ts";
+import { addCallFigures, CALL_WINDOW_MS, countedFetch, createCallLedger, networkUpSince, per100, serviceOfUrl, statusFailed } from "./call-outcomes.ts";
 
 test("failures per 100 calls is rounded to one decimal place, and 0 when there were no calls", () => {
   assert.deepEqual([per100(0, 0), per100(1, 3), per100(3, 200), per100(5, 5)], [0, 33.3, 1.5, 100]);
@@ -48,21 +48,6 @@ test("a fetch counted as the tracker counts every request, as failed when it thr
   assert.equal(ledger.figures().linear.calls, 3, "core reads no tracker's address: only the tracker's own fetch counts its calls");
 });
 
-test("a gh that could not start, was cut, or printed that the network or GitHub failed is a failed call, and one that exited non-zero for an answer is not", () => {
-  const failed = [{ status: null, stderr: "spawnSync gh ETIMEDOUT" }, { status: 1, stderr: "HTTP 502: Bad Gateway" }, { status: 1, stderr: "Post \"https://api.github.com/graphql\": dial tcp: lookup api.github.com: no such host" },
-    { status: 1, stderr: "HTTP 429: API rate limit exceeded" }];
-  const answered = [{ status: 0, stderr: "" }, { status: 1, stderr: "HTTP 404: Not Found" }, { status: 8, stderr: "" }, { status: 1, stderr: "no pull requests found for branch" }];
-  assert.deepEqual([failed.map(ghFailed), answered.map(ghFailed)], [[true, true, true, true], [false, false, false, false]]);
-});
-
-test("a program is counted only when it is gh", () => {
-  const ledger = createCallLedger(() => 1_000);
-  countProgram("/home/agent/.local/bin/gh", { status: 1, stderr: "HTTP 500" }, ledger);
-  countProgram("ssh", { status: 1, stderr: "HTTP 500" }, ledger);
-  countProgram("claude", { status: null, stderr: "timeout" }, ledger);
-  assert.deepEqual(ledger.figures().github, { calls: 1, failures: 1, failuresPer100: 100 });
-});
-
 test("two threads' figures are added and the failures per 100 are worked out from the sums, not averaged", () => {
   const board = { linear: { calls: 100, failures: 0, failuresPer100: 0 }, github: { calls: 0, failures: 0, failuresPer100: 0 } };
   const page = { linear: { calls: 100, failures: 4, failuresPer100: 4 }, github: { calls: 50, failures: 5, failuresPer100: 10 } };
@@ -104,24 +89,4 @@ test("A11-399: the network is up since a crash only when a call succeeded after 
   assert.equal(upAfter("linear", true), false, "Linear's latest call failed");
   clock += CALL_WINDOW_MS;
   assert.equal(networkUpSince(ledger, crashedAt), false, "calls of an hour ago are no evidence");
-});
-
-test("A11-345: observedFetch counts nothing, but a retry that got through is the ledger's latest call, so the network reads as up again", async () => {
-  let clock = 1_000;
-  const ledger = createCallLedger(() => clock);
-  let status = 503;
-  const answering = (async () => { if (status === 0) throw new TypeError("fetch failed"); return new Response("", { status }); }) as typeof fetch;
-  const first = countedFetch(answering, ledger, "linear");
-  const retry = observedFetch(answering, ledger, "linear");
-  await first("https://tracker.example/graphql");
-  clock = 2_000;
-  assert.equal(networkUpSince(ledger, 500), false, "the first attempt failed and nothing has got through");
-  status = 200;
-  await retry("https://tracker.example/graphql");
-  assert.deepEqual(ledger.figures().linear, { calls: 1, failures: 1, failuresPer100: 100 }, "the retry is not a call of its own");
-  assert.equal(networkUpSince(ledger, 500), true, "the retry that was answered shows the network is up");
-  status = 0;
-  clock = 3_000;
-  await assert.rejects(retry("https://tracker.example/graphql"), /fetch failed/);
-  assert.deepEqual([ledger.figures().linear.calls, networkUpSince(ledger, 500)], [1, false], "a retry that fails is not counted either, and the network is down again");
 });

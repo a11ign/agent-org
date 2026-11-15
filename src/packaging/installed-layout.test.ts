@@ -102,7 +102,7 @@ function taggedTool(): string {
   const repository = scratch();
   // `plugins` is copied when it exists: the registry reads the bundled agent-org plugins from the checkout (A11-158), and a release tag holds them.
   const bundled = existsSync(join(TOOL_ROOT, "plugins")) ? ["plugins"] : [];
-  for (const entry of ["package.json", "README.md", "LICENSE", "src", "host", ...bundled]) cpSync(join(TOOL_ROOT, entry), join(repository, entry), { recursive: true });
+  for (const entry of ["package.json", "README.md", "docs/guide", "LICENSE", "src", "host", ...bundled]) cpSync(join(TOOL_ROOT, entry), join(repository, entry), { recursive: true });
   git(repository, "init", "-q", "-b", "main");
   git(repository, "add", "-A");
   git(repository, "commit", "-q", "-m", "release v0.1.0");
@@ -217,9 +217,9 @@ test("(c) `agent-org no-such-command` from the installed tool REFUSES and lists 
   assert.ok(run.stderr.includes("  row-file\n"), run.stderr);
 });
 
-test("what a project gets: src/bin.ts, host/, LICENSE, README.md and no test file, and why none is needed at run time", () => {
+test("what a project gets: src/bin.ts, host/, LICENSE, README.md, the guide pages its links name, and no test file, and why none is needed at run time", () => {
   const dir = toolDir(installed.project);
-  for (const entry of ["src/bin.ts", "src/commands.ts", "host", "LICENSE", "README.md", "package.json"]) assert.ok(existsSync(join(dir, entry)), `${entry} is not installed`);
+  for (const entry of ["src/bin.ts", "src/commands.ts", "host", "LICENSE", "README.md", "docs/guide/install.md", "package.json"]) assert.ok(existsSync(join(dir, entry)), `${entry} is not installed`);
   const tests = (readdirSync(dir, { recursive: true }) as string[]).filter((path) => /\.test\.(ts|mjs)$/.test(path));
   assert.deepEqual(tests, [], "a test file was installed: they read the project's tree and run in this repository's CI, so a project has no use for them");
   assert.ok(existsSync(join(dir, "src")) && readdirSync(join(dir, "src")).length > MIN_INSTALLED_SRC_ENTRIES, "the installed src/ is nearly empty: the positive control for the line above");

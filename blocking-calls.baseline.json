@@ -1,0 +1,17 @@
+{
+  "about": "The files under `src/ticket-mode/` and `plugins/` that may still make a synchronous spawn (`spawnSync`, `execFileSync`, `execSync`) or a synchronous herdr call (`herdrRun`, `readAgents`, `openPane`, `closedNote`, `ctx.herdr`), which hold the board loop for as long as they take (A11-433). `eslint.config.ts` refuses such a call in any other file of those two folders. `files` ONLY SHRINKS: src/packaging/blocking-calls-ratchet.test.ts fails when it lists a file its base did not, or a file that no longer makes such a call, so a converted file leaves it in the pull request that converts it. `commands` are the CLI entry points a person runs in a terminal, by name, each with its reason: a command runs in a process of its own and may block; the test holds each to a `src/commands.ts` entry that no other module imports.",
+  "files": [
+    "plugins/github/command-exec.ts",
+    "plugins/linear/key.ts",
+    "src/ticket-mode/hook.ts",
+    "src/ticket-mode/pair-command.ts",
+    "src/ticket-mode/plugin-contract.ts",
+    "src/ticket-mode/pool-herdr.ts",
+    "src/ticket-mode/pool-resume.ts",
+    "src/ticket-mode/reviewer-port.ts",
+    "src/ticket-mode/ui-server.ts"
+  ],
+  "commands": {
+    "src/ticket-mode/review-command.ts": "`ticket:review`, run by hand or by a script to start one pull request's reviewer; the instance's reviewers are the pool's (`pool-reviewers.ts`)"
+  }
+}

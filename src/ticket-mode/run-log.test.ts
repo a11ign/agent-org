@@ -240,6 +240,8 @@ test("the pool logs what it does to a run: queued, started on this instance, fin
   assert.deepEqual(bodies(made.store.get(), "NBF-1"), [
     { kind: "queued", model: "sonnet", effort: "high", planFirst: false },
     { kind: "started", model: "sonnet", effort: "high", instance: made.settings.instance },
+    // The fixture's agent wrote no transcript, so its tokens are unknown and no outcome record was written (A11-430).
+    { kind: "outcome-unread", reason: "no transcript was found for the run's Claude session" },
     { kind: "finished", outcome: "checked", reason: "nothing to change" },
   ]);
   await made.pool.dismiss("NBF-1");
