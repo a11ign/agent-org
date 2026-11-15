@@ -124,15 +124,18 @@ test("A11-160: importing an unsupported contract major is refused by name, and i
   assert.deepEqual([urls, result.modules, result.refusals.map(({ plugin }) => plugin)], [[], [], ["my-tracker"]]);
 });
 
-test("A11-436: the tracker plugin is given the outside client, whose calls count once each as the board's tracker figure, and every other plugin is given its deps as they are", async () => {
+test("A11-436: the tracker and the code host are each given the outside client, whose calls count once each as their service's figure, and every other plugin is given its deps as they are", async () => {
   const ledger = createCallLedger(() => 1_000);
   const client = createOutsideClient({ ledger, sleep: async () => undefined });
   const deps = fakePluginDeps();
-  assert.equal(depsFor("codeHost", deps, client), deps);
+  assert.equal(depsFor("publisher", deps, client), deps, "a plugin that calls no service the figure counts is given its deps as they are");
+  const codeHost = depsFor("codeHost", deps, client);
+  assert.equal(await codeHost.outside!(async () => "answered"), "answered");
+  assert.deepEqual(ledger.figures().github, { calls: 1, failures: 0, failuresPer100: 0 }, "the code host's calls are the github figure");
   const tracker = depsFor("tracker", deps, client);
   let sent = 0;
   const answer = await tracker.outside!(async () => new Response("", { status: (sent += 1) === 1 ? 503 : 200 }), { statusOf: (response) => response.status });
   assert.deepEqual([answer.status, sent], [200, 2], "the 503 was tried again");
   assert.deepEqual(ledger.figures().linear, { calls: 1, failures: 1, failuresPer100: 100 }, "A11-345: one call, failed because its first attempt did, though its retry was answered");
-  assert.deepEqual(ledger.figures().github, { calls: 0, failures: 0, failuresPer100: 0 });
+  assert.deepEqual(ledger.figures().github, { calls: 1, failures: 0, failuresPer100: 0 });
 });

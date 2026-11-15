@@ -10,7 +10,7 @@
 // holds the code host), and null for a host that counts none.
 import { startLoopMonitor, type LoopMonitor, type LoopReading } from "./loop-delay.ts";
 import { createBlockingLedger, type BlockingLedger, type BlockingSite } from "./blocking-ledger.ts";
-import { addCallFigures, callOutcomes, type CallFigures, type CallLedger } from "./call-outcomes.ts";
+import { addCallFigures, callOutcomes, totalOf, type CallFigures, type CallLedger } from "./call-outcomes.ts";
 import { HOLD_MS, HOLD_WINDOW_MS, type HealthFigures, type MeasuredFigures } from "./health-figures.ts";
 import { rollingCount, type RollingCount } from "./rolling-count.ts";
 import type { GithubCallCounts } from "../plugins/contracts/call-counts.ts";
@@ -64,6 +64,9 @@ export function startHealth(name: string): Readonly<{ view: () => HealthView; co
   return { view: () => healthView({ read: monitor.read, readHour: hour }, ledger, { holds, calls: callOutcomes }, githubCalls), counting: (reader) => { githubCalls = reader; } };
 }
 
+/** `figures` with `calls` in place of its own, and the one failure figure worked out again from them (A11-436). PURE. */
+const withCalls = (figures: HealthFigures, calls: CallFigures): HealthFigures => ({ ...figures, calls, outsideCalls: totalOf(calls) });
+
 /** What the instance's `/api/health` answers: both threads' loop readings, how old the board thread's snapshot is, the spawns that held the board thread, and the request thread's own. */
 export type RequestHealthView = Readonly<{
   loop: Readonly<{ requests: LoopReading; board: LoopReading }>;
@@ -86,7 +89,7 @@ export function requestHealthView(requests: LoopReading, latest: LatestSnapshot,
   const figures = latest.snapshot.figures ?? null;
   // The request thread's own calls to Linear and GitHub (the page's reads) are added to the board thread's: both are the instance's calls.
   return { loop: { requests, board: latest.snapshot.loop }, boardSnapshotAgeMs: Math.max(0, now - latest.receivedAt), blocking: latest.snapshot.blocking, requestThreadSyncCalls: syncCalls,
-    figures: figures === null || pageCalls === null ? figures : { ...figures, calls: addCallFigures(figures.calls, pageCalls) }, watchdog, githubCalls: latest.snapshot.githubCalls ?? null };
+    figures: figures === null || pageCalls === null ? figures : withCalls(figures, addCallFigures(figures.calls, pageCalls)), watchdog, githubCalls: latest.snapshot.githubCalls ?? null };
 }
 
 export type RequestHealthDeps = Readonly<{ latest: () => LatestSnapshot; now?: () => number; err?: (line: string) => void; watchdog?: () => WatchdogView | null }>;
