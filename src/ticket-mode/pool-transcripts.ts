@@ -1,7 +1,7 @@
 // @ts-check
-// module: Claude Code's transcripts -- which session a folder ran in, and the tokens a run spent
+// module: Claude Code's transcripts -- which session a folder ran in, and where a session's transcript is (its tokens are read by `outcomes/round-tokens.ts`)
 
-import { closeSync, existsSync, openSync, readdirSync, readFileSync, readSync, statSync } from "node:fs";
+import { closeSync, existsSync, openSync, readdirSync, readSync, statSync } from "node:fs";
 import { join } from "node:path";
 
 /**
@@ -50,23 +50,4 @@ export function findFolderSession(root: string, folder: string): string | null {
     if ((newest === null || at > newest.at) && headOf(file).includes(cwd)) newest = { id: name.slice(0, -".jsonl".length), at };
   }
   return newest?.id ?? null;
-}
-
-/** Input and output tokens in one transcript. Input counts cache reads and writes, which are what a run spends. */
-export function countTokens(file: string | null): { input: number; output: number } {
-  let input = 0;
-  let output = 0;
-  if (file === null || !existsSync(file)) return { input, output };
-  for (const line of readFileSync(file, "utf8").split("\n")) {
-    if (!line.includes("\"usage\"")) continue;
-    try {
-      const usage = (JSON.parse(line) as { message?: { usage?: Record<string, number> } }).message?.usage;
-      if (!usage) continue;
-      input += (usage.input_tokens ?? 0) + (usage.cache_read_input_tokens ?? 0) + (usage.cache_creation_input_tokens ?? 0);
-      output += usage.output_tokens ?? 0;
-    } catch {
-      // a partial last line of a live transcript
-    }
-  }
-  return { input, output };
 }
