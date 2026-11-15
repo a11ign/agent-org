@@ -56,8 +56,11 @@ const REMEMBERED = 200;
 /** How long a session whose transcript was not found is not looked for again: finding one lists every project, and it is not done on every pass. */
 const MISS_RETRY_MS = 60_000;
 
-/** What was last read of one transcript: its size and time, the allowance it said was spent, and when that was said. */
-type TranscriptRead = Readonly<{ size: number; mtimeMs: number; spent: SpentAllowance | null; at: number }>;
+/**
+ * What was last read of one transcript: its size and time, and what its last conversation entry said, the allowance it said was spent and when, or null when its tail holds no entry
+ * that can be read (a cut or half-written line, or bookkeeping alone), which says nothing either way.
+ */
+type TranscriptRead = Readonly<{ size: number; mtimeMs: number; said: Readonly<{ spent: SpentAllowance | null; at: number }> | null }>;
 /** What one pool remembers of its workers' transcripts: where each session's is (a session's file does not move), when one was last looked for and not found, and what was last read of each. */
 type TranscriptMemory = Readonly<{ paths: Map<string, string>; misses: Map<string, number>; reads: Map<string, TranscriptRead> }>;
 
@@ -77,7 +80,7 @@ function remember<V>(map: Map<string, V>, key: string, value: V): void {
   if (map.size > REMEMBERED) map.delete(map.keys().next().value as string);
 }
 
-/** What the end of a transcript says: the allowance spent and when it was said, or no spent allowance. Read again only when the file changed. */
+/** What the end of a transcript says: its last conversation entry, with the allowance it said was spent, or null when there is none to read. Read again only when the file changed. */
 async function readTranscript(ctx: PoolContext, path: string): Promise<TranscriptRead> {
   const { size, mtimeMs } = await stat(path);
   const { reads } = memoryOf(ctx);
@@ -93,7 +96,7 @@ async function readTranscript(ctx: PoolContext, path: string): Promise<Transcrip
     await file.close();
   }
   const said = lastSaidInTail(tail);
-  const read = { size, mtimeMs, spent: said?.role === "assistant" ? spentIn(said) : null, at: said?.at ?? 0 };
+  const read = { size, mtimeMs, said: said === null ? null : { spent: said.role === "assistant" ? spentIn(said) : null, at: said.at } };
   remember(reads, path, read);
   return read;
 }
@@ -113,13 +116,17 @@ function transcriptOf(ctx: PoolContext, entry: Entry): string | null {
   return found;
 }
 
-/** What the run's transcript says of its allowance. A limit said before the run started is not this run's, so it reads clear. One that cannot be found or read is unknown. */
+/**
+ * What the run's transcript says of its allowance. A limit said before the run started is not this run's, so it reads clear. One that cannot be found or read, or whose tail holds no entry that
+ * can be read, is unknown: it neither starts a hold nor drops one.
+ */
 async function transcriptAllowance(ctx: PoolContext, entry: Entry): Promise<AllowanceRead> {
   try {
     const path = transcriptOf(ctx, entry);
     if (path === null) return UNKNOWN;
-    const { spent, at } = await readTranscript(ctx, path);
-    return spent !== null && at >= (entry.startedAt ?? 0) ? spentRead(spent) : CLEAR;
+    const { said } = await readTranscript(ctx, path);
+    if (said === null) return UNKNOWN;
+    return said.spent !== null && said.at >= (entry.startedAt ?? 0) ? spentRead(said.spent) : CLEAR;
   } catch {
     return UNKNOWN;
   }

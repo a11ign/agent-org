@@ -51,7 +51,12 @@ async function liveRun() {
   const advance = async (ms: number) => { clock += ms; await made.pool.tick(); await new Promise<void>((resolve) => { setImmediate(resolve); }); };
   const prompts = () => made.herdr.calls.filter((args) => args[3] === "prompt" || args[3] === "send-keys");
   const status = (value: string) => made.status.set(name, value);
-  return { ...made, name, say, status, advance, prompts, now: () => clock, set: (at: number) => { clock = at; } };
+  /** The transcript's tail as nothing can read it: a line cut or half-written, with no whole entry after the last one the board read. */
+  const garble = (text: string) => {
+    writeFileSync(transcript, text);
+    utimesSync(transcript, new Date(clock), new Date(clock));
+  };
+  return { ...made, name, say, garble, status, advance, prompts, now: () => clock, set: (at: number) => { clock = at; } };
 }
 
 /** NBF-1 refused at 13:00 with the reset at 14:00 as its last reply, its agent idle, and the board's next pass made. */
@@ -197,4 +202,13 @@ test("A11-434: a short-form reset read from the pane after it has passed keeps t
   const held = { until: RESET, text: SAID, since: T0 };
   assert.equal(spentOnLimitMenu(MENU, RESET + 5 * MIN, held)?.until, RESET);
   assert.equal(spentOnLimitMenu(MENU, RESET + 5 * MIN)?.until, RESET + 24 * 60 * MIN, "read cold, the same words name tomorrow's 2pm");
+});
+
+test("A11-434: a held worker whose transcript tail holds no entry that can be read keeps its hold, and is not ended for having no outcome", async () => {
+  const run = await refusedIdle();
+  assert.notEqual(run.entry("NBF-1").allowance, undefined);
+  run.garble('{"type":"assistant","message":{"content":[{"type":"text","text":"half wri');
+  await run.advance(MIN);
+  assert.deepEqual([run.entry("NBF-1").phase, run.entry("NBF-1").outcome, run.entry("NBF-1").allowance?.until], ["running", undefined, RESET],
+    "a tail that says nothing is not the allowance back: before this it read clear, dropped the hold, and the idle run was ended no-outcome");
 });
