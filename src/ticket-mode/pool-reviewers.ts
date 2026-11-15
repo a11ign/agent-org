@@ -698,8 +698,7 @@ export async function reviewNewHeads(ctx: PoolContext): Promise<void> {
   adoptRememberedReviewers(ctx);
   const listed = new Set<string>();
   let unlisted = false;
-  await warmOrigins(settings.clones);
-  for (const repository of reviewedRepositoriesOf(settings.clones)) {
+  for (const repository of reviewedRepositoriesOf(settings.clones, await warmOrigins(settings.clones))) {
     const urls = await codeHost.openPullUrlsOf(repository);
     if (urls === null) {
       unlisted = true;
@@ -734,8 +733,7 @@ export async function startGreenReviewers(ctx: PoolContext): Promise<void> {
   const { codeHost, refusedHeads, reviewer, reviewerStarted, settings } = ctx;
   if (reviewer === undefined) return;
   adoptRememberedReviewers(ctx);
-  await warmOrigins(settings.clones);
-  for (const repository of reviewedRepositoriesOf(settings.clones)) {
+  for (const repository of reviewedRepositoriesOf(settings.clones, await warmOrigins(settings.clones))) {
     for (const url of (await codeHost.openPullUrlsOf(repository)) ?? []) {
       const state = await codeHost.readReviewState(url);
       if (state === null) continue;
@@ -773,8 +771,7 @@ async function listWhileOff(ctx: PoolContext): Promise<void> {
   if (ctx.reviewerState !== "off-required") return;
   let repositories: string[];
   try {
-    await warmOrigins(settings.clones);
-    repositories = reviewedRepositoriesOf(settings.clones);
+    repositories = reviewedRepositoriesOf(settings.clones, await warmOrigins(settings.clones));
   } catch (err) {
     // Said once, not on every sweep: the gate that does not load does not load the next time either.
     if (!ctx.refusedHeads.has(UNLISTABLE)) log(`reviews are required and the reviewer is off, and the open pull requests cannot be listed for the board: ${messageOf(err).split("\n")[0]}`);
