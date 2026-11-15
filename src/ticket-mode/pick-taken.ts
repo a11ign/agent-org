@@ -6,7 +6,7 @@
 //
 // A TICKET THIS INSTANCE RAN IS NEVER TAKEN, whatever its state: its own claim names this instance, so a ticket left In Progress after a finished or dismissed run can be queued
 // again. A ticket with no claim is not taken either: one moved to In Progress by hand, or by an instance older than the claim, has nobody to name. That is the cost of the rule,
-// and the README says so. A ticket this instance holds a run for is not taken either, which the caller answers first, from its queue.
+// and docs/guide/ticket-mode.md says so. A ticket this instance holds a run for is not taken either, which the caller answers first, from its queue.
 
 /** The tracker's type for a state work has started in: In Progress and the states like it. */
 const STARTED = "started";

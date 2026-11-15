@@ -369,14 +369,14 @@ export function watchWorking(queue: Queue, key: string, status: string, now: num
   });
 }
 
-/** What the pool learned of a run as it ended: the tokens it spent and the Claude session it ran in. */
-type RunRecord = Readonly<{ tokens?: Entry["tokens"]; session?: string }>;
+/** What the pool learned of a run as it ended: the tokens it spent, the Claude session it ran in, and its outcome record with this round added (A11-430). */
+type RunRecord = Readonly<{ tokens?: Entry["tokens"]; session?: string; outcomeRun?: Entry["outcomeRun"] }>;
 
 /**
  * A run that ended. Its session is the one it ran in. Where the pool did not learn it, a review run keeps the session it resumed, and any
  * other run has none, so an earlier worker's session is never taken for this one's.
  */
-function ended(entry: Entry, outcome: Outcome, now: number, { tokens, session }: RunRecord): Entry {
+function ended(entry: Entry, outcome: Outcome, now: number, { tokens, session, outcomeRun }: RunRecord): Entry {
   const ranIn = session ?? (entry.review || entry.talk ? entry.session : undefined);
   // A working note is a running run's: the outcome it ended on replaces it. A pull request outcome says whether the run is partial, a `done` says nothing
   // remains to build and drops the declaration (A11-173), and any other keeps what the run had: a review round's `reviewed` says nothing of it.
@@ -395,7 +395,7 @@ function ended(entry: Entry, outcome: Outcome, now: number, { tokens, session }:
   // What the merged pull requests declared goes with the `partial` it decided (A11-181): a pull request outcome or a `done` sets `partial` afresh, and any other keeps both.
   const resets = outcome.kind === "draft-pr" || outcome.kind === "ready-pr" || outcome.kind === "done";
   const { declared: _pulled, partialOverruled: _overruled, ...fresh } = rest;
-  return { ...(resets ? fresh : rest), phase: "finished", outcome, finishedAt: now, waiting: false, ...(tokens ? { tokens } : {}), ...(ranIn ? { session: ranIn } : {}),
+  return { ...(resets ? fresh : rest), phase: "finished", outcome, finishedAt: now, waiting: false, ...(tokens ? { tokens } : {}), ...(outcomeRun ? { outcomeRun } : {}), ...(ranIn ? { session: ranIn } : {}),
     ...(partial !== undefined ? { partial } : {}) };
 }
 

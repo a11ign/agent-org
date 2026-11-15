@@ -8,6 +8,8 @@ This file is the record of the retired page's features and where Atomaut has eac
 
 A row whose last cell starts `pattern:` is a feature with no board. It uses the pattern named after the colon, so it reads as a neighbour of what the boards draw. It is the list of what to draw on the canvas when the chairman wants it. A row whose last cell names a board (`AtomautRuns`) is drawn as the board draws it.
 
+A row whose last cell starts `designed:` is a state the boards do not draw that has been designed in the code from its neighbours' patterns (A11-446). Its links are the captures of each of its states in `ui/captures/`, at 1440px; the 390px capture has the same name with `390x844`. The page test that writes each capture names it.
+
 ## How the rows are written
 
 | Column | Says |
@@ -16,9 +18,9 @@ A row whose last cell starts `pattern:` is a feature with no board. It uses the 
 | In `ui.html` | The element id (`#claim-note`) or the function (`renderBoard()`, or a name `ui.html` imports, in backticks) that draws it. A test holds every element id of `ui.html`'s markup, and every name it imports from `/board-view.js`, `/label-filters.js`, `/assignee-filter.js`, `/settings-search.js` and `/plugins-section.js`, to appear in this column of some row. |
 | Atomaut page | The route and the place on it. |
 | Ticket | The ticket that built the feature, or that builds it. |
-| Board or pattern | The board that draws it, or `pattern: <name>`. |
+| Board or pattern | The board that draws it, `pattern: <name>`, or `designed:` and a link to each of its captures. |
 
-`ui/test/parity/parity.test.ts` reads this file. It fails when a row has an empty cell, a Ticket that is not a ticket key, or a last cell that is neither a board nor `pattern: <words>`. Until A11-202 it also failed when an id or an imported name of `ui.html` was in no row; it was run once on the last commit that held `ui.html`, and passed.
+`ui/test/parity/parity.test.ts` reads this file. It fails when a row has an empty cell, a Ticket that is not a ticket key, a last cell that is neither a board, `pattern: <words>` nor `designed:` with its links, or a `designed:` link that is no PNG in `ui/captures/`. Until A11-202 it also failed when an id or an imported name of `ui.html` was in no row; it was run once on the last commit that held `ui.html`, and passed.
 
 The tickets: A11-194 the shell, A11-195 an unreachable instance, A11-196 Tickets, A11-197 Runs, A11-198 Run detail, A11-199 New ticket, A11-200 Settings, A11-201 Plugins, A11-211 refetch on focus and the reconnecting line, A11-217 the update drain banner, A11-218 Publish, A11-202 the cutover, A11-220 this inventory and what it restored.
 
@@ -148,6 +150,7 @@ The tickets: A11-194 the shell, A11-195 an unreachable instance, A11-196 Tickets
 | Every line of the note, whole | `noteLines()` | `/runs/<key>`, "Everything this run noted" | A11-220 | pattern: disclosure |
 | The run's pull requests, steps and properties | `.meta` | `/runs/<key>` | A11-198 | AtomautRunDetail |
 | Open terminal | `.terminal` | `/runs/<key>`, the header's Talk to it link | A11-198 | AtomautRunDetail |
+| Talk to it when herdr does not open: no terminal is named, the browser blocks the tab, the instance refuses the press, or the run ends before it has a pane | `talkTo()`, `report()` | `/runs/<key>`, the failure banner, with Retry and Dismiss (`use-talk.ts`) | A11-198 | designed: [no-terminal](../../../ui/captures/run-detail/run-detail-herdr-no-terminal-1440x900.png), [tab-blocked](../../../ui/captures/run-detail/run-detail-herdr-tab-blocked-1440x900.png), [refused](../../../ui/captures/run-detail/run-detail-herdr-refused-1440x900.png), [run-ended](../../../ui/captures/run-detail/run-detail-herdr-run-ended-1440x900.png) |
 | Run gone, and loading | `entryFor()` | `/runs/<key>` | A11-198 | AtomautRunDetailMissing |
 
 ## 7. Settings
@@ -201,3 +204,4 @@ The tickets: A11-194 the shell, A11-195 an unreachable instance, A11-196 Tickets
 | Refused by the registry | `failedNode()` | The refused package's card | A11-201 | AtomautPlugins |
 | A remote instance offers no control | `buildPluginsSection()` | The page's remote note | A11-201 | AtomautPluginsUnknown |
 | The words about a note the plugins answer carries | `buildPluginsSection()` | The page's host note | A11-201 | pattern: status banner |
+| The Claude plugins tab: a plugin with a need not met, none listed, a plugin workers do not get, and Claude Code's install record unreadable | None: the tab is new in Atomaut | `/settings/plugins`, the Claude plugins tab | A11-201 | designed: [claude](../../../ui/captures/plugins/plugins-claude-1440x900.png), [claude-empty](../../../ui/captures/plugins/plugins-claude-empty-1440x900.png), [claude-not-loading](../../../ui/captures/plugins/plugins-claude-not-loading-1440x900.png), [claude-unknown](../../../ui/captures/plugins/plugins-claude-unknown-1440x900.png) |

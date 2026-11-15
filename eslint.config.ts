@@ -6,6 +6,7 @@
 import tseslint from "typescript-eslint";
 import cleanCode from "@george2f/eslint-plugin-clean-code";
 import astro from "eslint-plugin-astro";
+import { readFileSync } from "node:fs";
 
 const recommended = {
   "clean-code/max-arguments": "warn",
@@ -39,6 +40,32 @@ const cleanCodeRules = {
   "max-lines-per-function": ["error", { max: 70, skipComments: true, skipBlankLines: true }], // A11-115: a function over 70 code lines does more than one thing; comments and blank lines are not counted, because the policy is comment-dense
 };
 
+// A11-433: NO NEW SYNCHRONOUS SPAWN OR HERDR CALL IN THE BOARD. Such a call holds the board loop for as long as it takes, the most-fixed bug class since August (A11-282, A11-377, A11-395).
+// The files that still make one are `blocking-calls.baseline.json`'s `files`, which only shrinks, and its `commands`, the CLI entry points a person runs, by name; both are read here, so
+// the list has one home. src/packaging/blocking-calls-ratchet.test.ts holds the list to the tree and to its base. `scripts/lint-cache.ts` keys the cache on the JSON too.
+const blockingCalls = JSON.parse(readFileSync(new URL("./blocking-calls.baseline.json", import.meta.url), "utf8")) as { files: string[]; commands: Record<string, string> };
+// A spawn reached by a computed name (`cp["execSync"]`) or through an alias (`const s = cp.spawnSync`) is not seen here; the run-time ledger (`blocking-ledger.ts`) still times it.
+const SYNC_SPAWN = "/^(?:spawnSync|execFileSync|execSync)$/";
+const SYNC_HERDR = "/^(?:herdrRun|readAgents|readAgentSessions|openPane|closedNote)$/";
+const BLOCKING_CALL = "A11-433: a synchronous spawn or herdr call holds the board loop for as long as it takes. Use the asynchronous form (`realExecAsync`, `ctx.herdrCall`, the code host's promise "
+  + "operations). blocking-calls.baseline.json lists the files that still may, and it only shrinks: do not add this file to it";
+const blockingCallBan = {
+  files: ["src/ticket-mode/**/*.ts", "plugins/**/*.ts"],
+  ignores: ["**/*.test.ts", "**/*.test.support.ts", "**/fixtures/**", ...blockingCalls.files, ...Object.keys(blockingCalls.commands)],
+  rules: {
+    "no-restricted-syntax": ["error",
+      { selector: `ImportDeclaration[source.value=/^(?:node:)?child_process$/] > ImportSpecifier[imported.name=${SYNC_SPAWN}]`, message: BLOCKING_CALL },
+      { selector: `CallExpression[callee.name=${SYNC_SPAWN}]`, message: BLOCKING_CALL },
+      { selector: `CallExpression[callee.property.name=${SYNC_SPAWN}]`, message: BLOCKING_CALL },
+      { selector: `VariableDeclarator > ObjectPattern > Property[key.name=${SYNC_SPAWN}]`, message: BLOCKING_CALL },
+      { selector: `ImportSpecifier[imported.name=${SYNC_HERDR}]`, message: BLOCKING_CALL },
+      { selector: `CallExpression[callee.name=${SYNC_HERDR}]`, message: BLOCKING_CALL },
+      { selector: `CallExpression[callee.property.name=${SYNC_HERDR}]`, message: BLOCKING_CALL },
+      { selector: "CallExpression[callee.property.name='herdr']", message: BLOCKING_CALL },
+    ],
+  },
+};
+
 export default [
   // The UI package's build and its generated types are not source (A11-188).
   { ignores: ["node_modules/**", "ui/dist/**", "ui/.astro/**"] },
@@ -65,4 +92,5 @@ export default [
   { files: ["src/lib/walk-scope.ts"], rules: { "clean-code/encapsulate-conditionals": "off" } },
   // A11-113: the fixture project is a copy of project code on purpose (its files repeat the project's own on purpose), so only this rule is off there; a global ignore would also drop every other rule
   { files: ["src/packaging/fixtures/**"], rules: { "clean-code/no-duplication": "off" } },
+  blockingCallBan,
 ];
