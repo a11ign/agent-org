@@ -29,6 +29,7 @@ import { emptyQueue } from "../queue.ts";
 import { HOST_FILE_ENV, readTicketSettings, type TicketSettings } from "../settings.ts";
 import { ticketDir } from "../ticket-paths.ts";
 import type { DrainStore } from "../pool-drain.ts";
+import type { PullState, Ticket, TicketSource } from "../../plugins/contracts/tracker.ts";
 import { createFakeCodeHost } from "../../plugins/fakes/code-host.ts";
 import { createFakeTracker, fakeTicket } from "../../plugins/fakes/tracker.ts";
 import { faultyTracker, type FaultSwitch } from "./fault-tracker.ts";
@@ -37,6 +38,9 @@ import { pullWorld } from "./fault-pulls.ts";
 
 /** When every scenario's clock starts: a fixed instant, so two runs of a scenario log the same times. */
 export const FIXTURE_START = Date.UTC(2026, 10, 1, 9, 0, 0);
+
+/** The model and effort every run of the fixture is queued with. */
+const RUN_CHOICE = { model: "sonnet", effort: "high" } as const;
 
 /** The ports the throwaway host file names. Nothing listens on them: the fixture starts no server. */
 const PORTS = { port: 47_901, uiPort: 47_902 } as const;
@@ -47,8 +51,21 @@ const INSTANCE_GONE = "the instance was restarted by an update";
 /** One instance of the board: whether its process is still running. A restart leaves the old one's flag false for ever. */
 type Life = { alive: boolean };
 
-/** What a scenario's fixture is made with: the tickets queued, and how many runs may go at once. */
-export type FixtureOptions = Readonly<{ keys: readonly string[]; max?: number }>;
+/**
+ * A tracker the fixture's board reads in place of the contract's in-memory fake (A11-447): the block the throwaway host file names it by, the source built from that block once the host file is read back,
+ * and how the code host's links to its tickets are written, as GitHub writes them when a pull request is opened or merged.
+ */
+export type FixtureTracker = Readonly<{
+  block: Readonly<Record<string, unknown>>;
+  build: (settings: TicketSettings) => TicketSource;
+  linkPull: (key: string, url: string, state: PullState) => void;
+}>;
+
+/**
+ * What a scenario's fixture is made with: the tickets its scripted workers serve, how many runs may go at once, and the tracker. With the default tracker every key is queued from the start; with another one the queue
+ * starts empty, and the test queues the tickets it read from that tracker (`enqueue`), as the board's Queue does.
+ */
+export type FixtureOptions = Readonly<{ keys: readonly string[]; max?: number; tracker?: FixtureTracker }>;
 
 /** The update drain, held in memory: no update is draining unless a scenario writes one. */
 function memoryDrain(): DrainStore {
@@ -57,14 +74,21 @@ function memoryDrain(): DrainStore {
 }
 
 /** The throwaway host file, written into `dir` and read back the way the instance reads its own. */
-function throwawaySettings(dir: string): Readonly<{ settings: TicketSettings; hostPath: string }> {
+function throwawaySettings(dir: string, tracker?: FixtureTracker["block"]): Readonly<{ settings: TicketSettings; hostPath: string }> {
   const stateDir = join(dir, "state");
   const binDir = join(dir, "bin");
   const checkout = join(dir, "clone");
   for (const made of [join(stateDir, "tickets"), binDir, checkout]) mkdirSync(made, { recursive: true });
   const hostPath = join(dir, "host.json");
-  writeFileSync(hostPath, `${JSON.stringify(captureHost({ checkout, stateDir, binDir, ...PORTS, keyPath: join(dir, "linear-key") }), null, 2)}\n`, { mode: 0o600 });
+  const host = captureHost({ checkout, stateDir, binDir, ...PORTS, keyPath: join(dir, "linear-key") });
+  writeFileSync(hostPath, `${JSON.stringify(tracker === undefined ? host : withTracker(host, tracker), null, 2)}\n`, { mode: 0o600 });
   return { settings: readTicketSettings({ [HOST_FILE_ENV]: hostPath }, undefined, dir), hostPath };
+}
+
+/** `host` with its tracker block replaced by `tracker`. PURE. */
+function withTracker(host: Record<string, unknown>, tracker: FixtureTracker["block"]): Record<string, unknown> {
+  const tickets = host.tickets as { providers: Record<string, unknown> };
+  return { ...host, tickets: { ...tickets, providers: { ...tickets.providers, tracker } } };
 }
 
 /** `make()`, with `dir` removed when it throws, so a fixture that could not be built leaves no folder behind. */
@@ -172,21 +196,23 @@ function workersOf(keys: readonly string[], settings: TicketSettings, herdr: Fau
 }
 
 /** The fixture instance: its board, its fakes, its faults, its clock and its scripted workers. */
-export function fixtureInstance({ keys, max = keys.length }: FixtureOptions) {
+export function fixtureInstance({ keys, max = keys.length, tracker: chosen }: FixtureOptions) {
   const dir = mkdtempSync(join(tmpdir(), "agent-org-fault-"));
-  const { settings, hostPath } = removedOnThrow(dir, () => throwawaySettings(dir));
+  const { settings, hostPath } = removedOnThrow(dir, () => throwawaySettings(dir, chosen?.block));
   const clock: Clock = { now: FIXTURE_START };
   const now = () => clock.now;
   const calls: CallLedger = createCallLedger(now);
   const linearDown: FaultSwitch = { on: false };
   const tracker = createFakeTracker(keys.map((key) => fakeTicket(key)));
+  const source = removedOnThrow(dir, () => chosen?.build(settings) ?? tracker);
   const herdr: FaultyHerdr = faultyHerdr();
   const serviceStarts: number[] = [];
   const codeHost = createFakeCodeHost("fixture-worker");
-  const pulls = pullWorld(codeHost, tracker);
-  const hold: QueueHold = { current: resumeQueue(enqueue(emptyQueue(max), keys.map((key) => fakeTicket(key)), { model: "sonnet", effort: "high" }, clock.now)) };
+  const pulls = pullWorld(codeHost, chosen ?? tracker);
+  const queued = chosen === undefined ? keys.map((key) => fakeTicket(key)) : [];
+  const hold: QueueHold = { current: resumeQueue(enqueue(emptyQueue(max), queued, RUN_CHOICE, clock.now)) };
   const deps: PoolDeps = {
-    settings, source: faultyTracker(tracker, linearDown, calls), codeHost, hook: { node: "/fixture/node", bin: join(dir, "tool", "src", "bin.ts") }, herdr: herdr.run, hostFile: hostPath, now,
+    settings, source: faultyTracker(source, linearDown, calls), codeHost, hook: { node: "/fixture/node", bin: join(dir, "tool", "src", "bin.ts") }, herdr: herdr.run, hostFile: hostPath, now,
     load: () => ({ load: 1, cores: 8 }), transcriptsRoot: join(dir, "transcripts"), pluginRecord: join(dir, "no-plugin-record.json"), wait: async () => {},
     herdrService: { registered: () => true, start: () => { serviceStarts.push(clock.now); } },
     git: async (_cwd, args) => { throw new Error(`the fixture runs no git (git ${args.join(" ")})`); },
@@ -208,9 +234,11 @@ export function fixtureInstance({ keys, max = keys.length }: FixtureOptions) {
     pulls.step();
   };
   const entry = (key: string) => hold.current.entries.find((one) => one.ticket.key === key);
+  /** Queues `tickets` as the board's Queue does (`server.ts`'s `queueTickets`), with the fixture's run choice. */
+  const queueTickets = (tickets: readonly Ticket[]): void => { hold.current = enqueue(hold.current, tickets, RUN_CHOICE, clock.now); };
   const dispose = (): void => rmSync(dir, { recursive: true, force: true });
   return {
-    dir, settings, queue: () => hold.current, entry, pool: instances.pool, pass, restartOnStart: instances.restartOnStart, restart: instances.restart, ...workersOf(keys, settings, herdr, clock, hold),
+    dir, settings, source: deps.source, queue: () => hold.current, queueTickets, entry, pool: instances.pool, pass, restartOnStart: instances.restartOnStart, restart: instances.restart, ...workersOf(keys, settings, herdr, clock, hold),
     herdr, linearDown, tracker, codeHost, pulls, calls, serviceStarts, now, dispose,
   };
 }

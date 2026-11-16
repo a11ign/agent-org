@@ -184,3 +184,10 @@ test("A11-144: doctor --fix, then doctor, on a copy of each host shape leaves no
     assert.match(plain.stdout, /tracker \(linear\)/, `${name}: the tracker's provider row is there`);
   }
 });
+
+test("A11-447: doctor --fix on a GitHub Issues host that still holds tickets.linearKey has nothing to move, where it used to plan a move into a block that refuses it", async () => {
+  const { gh: _gh, ...base } = BASE;
+  const host = { ...base, tickets: { linearKey: { path: "/k/linear" }, providers: { tracker: { provider: "github-issues", repo: "acme/tracker", token: { path: "/k/github.token" } } } } };
+  assert.deepEqual(migrateHost(host).moves, []);
+  assert.equal((await planHostFix(text(host))).kind, "nothing");
+});

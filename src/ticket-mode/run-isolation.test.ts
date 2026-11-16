@@ -64,9 +64,10 @@ async function liveRuns(keys: readonly string[], base: string | undefined) {
 test("A11-279: start() makes the run's directory and opens its workspace with TMPDIR naming it, for each run, and a pool without a base opens none", async () => {
   const base = tmpDir("run-isolation-");
   const run = await liveRuns(["NBF-1", "NBF-2"], base);
-  assert.deepEqual(createdWith(run.herdr.calls).map((env) => env.TMPDIR), [join(base, "run-t-NBF-1"), join(base, "run-t-NBF-2")]);
+  // The two runs open side by side (A11-442): each opens with its own TMPDIR, in whichever order herdr is asked.
+  assert.deepEqual(createdWith(run.herdr.calls).map((env) => env.TMPDIR).toSorted(), [join(base, "run-t-NBF-1"), join(base, "run-t-NBF-2")]);
   assert.deepEqual(readdirSync(base).toSorted(), ["run-t-NBF-1", "run-t-NBF-2"]);
-  assert.deepEqual(createdWith(run.herdr.calls).map((env) => env.TMPDIR), [runEnvOf({ hostFile: "/work/.agent-org/host.json", runTmpBase: base }, run.entry("NBF-1")).TMPDIR, runEnvOf({ hostFile: "/work/.agent-org/host.json", runTmpBase: base }, run.entry("NBF-2")).TMPDIR]);
+  assert.deepEqual(createdWith(run.herdr.calls).map((env) => env.TMPDIR).toSorted(), [runEnvOf({ hostFile: "/work/.agent-org/host.json", runTmpBase: base }, run.entry("NBF-1")).TMPDIR, runEnvOf({ hostFile: "/work/.agent-org/host.json", runTmpBase: base }, run.entry("NBF-2")).TMPDIR]);
   const bare = await liveRuns(["NBF-1"], undefined);
   assert.deepEqual(createdWith(bare.herdr.calls).map((env) => "TMPDIR" in env), [false]);
 });

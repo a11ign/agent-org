@@ -229,10 +229,13 @@ function entryOf(plugin: CatalogPlugin, input: HealthInput, context: PlanContext
     checks, failure, controls: controlsOf(plugin, { installed, enabled, secrets: commandOnly }, context), installCommand: `agent-org plugin install ${plugin.name}`, secrets, settingKeys: Object.values(plugin.settings).map((entry) => entry.key) };
 }
 
-/** The empty state of a concern with no plugin running: the required ones cannot run the board, the optional ones say "None". Each gives the command that fixes it, one per plugin. */
+/**
+ * The empty state of a concern with no plugin running: the required ones cannot run the board, the optional ones say "None". Each gives the command that fixes it, one per plugin: the installed ones'
+ * `enable` first, so a concern with a second plugin (GitHub Issues beside Linear, A11-447) still offers the one already on the machine before an install.
+ */
 function emptyOf(concern: Concern, plugins: readonly PluginEntry[]): Empty {
   const label = CONCERN_LABEL[concern];
-  const commands = plugins.map((plugin) => (plugin.installed ? `agent-org plugin enable ${plugin.name}` : plugin.installCommand));
+  const commands = [...plugins.filter(({ installed }) => installed).map(({ name }) => `agent-org plugin enable ${name}`), ...plugins.filter(({ installed }) => !installed).map(({ installCommand }) => installCommand)];
   return { text: REQUIRED_CONCERNS.includes(concern) ? `No ${label} enabled: the board cannot run` : "None", commands };
 }
 

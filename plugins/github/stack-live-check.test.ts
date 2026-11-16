@@ -2,7 +2,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { liveCheckNames, runLiveCheck } from "./stack-live-check.ts";
-import type { Gh } from "./stack-retarget.ts";
+import type { AsyncGh } from "./gh.ts";
 
 const REPO = "a11ign/agent-org";
 const RUN = "r1";
@@ -23,7 +23,8 @@ function fakeGitHub(options: { mergeRefused?: string; deleteOnMerge?: boolean; d
     return pull;
   };
   const viewOf = (pull: Pull) => JSON.stringify({ url: `https://github.com/${REPO}/pull/${pull.number}`, state: pull.state, baseRefName: pull.base, headRefName: pull.head, headRefOid: refs.get(pull.head) ?? "" });
-  const gh: Gh = (args) => {
+  // A refused step rejects, as the async `gh` the command hands in does.
+  const gh: AsyncGh = async (args) => {
     calls.push(args);
     const [command, verb] = args;
     if (command === "api" && args[1] === `repos/${REPO}`) return "main\n";
@@ -82,10 +83,10 @@ function fakeGitHub(options: { mergeRefused?: string; deleteOnMerge?: boolean; d
   return { gh, calls, refs, pulls };
 }
 
-test("A11-106: the live check proves the chain on GitHub: B is retargeted to the scratch branch with its head unmoved, and everything it made is removed", () => {
+test("A11-106: the live check proves the chain on GitHub: B is retargeted to the scratch branch with its head unmoved, and everything it made is removed", async () => {
   const fake = fakeGitHub();
   const said: string[] = [];
-  assert.equal(runLiveCheck({ repo: REPO, runId: RUN, gh: fake.gh, log: (line) => said.push(line) }), true);
+  assert.equal(await runLiveCheck({ repo: REPO, runId: RUN, gh: fake.gh, log: (line) => said.push(line) }), true);
   const stacked = fake.pulls.find((p) => p.head === NAMES.stacked);
   assert.equal(stacked?.base, NAMES.scratch, "B's base read back as the scratch branch");
   assert.deepEqual([...fake.refs.keys()], ["main"], "every scratch branch is deleted, and the default branch is untouched");
@@ -94,35 +95,35 @@ test("A11-106: the live check proves the chain on GitHub: B is retargeted to the
   assert.ok(said.some((line) => /: base .* -> .*; head \w+ -> \w+$/.test(line)), "the base and head before and after are said");
 });
 
-test("A11-106: the live check never merges into the default branch: the only merge is of A into the scratch branch", () => {
+test("A11-106: the live check never merges into the default branch: the only merge is of A into the scratch branch", async () => {
   const fake = fakeGitHub();
-  runLiveCheck({ repo: REPO, runId: RUN, gh: fake.gh, log: () => {} });
+  await runLiveCheck({ repo: REPO, runId: RUN, gh: fake.gh, log: () => {} });
   const merges = fake.calls.filter((args) => args[0] === "pr" && args[1] === "merge");
   assert.equal(merges.length, 1);
   assert.equal(fake.pulls[0].base, NAMES.scratch, "A's base is the scratch branch, so its merge lands there");
 });
 
-test("A11-106: a merge GitHub refuses fails the check, says why, and still removes every branch and pull request it made", () => {
+test("A11-106: a merge GitHub refuses fails the check, says why, and still removes every branch and pull request it made", async () => {
   const fake = fakeGitHub({ mergeRefused: "gh: Resource not accessible by integration (HTTP 403)" });
   const said: string[] = [];
-  assert.equal(runLiveCheck({ repo: REPO, runId: RUN, gh: fake.gh, log: (line) => said.push(line) }), false);
+  assert.equal(await runLiveCheck({ repo: REPO, runId: RUN, gh: fake.gh, log: (line) => said.push(line) }), false);
   assert.ok(said.includes("FAIL: gh: Resource not accessible by integration (HTTP 403)"));
   assert.deepEqual([...fake.refs.keys()], ["main"], "nothing is left behind");
   assert.ok(fake.pulls.every((p) => p.state !== "OPEN"), "no pull request is left open");
 });
 
-test("A11-106: a repository that deletes merged branches fails the check with the reason, since the stale base cannot occur there", () => {
+test("A11-106: a repository that deletes merged branches fails the check with the reason, since the stale base cannot occur there", async () => {
   const fake = fakeGitHub({ deleteOnMerge: true });
   const said: string[] = [];
-  assert.equal(runLiveCheck({ repo: REPO, runId: RUN, gh: fake.gh, log: (line) => said.push(line) }), false);
+  assert.equal(await runLiveCheck({ repo: REPO, runId: RUN, gh: fake.gh, log: (line) => said.push(line) }), false);
   assert.ok(said.some((line) => line.includes("the repository deletes merged branches, so the stale base does not occur here")));
   assert.deepEqual([...fake.refs.keys()], ["main"]);
 });
 
-test("A11-106: a branch that cannot be removed fails the check, and is named, so nothing is left unseen", () => {
+test("A11-106: a branch that cannot be removed fails the check, and is named, so nothing is left unseen", async () => {
   const fake = fakeGitHub({ deleteFails: true });
   const said: string[] = [];
-  assert.equal(runLiveCheck({ repo: REPO, runId: RUN, gh: fake.gh, log: (line) => said.push(line) }), false, "the chain held, but the cleanup did not");
+  assert.equal(await runLiveCheck({ repo: REPO, runId: RUN, gh: fake.gh, log: (line) => said.push(line) }), false, "the chain held, but the cleanup did not");
   assert.ok(said.some((line) => line.startsWith(`cleanup: could not delete ${NAMES.scratch}: gh: Forbidden (HTTP 403)`)));
   assert.ok(said.includes("FAIL: cleanup was incomplete; see the lines above"));
 });

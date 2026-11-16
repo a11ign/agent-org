@@ -148,5 +148,11 @@ export function fakeGitHub(issues: readonly FakeIssue[], milestones: readonly Mi
     const answered = answer(world, url, { method, body, query: url.searchParams });
     return new Response(answered.body === undefined ? null : JSON.stringify(answered.body), { status: answered.status });
   }) as typeof globalThis.fetch;
-  return { fetch, requests, held };
+  /** GitHub records that pull request `url` names issue `number`, now in `state`: a cross-reference on the issue's timeline, replacing any earlier one of the same address. */
+  const linkPull = (number: number, url: string, state: "open" | "merged" | "closed"): void => {
+    const issue = held.get(number)!;
+    const pull = { html_url: url, title: `Pull request for #${number}`, state: state === "open" ? "open" : "closed", merged_at: state === "merged" ? tick() : null };
+    issue.crossReferences = [...issue.crossReferences.filter(({ html_url }) => html_url !== url), pull];
+  };
+  return { fetch, requests, held, linkPull };
 }

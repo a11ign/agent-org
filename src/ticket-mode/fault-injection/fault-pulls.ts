@@ -14,7 +14,7 @@
 // stays where the fault left it, and the report says whether the board said why.
 import type { FailingCheck, QueueRemoval } from "../../plugins/contracts/code-host.ts";
 import { createFakeCodeHost, fakePullUrl, queueFailureKey } from "../../plugins/fakes/code-host.ts";
-import type { createFakeTracker } from "../../plugins/fakes/tracker.ts";
+import type { PullState } from "../../plugins/contracts/tracker.ts";
 
 /** The repository the fixture's pull requests are opened in. */
 export const FIXTURE_REPOSITORY = "fixture/app";
@@ -25,8 +25,8 @@ type FixtureCodeHost = ReturnType<typeof createFakeCodeHost>;
 /** What a fault does to a pull request's check: cancelled once, so the board's rerun goes green, or cancelled on every run, so no rerun helps. */
 type Cancelling = "once" | "always";
 
-/** The fake tracker a fixture instance's board reads, which links each pull request to its ticket. */
-type FixtureTracker = Pick<ReturnType<typeof createFakeTracker>, "linkPull">;
+/** The tracker a fixture instance's board reads, as far as it links each pull request to its ticket: the contract's fake, or another tracker's world (`FixtureTracker` of `fixture-instance.ts`). */
+type PullLinks = Readonly<{ linkPull: (key: string, url: string, state: PullState) => void }>;
 
 /** A pull request of a run, as the fixture opened it: its ticket, its address, and the fault on its check, if any. */
 type Pull = { key: string; url: string; cancelling?: Cancelling };
@@ -50,7 +50,7 @@ const headOf = (number: number): string => `f1c5${String(number).padStart(4, "0"
 export const groupCommitOf = (number: number): string => `9e0c${String(number).padStart(4, "0")}`.padEnd(40, "0");
 
 /** The pull requests a fixture's runs open, over `host`, linked on `tracker`, and how GitHub moves them. */
-export function pullWorld(host: FixtureCodeHost, tracker: FixtureTracker) {
+export function pullWorld(host: FixtureCodeHost, tracker: PullLinks) {
   const pulls = new Map<string, Pull>();
   const at = (url: string) => host.pullAt(url)!;
   /** Opens `key`'s pull request at `now`: approved at its head, armed, its checks green. Returns its address. */
