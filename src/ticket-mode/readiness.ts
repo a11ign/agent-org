@@ -68,8 +68,11 @@ type KeptRecords = Readonly<{ records: Map<string, ReadinessRecord> } | { unread
 /** Whether `value` is a plain object, as the file's `scores` must be. PURE. */
 const isPlainObject = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
 
+/** Whether `kept` is what the board writes: a plain object with an own `scores` that is a plain object. `{}` and `{ scores: null }` are not. PURE. */
+const holdsScores = (kept: unknown): kept is { scores: Record<string, unknown> } => isPlainObject(kept) && Object.hasOwn(kept, "scores") && isPlainObject(kept.scores);
+
 /**
- * The kept scores, by ticket key. A missing file is none: nothing has been scored yet. A file that is there but cannot be read, or does not hold `{ scores: {...} }`, FAILS CLOSED: it is
+ * The kept scores, by ticket key. A missing file is none: nothing has been scored yet. A file that is there but cannot be read, or does not hold `{ scores: {...} }` (see {@link holdsScores}), FAILS CLOSED: it is
  * answered `unreadable`, so the scorer neither asks the model again for scores it may already hold nor writes over the file (A11-443 review of #2062).
  */
 function readRecords(stateDir: string): KeptRecords {
@@ -77,8 +80,8 @@ function readRecords(stateDir: string): KeptRecords {
   if (!existsSync(path)) return { records: new Map() };
   try {
     const kept = JSON.parse(readFileSync(path, "utf8")) as unknown;
-    if (!isPlainObject(kept) || !isPlainObject(kept.scores ?? {})) return { unreadable: `${path} does not hold { "scores": { ... } }` };
-    return { records: new Map(Object.entries((kept.scores ?? {}) as Record<string, ReadinessRecord>)) };
+    if (!holdsScores(kept)) return { unreadable: `${path} does not hold { "scores": { ... } }` };
+    return { records: new Map(Object.entries(kept.scores as Record<string, ReadinessRecord>)) };
   } catch (error) {
     return { unreadable: `${path} cannot be read: ${(error as Error).message}`.slice(0, REASON_CHARS) };
   }

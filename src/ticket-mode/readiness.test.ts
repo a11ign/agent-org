@@ -157,6 +157,11 @@ test("A11-443: a kept scores file that is JSON but not { scores: {...} } fails c
   await assertFailsClosed(keptFile("[]"), /does not hold/);
 });
 
+test("A11-443: a kept scores file with no scores, or null scores, fails closed: the board always writes { scores: {...} }", async () => {
+  await assertFailsClosed(keptFile("{}"), /does not hold/);
+  await assertFailsClosed(keptFile('{"scores": null}'), /does not hold/);
+});
+
 test("A11-443: a kept scores file that cannot be read fails closed", async () => {
   const dir = tmpDir("readiness-");
   mkdirSync(readinessPath(dir), { recursive: true });
