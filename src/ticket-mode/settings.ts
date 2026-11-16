@@ -107,6 +107,11 @@ export type TicketSettings = Readonly<{
    */
   fixRedMain?: boolean;
   /**
+   * Whether the board runs the daily ticket-mode retro, which writes each repository's lessons from its recent runs (A11-432, `retro/retro-job.ts`). False by default: the feature turns on only once
+   * the offline eval shows no drop. Optional, so a settings object made by hand (a test's) leaves it off.
+   */
+  lessons?: boolean;
+  /**
    * The answerer (A11-438, `auto-answer.ts`): whether a cheap model tries to answer a worker's `needs-human` question from what is written down before the run is parked for a person (`on`, off by default), the confidence
    * an answer needs (`threshold`, 0.9 by default) and the model asked (`model`, `haiku` by default). Optional, so a settings object made by hand (a test's) leaves it off.
    */
@@ -480,6 +485,13 @@ function fixRedMainOf(value: unknown): boolean {
   return value;
 }
 
+/** `tickets.lessons`: true for the board to run the daily retro and write each repository's lessons (A11-432). Absent is false. Any other value is refused by name. */
+function lessonsOf(value: unknown): boolean {
+  if (value === undefined) return false;
+  if (typeof value !== "boolean") throw new TicketSettingsRefusal("tickets.lessons", `must be true or false, not ${JSON.stringify(value)}`);
+  return value;
+}
+
 /** `tickets.capture`: true when this machine can capture the board for a worker. Absent is false. Any other value is refused by name. */
 function captureOf(value: unknown): boolean {
   if (value === undefined) return false;
@@ -678,6 +690,7 @@ export function parseTicketSettings(host: unknown, home: string = homedir(), mac
     drafts: draftsOf(tickets.drafts),
     designTools: designToolsOf(tickets.designTools),
     fixRedMain: fixRedMainOf(tickets.fixRedMain),
+    lessons: lessonsOf(tickets.lessons),
     autoAnswer: autoAnswerOf(tickets),
     capture: captureOf(tickets.capture),
     prReview: prReviewOf(tickets.prReview),
