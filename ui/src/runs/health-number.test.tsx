@@ -56,6 +56,14 @@ describe("the health number", () => {
     expect(number.getAttribute("title")).toContain("2026-10-24: 0\n");
   });
 
+  it("names in the title the questions answered automatically and by a person, apart, on a day that had any (A11-438)", async () => {
+    const view = viewOf([0, 0, 0, 0, 0, 0, 1]);
+    pageWith({ ...view, days: view.days.map((day, index) => ({ ...day, autoAnswers: index === 6 ? 12 : 0, personAnswers: index === 6 ? 5 : 0 })) });
+    const number = await screen.findByText("Person interventions today: 1");
+    expect(number.getAttribute("title")).toContain("2026-10-26: 1 (questions answered: 12 automatically, 5 by a person)");
+    expect(number.getAttribute("title")).toContain("2026-10-25: 0\n");
+  });
+
   it("shows 0 as 0: zero is the target and is seen", async () => {
     pageWith(viewOf([0, 0, 0, 0, 0, 0, 0]));
     const number = await screen.findByText("Person interventions today: 0");
