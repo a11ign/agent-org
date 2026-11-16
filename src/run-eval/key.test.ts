@@ -7,7 +7,7 @@ import { SCHEMA } from "../ticket-mode/config-schema.ts";
 
 test("the switches a run may set are the host file's switches the eval hands its worker, and no other key", () => {
   assert.deepEqual(switchesOf(SCHEMA), ["tickets.drafts"], "tickets.capture is a switch, but the eval's brief offers no screenshot whatever it says");
-  assert.deepEqual(switchesOf(SCHEMA, ["tickets.drafts", "tickets.max", "tickets.lessons"]), ["tickets.drafts"], "a handed key the schema has no switch for is none");
+  assert.deepEqual(switchesOf(SCHEMA, ["tickets.drafts", "tickets.max", "tickets.nonesuch"]), ["tickets.drafts"], "a handed key the schema has no switch for is none");
 });
 
 test("--key reads <switch>=on or <switch>=off, and refuses another shape or a key that is not a switch the worker is handed, naming it", () => {
