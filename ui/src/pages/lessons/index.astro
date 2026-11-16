@@ -1,0 +1,10 @@
+---
+import "../../lessons/lessons.css";
+import { LessonsApp } from "../../lessons/LessonsApp.tsx";
+import { TITLES } from "../../shell/routes.ts";
+import Shell from "../../layouts/Shell.astro";
+---
+
+<Shell title={TITLES.lessons}>
+  <LessonsApp client:load />
+</Shell>

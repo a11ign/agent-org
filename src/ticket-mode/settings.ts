@@ -107,7 +107,7 @@ export type TicketSettings = Readonly<{
    */
   fixRedMain?: boolean;
   /**
-   * Whether the board runs the daily ticket-mode retro, which writes each repository's lessons from its recent runs (A11-432, `retro/retro-job.ts`). False by default: the feature turns on only once
+   * Whether the board runs the daily ticket-mode retro, which writes each repository's lessons from its recent runs (A11-432, `retro/retro-job.ts`), and worker and planner briefs carry them (`retro/lessons-brief.ts`). False by default: the feature turns on only once
    * the offline eval shows no drop. Optional, so a settings object made by hand (a test's) leaves it off.
    */
   lessons?: boolean;
@@ -159,6 +159,8 @@ export type TicketSettings = Readonly<{
   stallMinutes: number;
   /** How many decided past runs of one model and effort, of a kind, the queue footer needs before it suggests them (A11-435, `suggest-model.ts`). */
   suggestMinSample: number;
+  /** The tokens one worker eval run may spend before it stops at the next ticket (A11-431, `run-eval.ts`). {@link DEFAULT_EVAL_TOKEN_CAP} by default. */
+  evalTokenCap: number;
   /**
    * The weighted CI minutes one ticket's pushes may run before the board warns its worker, and, at twice that, holds the run (A11-261); 0 is none. {@link DEFAULT_CI_BUDGET_MINUTES} by default. The figures show whatever it is.
    */
@@ -474,6 +476,12 @@ function designToolsOf(value: unknown): boolean {
 /** What the answerer is set to (A11-438): see `TicketSettings.autoAnswer`. */
 export type AutoAnswerSettings = Readonly<{ on: boolean; threshold: number; model: string }>;
 
+/**
+ * Whether the answerer is on when `tickets.autoAnswer` is absent (A11-438). It turns on only by evidence: true only when the stored replay of past answered questions (`evals/auto-answer/result.json`) meets the bar
+ * (`auto-answer-replay.ts`), and a test holds the two together.
+ */
+export const DEFAULT_AUTO_ANSWER = false;
+
 /** The confidence an automatic answer needs when `tickets.autoAnswerThreshold` is absent (A11-438). */
 export const DEFAULT_AUTO_ANSWER_THRESHOLD = 0.9;
 
@@ -482,7 +490,7 @@ export const DEFAULT_AUTO_ANSWER_THRESHOLD = 0.9;
  * model that is not a word are each refused by name.
  */
 function autoAnswerOf(tickets: Readonly<Record<string, unknown>>): AutoAnswerSettings {
-  const { autoAnswer: on = false, autoAnswerThreshold: threshold = DEFAULT_AUTO_ANSWER_THRESHOLD, autoAnswerModel: model = "haiku" } = tickets;
+  const { autoAnswer: on = DEFAULT_AUTO_ANSWER, autoAnswerThreshold: threshold = DEFAULT_AUTO_ANSWER_THRESHOLD, autoAnswerModel: model = "haiku" } = tickets;
   if (typeof on !== "boolean") throw new TicketSettingsRefusal("tickets.autoAnswer", `must be true or false, not ${JSON.stringify(on)}`);
   if (typeof threshold !== "number" || !(threshold > 0 && threshold <= 1)) throw new TicketSettingsRefusal("tickets.autoAnswerThreshold", `must be a number above 0 and at most 1, not ${JSON.stringify(threshold)}`);
   if (typeof model !== "string" || !/^[\w.[\]-]+$/.test(model)) throw new TicketSettingsRefusal("tickets.autoAnswerModel", `must be a model name, such as "haiku", not ${JSON.stringify(model)}`);
@@ -503,9 +511,15 @@ function lessonsOf(value: unknown): boolean {
   return value;
 }
 
-/** `tickets.readiness`: true for the Tickets page to show each ticket's readiness score (A11-443). Absent is false. Any other value is refused by name. */
+/**
+ * Whether the readiness score is on when `tickets.readiness` is absent (A11-443). It turns on only by evidence: true only when the stored check of past tickets against their runs
+ * (`evals/readiness/result.json`) shows a clear link (`readiness-check.ts`), and a test holds the two together.
+ */
+export const DEFAULT_READINESS = false;
+
+/** `tickets.readiness`: true for the Tickets page to show each ticket's readiness score (A11-443). Absent is {@link DEFAULT_READINESS}. Any other value is refused by name. */
 function readinessOf(value: unknown): boolean {
-  if (value === undefined) return false;
+  if (value === undefined) return DEFAULT_READINESS;
   if (typeof value !== "boolean") throw new TicketSettingsRefusal("tickets.readiness", `must be true or false, not ${JSON.stringify(value)}`);
   return value;
 }
@@ -633,11 +647,18 @@ function instanceOf(value: unknown, machine: string): string {
   return value;
 }
 
-/** The whole-number limits on a worker's run, in the order they are checked: its idle time, the runs a suggestion needs (A11-435), its CI budget and how long an update may wait for it. */
-function workerLimitsOf(tickets: Readonly<Record<string, unknown>>): Pick<TicketSettings, "stallMinutes" | "suggestMinSample" | "ciBudgetMinutes" | "updateMaxDeferHours"> {
+/**
+ * The tokens a worker eval run spends before it stops (A11-431): ten tickets at the 90th percentile of a first round on this board's outcome log on 2026-11-16 (29M tokens, cache
+ * reads included, of 104 runs), rounded up.
+ */
+export const DEFAULT_EVAL_TOKEN_CAP = 300_000_000;
+
+/** The whole-number limits on a worker's run, in the order they are checked: its idle time, the runs a suggestion needs (A11-435), an eval run's tokens (A11-431), its CI budget and how long an update may wait for it. */
+function workerLimitsOf(tickets: Readonly<Record<string, unknown>>): Pick<TicketSettings, "stallMinutes" | "suggestMinSample" | "evalTokenCap" | "ciBudgetMinutes" | "updateMaxDeferHours"> {
   return {
     stallMinutes: positiveInteger(tickets.stallMinutes, "tickets.stallMinutes", 30),
     suggestMinSample: positiveInteger(tickets.suggestMinSample, "tickets.suggestMinSample", 20),
+    evalTokenCap: positiveInteger(tickets.evalTokenCap, "tickets.evalTokenCap", DEFAULT_EVAL_TOKEN_CAP),
     ciBudgetMinutes: nonNegativeInteger(tickets.ciBudgetMinutes, "tickets.ciBudgetMinutes", DEFAULT_CI_BUDGET_MINUTES),
     updateMaxDeferHours: positiveInteger(tickets.updateMaxDeferHours, "tickets.updateMaxDeferHours", 2),
   };

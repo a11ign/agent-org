@@ -11,13 +11,13 @@
 //
 // EVERY REPOSITORY WITH A LESSONS FILE IS RETRO'D, even with nothing to read: its stale lessons still expire. A repository with items asks the model once; one whose answer cannot be read keeps
 // its lessons as they were, but for those that expire.
-import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import type { ExecResult } from "../../plugins/manifest.ts";
 import { latestOutcomes, outcomesPath, readOutcomes } from "../outcomes/outcome-record.ts";
 import type { RunEvent } from "../queue/run-log.ts";
 import { RETRO_DAYS, retroEvidence, type RetroItem } from "./evidence.ts";
-import { type Lesson, lessonsDir, mergeLessons, type Proposal, readLessons, writeLessons } from "./lessons-store.ts";
+import { type Lesson, mergeLessons, type Proposal, readLessons, reposWithLessons, writeLessons } from "./lessons-store.ts";
 import { proposalsOf, replyOf, retroPrompt } from "./retro-prompt.ts";
 import { askHeadless, type ClaudeBounds, type HeadlessExec, headlessArgs } from "../headless-claude.ts";
 export { HEADLESS_ENV as RETRO_ENV } from "../headless-claude.ts";
@@ -86,22 +86,6 @@ export function retroSweep(deps: RetroDeps): () => Promise<void> {
   };
 }
 
-/** The repositories that have a lessons file. */
-function reposWithLessons(stateDir: string): string[] {
-  const dir = lessonsDir(stateDir);
-  if (!existsSync(dir)) return [];
-  return readdirSync(dir).filter((name) => name.endsWith(".json")).flatMap((name) => repoOfFile(name.slice(0, -".json".length)));
-}
-
-/** The repository a lessons file's name stands for, or none for a name that is not one `lessonsPath` writes: a stray file stops no repository's retro. PURE. */
-function repoOfFile(name: string): string[] {
-  try {
-    return [decodeURIComponent(name)];
-  } catch {
-    return [];
-  }
-}
-
 /** One retro at `now`: every repository with items or a lessons file has its lessons merged and written. One that fails is said, and the others go on. */
 export async function runRetro(deps: RetroDeps, now: number): Promise<void> {
   const evidence = retroEvidence({ records: latestOutcomes(readOutcomes(outcomesPath(deps.stateDir))), runLog: deps.runLog(), since: now - RETRO_DAYS * DAY_MS });
@@ -115,10 +99,17 @@ export async function runRetro(deps: RetroDeps, now: number): Promise<void> {
   }
 }
 
+/**
+ * One repository's retro. The file is read again once the model has answered, which takes minutes, so a person's edit or delete on the board meanwhile is kept: an edited lesson keeps the
+ * person's text, and a proposal that names a lesson deleted meanwhile is dropped, not written back as a new one.
+ */
 async function retroOne(deps: RetroDeps, repo: string, items: readonly RetroItem[], now: number): Promise<void> {
-  const lessons = readLessons(deps.stateDir, repo);
-  const proposals = items.length === 0 ? [] : await askFor(deps, repo, lessons, items);
-  writeLessons(deps.stateDir, repo, mergeLessons(lessons, proposals, now, (n) => `L${now.toString(36)}-${n}`));
+  const asked = readLessons(deps.stateDir, repo);
+  const proposals = items.length === 0 ? [] : await askFor(deps, repo, asked, items);
+  const latest = readLessons(deps.stateDir, repo);
+  const deleted = new Set(asked.map(({ id }) => id).filter((id) => !latest.some((lesson) => lesson.id === id)));
+  const kept = proposals.filter(({ id }) => id === undefined || !deleted.has(id));
+  writeLessons(deps.stateDir, repo, mergeLessons(latest, kept, now, (n) => `L${now.toString(36)}-${n}`));
 }
 
 /** The model's checked proposals for `repo`, or none when its answer cannot be read, which is said. */

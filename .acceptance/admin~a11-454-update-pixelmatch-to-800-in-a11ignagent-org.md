@@ -9,7 +9,7 @@ grep -q '"pixelmatch": "8.0.0"' ui/package.json
 grep -q '^  pixelmatch@8.0.0:' ui/pnpm-lock.yaml
 grep -q '^export const PIXEL_THRESHOLD = 0.1;' ui/test/responsive/baselines.ts
 grep -q '^export const DIFFERENCE_THRESHOLD = 0.005;' ui/test/responsive/baselines.ts
-git diff --quiet origin/main -- ui/captures/responsive
+git diff --quiet "$(git merge-base origin/main HEAD)" -- ui/captures/responsive
 pnpm --dir ui install --frozen-lockfile --ignore-scripts
 pnpm --dir ui exec playwright-core install chromium
 (cd ui && npx rstest run --config rstest.config.ts --project node test/responsive/baselines.test.ts)

@@ -166,6 +166,12 @@ function viewOf(record: ReadinessRecord): ReadinessView {
 /** The first line of what a failed run said, for its kept reason. PURE. */
 const failureOf = (answer: ExecResult): string => `the model's answer could not be read (exit ${String(answer.status)}): ${(answer.stderr || answer.stdout).trim().split("\n")[0] ?? ""}`.slice(0, REASON_CHARS);
 
+/** What a headless run's `answer` comes to: the score and reasons its reply holds, or why it holds none. The board's scorer and the offline check (`scripts/check-readiness.ts`) both read it so. PURE. */
+export function answerOf(answer: ExecResult): { score: number; reasons: string[] } | { failed: string } {
+  const reply = answer.status === 0 ? replyOf(answer.stdout) : null;
+  return (reply === null ? null : scoreOf(reply)) ?? { failed: failureOf(answer) };
+}
+
 /**
  * The kept scores, read once; or, while the file cannot be read, why. An unreadable file is read again on the next load (nothing is kept from it), so a file put right is used without a
  * restart, and until then the scorer asks nothing of the model and writes nothing. The unreadable file is said once per reason, not on every page read.
@@ -215,11 +221,10 @@ export function createReadiness(deps: ReadinessDeps) {
     } catch (error) {
       answer = { status: null, stdout: "", stderr: (error as Error).message };
     }
-    const reply = answer.status === 0 ? replyOf(answer.stdout) : null;
-    const scored = reply === null ? null : scoreOf(reply);
+    const scored = answerOf(answer);
     if (latest.get(ticket.key) !== hash) return;
-    if (scored === null) deps.log(`the readiness of ${ticket.key} could not be scored: ${failureOf(answer)}`);
-    keep(ticket.key, { hash, at: deps.now(), ...(scored ?? { failed: failureOf(answer) }) });
+    if ("failed" in scored) deps.log(`the readiness of ${ticket.key} could not be scored: ${scored.failed}`);
+    keep(ticket.key, { hash, at: deps.now(), ...scored });
   }
 
   /** Start the waiting calls while fewer than {@link READINESS_PARALLEL} run. */

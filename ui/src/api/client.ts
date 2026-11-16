@@ -6,6 +6,7 @@ import type {
   SavedChoice, SettingsPreview, SettingsRestored, SettingsSaved, SettingsView, SuggestionView, Ticket, TicketsPageView, TicketView, ViewConnection, WritersView,
 } from "./types.ts";
 import type { ReadinessAnswer } from "../../../src/ticket-mode/readiness.ts";
+import type { LessonsView } from "../../../src/ticket-mode/retro/lessons-route.ts";
 
 /** What a queued run is started with: the model and effort, and whether it is planned first. */
 export type QueueRequest = RunChoice & Readonly<{ plan?: boolean }>;
@@ -65,6 +66,8 @@ export function createClient(connection: ViewConnection | null, { fetch: fetchWi
     flakes: read<FlakesView>("/api/flakes"),
     /** The outcome rollups of a time window (A11-430): `query` is the page's own `?from=&to=`, passed on as it is, or empty for the last seven days. */
     outcomes: (query: string) => read<OutcomesView>(`/api/outcomes${query}`),
+    /** Each repository's lessons, which the daily retro writes and worker and planner briefs carry while `tickets.lessons` is on (A11-432). */
+    lessons: read<LessonsView>("/api/lessons"),
     /** The model and effort the queue footer suggests for the selected tickets, from how past runs of their kind went (A11-435): advisory, the person still chooses. */
     suggestion: (keys: readonly string[], signal?: AbortSignal) => read<SuggestionView>(`/api/suggestion?${new URLSearchParams({ keys: keys.join(",") })}`)(signal),
     settings: read<SettingsView>("/api/settings"),
@@ -86,6 +89,10 @@ export function createClient(connection: ViewConnection | null, { fetch: fetchWi
     closeCheck: (id: string, close: CloseRequest) => post<CheckAnswer>(checked(id), close),
     /** Record a failed check's follow-up: the writer request it was filed by, or null for none. */
     decideFollowUp: (id: string, writer: string | null) => post<CheckAnswer>(`${checked(id)}/follow-up`, { writer }),
+    /** A person's edit of one lesson's text (A11-432): the next brief carries it as they wrote it. Answers every repository's lessons after it. */
+    editLesson: (repo: string, id: string, text: string) => post<LessonsView>("/api/lessons/edit", { repo, id, text }),
+    /** A person's delete of one lesson (A11-432): the next brief carries none. Answers every repository's lessons after it. */
+    deleteLesson: (repo: string, id: string) => post<LessonsView>("/api/lessons/delete", { repo, id }),
 
     writeTickets: (request: WriterRequest) => post<WritersView>("/api/writer", request),
     grillTicket: (key: string) => post<WritersView>("/api/grill-ticket", { key }),
