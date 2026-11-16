@@ -122,7 +122,8 @@ test("a stacked, approved pull request with green checks is merged through the s
   const puts = putCalls(out.calls);
   assert.equal(puts.length, 1, `exactly one stack merge request:\n${out.calls.join("\n")}`);
   assert.match(puts[0]!, new RegExp(`${MERGE_ASYNC} .*-f sha=${HEAD}`), "it names this pull request and pins the head it read");
-  assert.match(puts[0]!, /-f merge_method=merge -f merge_action=default/);
+  assert.match(puts[0]!, /-f merge_action=default/);
+  assert.doesNotMatch(puts[0]!, /merge_method/, "a queued stack merge names no merge method: GitHub refuses custom merge params through a merge queue (#2048)");
   assert.match(puts[0]!, /X-GitHub-Api-Version: 2026-03-10/);
   assert.ok(!out.calls.some((c) => c.startsWith("pr merge")), "a stacked pull request is never given to auto-merge");
   assert.ok(out.calls.every((c) => !/pulls\/(?!311\b)\d+/.test(c)), `no call names another pull request, so the members above are untouched:\n${out.calls.join("\n")}`);
