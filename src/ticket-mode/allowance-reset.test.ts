@@ -28,6 +28,17 @@ async function refuse(runs: Runs, keys: readonly string[]): Promise<Runs> {
 /** NBF-1 and NBF-2 running, both refused at 13:00. */
 const twoRefused = async (): Promise<Runs> => refuse(await liveRuns(["NBF-1", "NBF-2"], 2), ["NBF-1", "NBF-2"]);
 
+/** NBF-1 refused at 13:00 and blocked on the limit menu, held, with the board's next pass made. */
+async function onLimitMenu(): Promise<Runs> {
+  const runs = await liveRuns(["NBF-1"], 1);
+  runs.set(T0);
+  runs.say("NBF-1", "assistant", SAID);
+  runs.herdr.screens.set(String(runs.entry("NBF-1").pane), MENU);
+  runs.status("NBF-1", "blocked");
+  await runs.advance(MIN);
+  return runs;
+}
+
 const sentTo = (runs: Runs, key: string): readonly string[][] =>
   runs.prompts().filter((args) => args[4] === runs.entry(key).pane);
 
@@ -67,13 +78,8 @@ test("A11-434 AC3: two runs parked on the allowance are both resumed after 14:00
 });
 
 test("A11-434: a run on the limit menu at the reset has the menu cancelled with Esc, then is told to carry on", async () => {
-  const runs = await liveRuns(["NBF-1"], 1);
-  runs.set(T0);
-  runs.say("NBF-1", "assistant", SAID);
+  const runs = await onLimitMenu();
   const pane = String(runs.entry("NBF-1").pane);
-  runs.herdr.screens.set(pane, MENU);
-  runs.status("NBF-1", "blocked");
-  await runs.advance(MIN);
   assert.deepEqual(runs.prompts(), []);
   await runs.advance(RESET - runs.now() + MIN);
   assert.deepEqual(runs.prompts().map((args) => args.slice(3)), [["send-keys", pane, "esc"], ["prompt", pane, ALLOWANCE_BACK_PROMPT]]);
@@ -103,4 +109,17 @@ test("A11-434: the queue's hold on starts lapses at its reset, is never shortene
   const withWriters = { ...held, writers } as never as Queue;
   assert.equal(writerToStart(withWriters, RESET - MIN)?.id, "q1", "a check run waits; a person's request starts");
   assert.equal(writerToStart(withWriters, RESET)?.id, "v1");
+});
+
+test("A11-434: a held run stopped while the board reads its pane at the reset is not told to carry on", async () => {
+  const runs = await onLimitMenu();
+  // The person stops the run while herdr answers the read of its limit menu.
+  const shown = runs.herdr.screens;
+  const read = shown.get.bind(shown);
+  shown.get = (target: string) => {
+    if (runs.now() >= RESET) runs.store.set({ ...runs.store.get(), entries: runs.store.get().entries.map((e) => ({ ...e, phase: "finished" as const })) });
+    return read(target);
+  };
+  await runs.advance(RESET - runs.now() + MIN);
+  assert.deepEqual(runs.prompts().filter((args) => args[3] === "prompt"), [], "before this the stopped run was prompted");
 });

@@ -190,17 +190,17 @@ function resumesOf(ctx: PoolContext): Map<string, number> {
 /**
  * Resume a run held on the allowance once its reset has passed (A11-434): its limit menu is cancelled, and it is told to carry on. Its hold stays until its agent is read working or its transcript
  * clear, so a run refused again is held again on what it was refused with. A run with a person at its terminal (a talk session) is theirs to resume, and a run on a dialog other than the limit menu
- * is left to the watch. True when the prompt went.
+ * is left to the watch. The time is recorded before herdr is asked, so a pass that overlaps this one does not tell the run twice; a run that ended or was stopped while its pane was read is not told.
  */
-export async function resumeAfterReset(ctx: PoolContext, entry: Entry, place: RunPlace, seen: string): Promise<boolean> {
+export async function resumeAfterReset(ctx: PoolContext, entry: Entry, place: RunPlace, seen: string): Promise<void> {
   const now = ctx.now();
-  if (entry.allowance === undefined || !dueForResume(entry, entry.allowance, seen, now, resumesOf(ctx).get(place.name))) return false;
-  if (seen !== "idle" && seen !== "done" && !(await cancelLimitMenu(ctx, place))) return false;
+  if (entry.allowance === undefined || !dueForResume(entry, entry.allowance, seen, now, resumesOf(ctx).get(place.name))) return;
   remember(resumesOf(ctx), place.name, now);
+  if (seen !== "idle" && seen !== "done" && !(await cancelLimitMenu(ctx, place))) return;
+  if (ctx.store.get().entries.find((e) => e.ticket.key === entry.ticket.key)?.phase !== "running") return;
   const refused = await sendToAgentAsync(ctx, place, ALLOWANCE_BACK_PROMPT);
   const who = entry.batch ?? entry.ticket.key;
   log(refused === null ? `${who}: its Claude allowance was due back at ${new Date(entry.allowance.until).toISOString()}, so it was told to carry on` : `${who} could not be told its Claude allowance is back: ${refused}`);
-  return refused === null;
 }
 
 /**

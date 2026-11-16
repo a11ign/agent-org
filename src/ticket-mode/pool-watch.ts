@@ -241,7 +241,8 @@ async function watchAllowance(ctx: PoolContext, entry: Entry, seen: string): Pro
   const at = ctx.now();
   if (holdChanges(current, spent)) updateEach(ctx, runMembers(ctx, current), (queue, member) => holdAllowance(queue, member, spent, at));
   // The allowance is the account's, not the run's: no other run starts until the reset, and the run is resumed once it has passed.
-  if (holdStarts(ctx.store.get(), spent) !== ctx.store.get()) update(ctx, (queue) => holdStarts(queue, spent));
+  const queue = ctx.store.get();
+  if (holdStarts(queue, spent) !== queue) update(ctx, (latest) => holdStarts(latest, spent));
   const held = ctx.store.get().entries.find((e) => e.ticket.key === entry.ticket.key);
   if (held?.allowance !== undefined) await resumeAfterReset(ctx, held, runPlace(ctx, held), seen);
   return true;
