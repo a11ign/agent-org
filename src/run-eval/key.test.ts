@@ -6,7 +6,7 @@ import { parseKey, switchesOf, withKey } from "./key.ts";
 import { SCHEMA } from "../ticket-mode/config-schema.ts";
 
 test("the switches a run may set are the host file's switches the eval hands its worker, and no other key", () => {
-  assert.deepEqual(switchesOf(SCHEMA), ["tickets.drafts", "tickets.localReview"], "tickets.capture is a switch, but the eval's brief offers no screenshot whatever it says");
+  assert.deepEqual(switchesOf(SCHEMA), ["tickets.drafts", "tickets.lessons", "tickets.localReview"], "tickets.capture is a switch, but the eval's brief offers no screenshot whatever it says");
   assert.deepEqual(switchesOf(SCHEMA, ["tickets.drafts", "tickets.max", "tickets.noSuchSwitch"]), ["tickets.drafts"], "a handed key the schema has no switch for is none");
 });
 
@@ -14,8 +14,9 @@ test("--key reads <switch>=on or <switch>=off, and refuses another shape or a ke
   assert.deepEqual(parseKey("tickets.drafts=on", SCHEMA), { name: "tickets.drafts", on: true });
   assert.deepEqual(parseKey("tickets.drafts=off", SCHEMA), { name: "tickets.drafts", on: false });
   assert.deepEqual(parseKey("tickets.localReview=on", SCHEMA), { name: "tickets.localReview", on: true }, "A11-440's pre-PR review is measured on and off");
+  assert.deepEqual(parseKey("tickets.lessons=on", SCHEMA), { name: "tickets.lessons", on: true }, "A11-432: the lessons the brief carries are measured on and off");
   assert.throws(() => parseKey("tickets.drafts=yes", SCHEMA), /--key tickets\.drafts=yes is not <key>=on or <key>=off/);
-  assert.throws(() => parseKey("tickets.draft=on", SCHEMA), /--key tickets\.draft is not a switch the eval hands its worker; the switches it hands on are tickets\.drafts, tickets\.localReview/);
+  assert.throws(() => parseKey("tickets.draft=on", SCHEMA), /--key tickets\.draft is not a switch the eval hands its worker; the switches it hands on are tickets\.drafts, tickets\.lessons, tickets\.localReview/);
   assert.throws(() => parseKey("tickets.capture=on", SCHEMA), /--key tickets\.capture is not a switch the eval hands its worker/, "a switch the eval does not hand on would change nothing");
 });
 

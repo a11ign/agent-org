@@ -1,7 +1,7 @@
 // @ts-check
 // module: the lessons a worker or planner brief carries (A11-432, step 2) -- each repository's lessons file, as the daily retro wrote it and a person left it, read as the run starts
 //
-// ONLY WHILE `tickets.lessons` IS ON: the feature ships off, and with it off a brief carries no lessons whatever the files hold (the plan's step 3 turns it on by evidence). The caller,
+// ONLY WHILE `tickets.lessons` IS ON: on by default since the offline eval showed no drop (the plan's step 3), and with it off a brief carries no lessons whatever the files hold. The caller,
 // `lessonsFor` in `pool-prepare.ts`, checks the setting; this module only reads and writes the section.
 //
 // READ AT EACH START, so a person's edit or delete on the board is in the next brief. A file that cannot be read is said and left out: a run is never stopped for want of its lessons.

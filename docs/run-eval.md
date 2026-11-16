@@ -42,7 +42,7 @@ node scripts/run-eval.ts --set first --key tickets.lessons=on
 node scripts/run-eval.ts compare --set first <sha>@tickets.lessons=off <sha>@tickets.lessons=on
 ```
 
-The key must be a switch of the host file (an entry marked `switch` in `src/ticket-mode/config-schema.ts`) that the eval hands its worker, listed in `EVAL_SWITCHES` (`src/run-eval/worker.ts`); any other name is refused before a ticket starts. Today that is `tickets.drafts` and `tickets.localReview` (the pre-PR review, below): a switch the eval does not carry into the worker's brief or settings would run a whole set and change nothing. `tickets.lessons` (M3's daily retro) is a switch now, but the eval does not yet hand it on, so the commands above are refused until it does. A feature that ships off reads its key from the settings the eval reads (`readTicketSettings`), carries it into `HostBrief` so the brief the eval writes depends on it, and adds the key to `EVAL_SWITCHES` in the same pull request. The eval sets the key only in its own read of the host file: the file is not written, and the board does not see it. Each setting is stored apart, as `<sha>@<key>=on.json` and `<sha>@<key>=off.json`.
+The key must be a switch of the host file (an entry marked `switch` in `src/ticket-mode/config-schema.ts`) that the eval hands its worker, listed in `EVAL_SWITCHES` (`src/run-eval/worker.ts`); any other name is refused before a ticket starts. Today those are `tickets.drafts`, `tickets.localReview` (the pre-PR review, below) and `tickets.lessons`: a switch the eval does not carry into the worker's brief or settings would run a whole set and change nothing. With `tickets.lessons` on, the brief carries the lessons of the ticket's repository from the host's own lessons files (`<stateDir>/tickets/lessons/`), as the board's brief would; with it off, none. A host whose retro has never run has no lessons file, so on and off write the same brief: write the lessons first (the daily retro, or a person on the board's Lessons page), or the comparison measures nothing. A feature that ships off reads its key from the settings the eval reads (`readTicketSettings`), carries it into `HostBrief` so the brief the eval writes depends on it, and adds the key to `EVAL_SWITCHES` in the same pull request. The eval sets the key only in its own read of the host file: the file is not written, and the board does not see it. Each setting is stored apart, as `<sha>@<key>=on.json` and `<sha>@<key>=off.json`.
 
 ## The pre-PR review on and off (A11-440)
 
@@ -107,7 +107,7 @@ An entry may add `"test": "<shell command>"`, the check its tree is held to. Wit
 ## What happens to each ticket
 
 1. **A throwaway clone at the base sha.** A bare `origin.git` in the ticket's folder holds the base sha's history and nothing after it, so the merged answer is not in the clone. The history is fetched from the host's checkout when it holds the sha, else from GitHub (read-only).
-2. **The current brief.** The brief is `briefText` from `src/ticket-mode/worker-files.ts`, as the board would write it today. It has the host's notes, plugins, draft choice, pre-PR review skill and the tracker's keywords. The ticket, its parent and their attachments are read from the tracker (read-only). Only these differ from a real run:
+2. **The current brief.** The brief is `briefText` from `src/ticket-mode/worker-files.ts`, as the board would write it today. It has the host's notes, plugins, draft choice, pre-PR review skill, the lessons of the ticket's repository while `tickets.lessons` is on, and the tracker's keywords. The ticket, its parent and their attachments are read from the tracker (read-only). Only these differ from a real run:
    - the worktree and pull-request commands are local stand-ins, and the pull-request stand-in records the body without checking it as `pr:open` would;
    - no connector is listed, and no design tool or screenshot is offered;
    - the ticket's comments are left out, because comments read after the merge name the merged pull request, which is the answer;
@@ -165,3 +165,19 @@ One run, `node scripts/run-eval.ts --set first` from 30a8a5b59 (step 2 of A11-43
 - The other seven fail on tests that fail on this host without any change: in A11-397's tree, 8 of 5,438 failed, all in `src/packaging/host-units`, `src/packaging/org-health`, `src/ticket-mode/serve-ticket-only-host` and `src/tmp-fixtures-are-removed`, and the files the worker changed passed. The same files fail on a clean checkout of main on this host.
 
 So until those are fixed, read the verdict, similarity and outside columns, and compare tests only between two runs on the same host, where the same host failures sit on both sides.
+
+### Lessons off and on (A11-432)
+
+`--set first --key tickets.lessons=off` and `=on` from 3eede5096, both at once, opus at effort medium, 2026-11-16 16:27–19:29 UTC. The on run's brief carried agent-org's 3 lessons, written by one run of the daily retro over the board's last 7 days with the set's own tickets left out (only A11-449 had runs in that window).
+
+| ticket | tests | verdict | similarity | outside | tokens |
+|---|---|---|---|---|---|
+| A11-376 | fail → fail | convinced → convinced | 0.18 → 0.17 | 2 → 1 | 4.7M → 6.1M |
+| A11-397 | fail → fail | not convinced → convinced | 0.27 → 0.16 | 0 → 0 | 6.7M → 4.5M |
+| A11-344 | fail → fail | convinced → convinced | 0.12 → 0.14 | 0 → 0 | 5.2M → 4.3M |
+| A11-340 | fail → fail | not convinced → convinced | 0.03 → 0.04 | 6 → 11 | 18.6M → 30.7M |
+| A11-341 | fail → fail | convinced → convinced | 0.13 → 0.13 | 0 → 1 | 8.8M → 10.0M |
+| A11-297 | fail → fail | not convinced → not convinced | 0.11 → 0.11 | 1 → 1 | 5.3M → 5.5M |
+| **6 tickets** | **0 → 0** | **3 → 5 convinced** | **0.14 → 0.13** | **9 → 14** | **49.3M → 61.1M** |
+
+The other four (A11-449, A11-394, A11-239, A11-140) have no worker run on either side: from about 19:20 UTC every worker exited within seconds, in both runs at once, and printed no tokens. The account answered again by 23:28. Running both runs at once spends the allowance twice as fast, so run them one after the other when the set is long. A failed worker's note now says why, from its result's error or its stderr, and its output is kept in `record/worker-failed.txt`.

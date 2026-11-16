@@ -12,7 +12,7 @@ import { join } from "node:path";
 import { sandboxGitEnv } from "./lib/git-env.ts";
 import { tmpDir } from "./lib/tmp-fixture.ts";
 import { REVIEWER_EFFORT, REVIEWER_MODEL } from "./review-eval.ts";
-import { barMain, compareMain, evaluateTicket, main, report, setFile, ticketReviewPrompt, type RunEvalDeps, type StoreOptions, type TicketResult } from "./run-eval.ts";
+import { barMain, compareMain, evaluateTicket, failureOf, main, report, setFile, WORKER_FAILED_FILE, ticketReviewPrompt, type RunEvalDeps, type StoreOptions, type TicketResult } from "./run-eval.ts";
 import { LOCAL_REVIEW_TOKENS_FILE } from "./run-eval/local-review.ts";
 import { runPath, storeRun, type StoredRun } from "./run-eval/store.ts";
 import { SCHEMA } from "./ticket-mode/config-schema.ts";
@@ -70,7 +70,7 @@ function world(over: Partial<RunEvalDeps> & { worker?: string } = {}) {
     test: async (opts) => (calls.tests.push(opts), true),
     review: async (opts) => (calls.reviews.push(opts), "Looks right.\nVERDICT: convinced\n"),
     reviewer: FAKE_REVIEWER,
-    host: { plugins: [], drafts: false, prReview: null, localReview: false, keywords: DEFAULT_KEYWORDS, binDir: "/home/x/.local/bin" },
+    host: { plugins: [], drafts: false, prReview: null, localReview: false, lessons: [], keywords: DEFAULT_KEYWORDS, binDir: "/home/x/.local/bin" },
     env: { PATH: process.env.PATH, HOME: process.env.HOME, GH_TOKEN: "must-not-reach-the-worker" },
     now: () => clock,
     ...over,
@@ -391,6 +391,21 @@ test("compare refuses, with exit 2, a run that is not stored, a ref that is not 
   assert.deepEqual(refusal(["--set", "first", "0d450e9", "a1b2c3d"]), { code: 2, said: "REFUSED: no stored run of first is 0d450e9 (stored: none)\n" });
   assert.match(refusal(["--set", "first", "HEAD", "a1b2c3d"]).said, /HEAD is not a run/);
   assert.match(refusal(["--set", "first", "0d450e9"]).said, /compare takes --set and two runs/);
+});
+
+test("A11-432 step 3: a worker that fails says why in its note, from its result's error or its stderr, and its output is kept in its record", async () => {
+  const limit = JSON.stringify({ type: "result", is_error: true, result: "Claude AI usage limit reached|1794870000" });
+  const { root, deps, entry } = world({
+    work: async () => {
+      throw Object.assign(new Error("claude exited 1"), { stdout: limit, stderr: "" });
+    },
+  });
+  const result = await evaluateTicket(entry, deps, OPTIONS(root));
+  assert.deepEqual(result.notes.filter((note) => note.startsWith("worker failed")), ["worker failed: claude exited 1 -- Claude AI usage limit reached|1794870000"]);
+  assert.match(readFileSync(join(result.dir, "record", WORKER_FAILED_FILE), "utf8"), /usage limit reached/);
+  assert.equal(failureOf("not json", "\nError: not logged in\nmore"), "Error: not logged in");
+  assert.equal(failureOf(JSON.stringify({ type: "result", is_error: false, result: "done" }), ""), null, "a result that is not an error says nothing");
+  assert.equal(failureOf(undefined, undefined), null);
 });
 
 test("a worker that fails after printing its result is counted at its tokens, so the token cap sees them", async () => {
