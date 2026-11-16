@@ -5,6 +5,7 @@ import type {
   Change, CheckAnswer, ChoiceView, CloseRequest, ConfigView, OutcomesView, ConnectionsView, EditFile, FlakesView, InterventionsView, People, PickView, ProjectView, PluginActionDone, PluginActionRequest, PluginsAnswer, SecretDone, QueueChildrenView, QueueEntryView, QueueView, RunAction, RunChoice,
   SavedChoice, SettingsPreview, SettingsRestored, SettingsSaved, SettingsView, SuggestionView, Ticket, TicketsPageView, TicketView, ViewConnection, WritersView,
 } from "./types.ts";
+import type { ReadinessAnswer } from "../../../src/ticket-mode/readiness.ts";
 
 /** What a queued run is started with: the model and effort, and whether it is planned first. */
 export type QueueRequest = RunChoice & Readonly<{ plan?: boolean }>;
@@ -88,6 +89,8 @@ export function createClient(connection: ViewConnection | null, { fetch: fetchWi
 
     writeTickets: (request: WriterRequest) => post<WritersView>("/api/writer", request),
     grillTicket: (key: string) => post<WritersView>("/api/grill-ticket", { key }),
+    /** Each named ticket's readiness score (A11-443): a POST, since a ticket with none starts its scoring. */
+    readiness: (keys: readonly string[]) => post<ReadinessAnswer>("/api/readiness", { keys }),
     stopWriterRun: (run: string) => post<WritersView>(`/api/writer/${encodeURIComponent(run)}/stop`),
     dismissWriterRun: (run: string) => post<WritersView>(`/api/writer/${encodeURIComponent(run)}/dismiss`),
     /** Clear all: the finished requests named go in one write (the ones the person was shown), and a request still under way stays. */

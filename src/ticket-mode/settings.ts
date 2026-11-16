@@ -118,6 +118,11 @@ export type TicketSettings = Readonly<{
    */
   localReview?: boolean;
   /**
+   * Whether the Tickets page shows each ticket's readiness score, which a cheap model makes once per description (A11-443, `readiness.ts`), and offers the writer for a low one. False by default:
+   * the feature turns on only once the offline check shows low scores go with more rounds, re-plans or Needs-you. Optional, so a settings object made by hand (a test's) leaves it off.
+   */
+  readiness?: boolean;
+  /**
    * The answerer (A11-438, `auto-answer.ts`): whether a cheap model tries to answer a worker's `needs-human` question from what is written down before the run is parked for a person (`on`, off by default), the confidence
    * an answer needs (`threshold`, 0.9 by default) and the model asked (`model`, `haiku` by default). Optional, so a settings object made by hand (a test's) leaves it off.
    */
@@ -498,6 +503,13 @@ function lessonsOf(value: unknown): boolean {
   return value;
 }
 
+/** `tickets.readiness`: true for the Tickets page to show each ticket's readiness score (A11-443). Absent is false. Any other value is refused by name. */
+function readinessOf(value: unknown): boolean {
+  if (value === undefined) return false;
+  if (typeof value !== "boolean") throw new TicketSettingsRefusal("tickets.readiness", `must be true or false, not ${JSON.stringify(value)}`);
+  return value;
+}
+
 /** `tickets.localReview`: true for a worker to run the reviewer on its local diff before it opens a pull request (A11-440). Absent is false. Any other value is refused by name. */
 function localReviewOf(value: unknown): boolean {
   if (value === undefined) return false;
@@ -705,6 +717,7 @@ export function parseTicketSettings(host: unknown, home: string = homedir(), mac
     fixRedMain: fixRedMainOf(tickets.fixRedMain),
     lessons: lessonsOf(tickets.lessons),
     localReview: localReviewOf(tickets.localReview),
+    readiness: readinessOf(tickets.readiness),
     autoAnswer: autoAnswerOf(tickets),
     capture: captureOf(tickets.capture),
     prReview: prReviewOf(tickets.prReview),
