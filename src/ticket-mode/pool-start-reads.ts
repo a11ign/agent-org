@@ -9,7 +9,7 @@
 import { dueBlockerKeys, duePaths, recordBlockersFailure } from "./queue/queue-start-reads.ts";
 import { READ_RETRY_MS, retryTime } from "./queue/start-reads.ts";
 import { headsToRead, readBlockers, readHeads, readPaths } from "./pool-start.ts";
-import { readPushedHeads, takeBranchesToRead } from "./pool-overlap.ts";
+import { readCommittedFiles, readPushedHeads, takeBranchesToRead, takeWorktreesToRead } from "./pool-overlap.ts";
 import { log, messageOf, update } from "./pool-state.ts";
 import type { PoolContext } from "./pool-context.ts";
 
@@ -103,7 +103,13 @@ export function refreshStartReads(ctx: PoolContext, wake: () => Promise<void>): 
   // The branches a queued run could stack on while their runs have no pull request (A11-374): read beside the pass, and never waited for.
   const branches = reading.has(BRANCHES_READING) ? [] : takeBranchesToRead(ctx);
   if (branches.length > 0) readBeside(ctx, [BRANCHES_READING], () => readPushedHeads(ctx, branches), wake);
+  // The files a run at work has committed, so it holds those and not its whole repository (A11-452): read beside the pass too.
+  const worktrees = reading.has(WORKTREES_READING) ? [] : takeWorktreesToRead(ctx);
+  if (worktrees.length > 0) readBeside(ctx, [WORKTREES_READING], () => readCommittedFiles(ctx, worktrees), wake);
 }
+
+/** What `reading` holds while the worktrees of the runs at work are being read (A11-452): one read at a time. */
+const WORKTREES_READING = "worktrees";
 
 /** What `reading` holds while the branches of the runs at work are being read (A11-374): one read at a time. */
 const BRANCHES_READING = "branches";

@@ -120,6 +120,11 @@ export type ViewEntry = Readonly<{
   regionPaths?: readonly string[];
   /** The commit the run's own branch is at on the remote of the repository it works in, once the board read it pushed there (A11-374): what a queued run that overlaps this one builds on while this one has no pull request. */
   pushed?: Readonly<{ repo: string; head: string }>;
+  /**
+   * The files the run's worktree has committed beyond its repository's default branch (A11-452), as `<repo>:<path>`, read from `git diff --name-only <default>...HEAD` in the worktree while the run has no pull request. A run at work holds these
+   * (with its plan's paths) and not its whole repository (`holderClaimOf`). Unset until read, and when the worktree cannot be read or holds no commit: the run then holds its whole repository, as before.
+   */
+  committedFiles?: readonly string[];
   /** The run this one was started stacked on because their files overlap (A11-374): see {@link OverlapStackRecord}. Cleared once the base's work is over (`dropSettledOverlapStacks`). */
   overlapStack?: OverlapStackRecord;
   /** The paths each step section of its plan lists, by step number, when the plan has step sections that list any (A11-175): see `currentStepPaths`. */

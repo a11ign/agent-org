@@ -311,6 +311,8 @@ export type Entry = Readonly<{
   overlapStack?: OverlapStackRecord;
   /** The commit this run's own branch is at on the remote of its repository, once the board read it pushed (A11-374); see `ViewEntry`. */
   pushed?: Readonly<{ repo: string; head: string }>;
+  /** The files this run's worktree has committed beyond its repository's default branch, as `<repo>:<path>`, while it has no pull request (A11-452); see `ViewEntry`. Unset until read, and when the worktree cannot be read or holds no commit. */
+  committedFiles?: readonly string[];
   /**
    * The conflict rounds the board started on each pull request, by URL (A11-374). A conflict round answers no review, so it is not one of the board's own rounds (`rounds`) and the cap does not count it; this count is what the 4th
    * and later round of a pull request names the pull requests it keeps colliding with. Carried to the next round.

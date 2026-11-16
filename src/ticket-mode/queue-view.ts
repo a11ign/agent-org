@@ -22,7 +22,7 @@ import type { Ticket } from "./source.ts";
 export const LIST_FIELDS = [
   "ticket", "phase", "outcome", "waiting", "prompt", "allowance", "declined", "trackerState", "pullStates", "queuedAt", "startedAt", "finishedAt", "workspace", "pane", "blockers", "model", "effort", "pathsFailure", "pathsRetryAt", "blockersReadAt", "blockersFailure", "toolVersion",
   "stoppedForUpdate", "stoppedForBlocker", "ciHold", "resume", "sessionWait", "sessionNote", "overlapOverride", "waitSince", "repos", "plan", "planned", "ticketChange", "ticketChanges", "learned", "review", "batch", "talkFrom",
-  "blockersDeclared", "talk", "partial", "declared", "partialOverruled", "steps", "completedBy", "reopenFailure", "afterMerge", "planSteps", "plannedRepo", "projectRepo", "paths", "regionPaths", "overlapStack", "pushed", "stepPaths", "pullFiles", "waitMerged",
+  "blockersDeclared", "talk", "partial", "declared", "partialOverruled", "steps", "completedBy", "reopenFailure", "afterMerge", "planSteps", "plannedRepo", "projectRepo", "paths", "regionPaths", "overlapStack", "pushed", "committedFiles", "stepPaths", "pullFiles", "waitMerged",
   "published", "worker", "handedBack", "readopted", "lostInRestart", "working", "verdictNotPosted", "reviewerRefused", "retargets", "stackBase", "checkHeads", "queueHeads", "cancelledRerunStopped", "outcomeHeads", "outcomeBlocks", "pullHeads", "tokens", "waitingOnTicket", "opened", "crashRetry", "autoAnswer",
 ] as const satisfies readonly (keyof Entry)[];
 
