@@ -1,0 +1,103 @@
+/* The Outcomes page (A11-430): the window, the three tables of figures and the runs behind the figure chosen. Every value is a token; a wide table scrolls inside its own box, never the page. */
+.outcomes-header {
+  margin-bottom: var(--space-16);
+}
+.outcomes-window {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-8) var(--space-12);
+}
+.outcomes-window-text {
+  color: var(--color-text-count);
+  white-space: nowrap;
+}
+.outcomes-step {
+  color: var(--color-accent-lighter);
+  font-size: var(--font-size-small);
+}
+.outcomes {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-24);
+}
+.outcomes-priced,
+.outcomes-section-words {
+  margin: 0;
+  color: var(--color-text-count);
+  text-wrap: pretty;
+}
+.outcomes-section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-8);
+  min-width: 0;
+}
+.outcomes-section-title {
+  margin: 0;
+  font-size: var(--font-size-14);
+  font-weight: var(--font-weight-semibold);
+}
+.outcomes-runs-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--space-8) var(--space-12);
+}
+.outcomes-scroll {
+  max-width: 100%;
+  overflow-x: auto;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-10);
+  background: var(--color-sidebar);
+}
+.outcomes-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-variant-numeric: tabular-nums;
+}
+.outcomes-table th,
+.outcomes-table td {
+  padding: var(--space-8) var(--space-12);
+  text-align: left;
+  white-space: nowrap;
+}
+.outcomes-table thead th {
+  color: var(--color-text-count);
+  font-size: var(--font-size-small);
+  font-weight: var(--font-weight-medium);
+}
+.outcomes-table tbody tr {
+  border-top: 1px solid var(--color-card-divider);
+}
+.outcomes-table tbody th {
+  font-weight: var(--font-weight-medium);
+}
+.outcomes-table .outcomes-figure,
+.outcomes-table .outcomes-number {
+  text-align: right;
+}
+.outcomes-link {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--color-accent-lighter);
+  font: inherit;
+  cursor: pointer;
+}
+.outcomes-link:hover {
+  text-decoration: underline;
+}
+.outcomes-link[aria-pressed="true"] {
+  padding: 0 var(--space-4);
+  border-radius: var(--radius-4);
+  background: var(--color-selection);
+  color: var(--color-text);
+}
+.outcomes-run,
+.outcomes-pull {
+  color: var(--color-accent-lighter);
+}
+.outcomes-pull + .outcomes-pull {
+  margin-left: var(--space-6);
+}

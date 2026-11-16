@@ -1,0 +1,10 @@
+---
+import "../../outcomes/outcomes.css";
+import { OutcomesApp } from "../../outcomes/OutcomesApp.tsx";
+import { TITLES } from "../../shell/routes.ts";
+import Shell from "../../layouts/Shell.astro";
+---
+
+<Shell title={TITLES.outcomes}>
+  <OutcomesApp client:load />
+</Shell>
