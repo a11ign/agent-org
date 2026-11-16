@@ -245,8 +245,8 @@ const accountOf = (login: string): string => login.replace(/\[bot\]$/, "");
 export function headArrivedAt(pr: Record<string, any>, head: string): number | null {
   const commit = pr.commits?.nodes?.at(-1)?.commit;
   const committed = commit?.oid === head ? time(commit.committedDate) : null;
-  const forcePushes = (Array.isArray(pr.timelineItems?.nodes) ? pr.timelineItems.nodes : [])
-    .filter((node: any) => node?.__typename === "HeadRefForcePushedEvent" && node.afterCommit?.oid === head).map((node: any) => time(node.createdAt));
+  const nodes: readonly ForcePush[] = Array.isArray(pr.timelineItems?.nodes) ? pr.timelineItems.nodes : [];
+  const forcePushes = nodes.flatMap((node) => (node?.__typename === "HeadRefForcePushedEvent" && node.afterCommit?.oid === head ? [time(node.createdAt)] : []));
   return latestOf([committed, ...forcePushes]);
 }
 
@@ -256,6 +256,9 @@ function isReviewComment(login: string, body: string, matchers: readonly ReviewC
   const text = body.trim();
   return matchers.some(({ author, startsWith }) => account === accountOf(author) && text.startsWith(startsWith));
 }
+
+/** A timeline item as the snapshot query asks for it: only a force-push carries the commit it left the branch at. */
+type ForcePush = { __typename?: string; createdAt?: string; afterCommit?: { oid?: string } | null } | null;
 
 type Comment = { createdAt?: string; lastEditedAt?: string | null; body?: string; url?: string; author: Login };
 
