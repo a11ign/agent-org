@@ -25,6 +25,7 @@
   "devDependencies": {
     "@a11ign/toolchain": "0.15.0",
     "@astrojs/check": "^0.9.12",
+    "@emnapi/runtime": "^1.11.3",
     "@rstest/core": "^0.12.6",
     "@testing-library/dom": "^10.4.2",
     "@testing-library/react": "^16.3.3",

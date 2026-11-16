@@ -33,7 +33,8 @@ describe("the Settings: refused by the readers board", () => {
     await page.getByRole("button", { name: "Review changes" }).click();
     const banner = page.getByRole("alert").filter({ hasText: "Not saved. The host file would be refused." });
     await banner.waitFor();
-    expect(await banner.evaluate((element) => getComputedStyle(element).alignItems)).toBe("flex-start");
+    // The CSS says `align-items: flex-start`. Chromium 158 (playwright-core 1.65.0) reports that computed value as `flow-start`, a spelling no CSS spec names, so either is the CSS's value (A11-456).
+    expect(["flex-start", "flow-start"]).toContain(await banner.evaluate((element) => getComputedStyle(element).alignItems));
     expect(await banner.locator("code").allTextContents()).toEqual(["tickets.plan"]);
     expect(await banner.textContent()).toContain("ticket mode: tickets.plan in the host file");
     await context.close();
