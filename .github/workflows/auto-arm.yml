@@ -242,12 +242,15 @@ jobs:
               || refuse "$1; and stack ${stack} could not be read to take #${PULL_REQUEST} out of it"
             gh api -X POST -H "X-GitHub-Api-Version: $API_VERSION" "repos/$REPOSITORY/stacks/$stack/unstack" >/dev/null \
               || refuse "$1; and stack ${stack} could not be unstacked"
-            gh pr merge "$PULL_REQUEST" --repo "$REPOSITORY" --auto --merge
+            armed=true
+            gh pr merge "$PULL_REQUEST" --repo "$REPOSITORY" --auto --merge || armed=false
             if [ "$(jq length <<<"${above:-[]}")" -ge 2 ]; then
               members=(); for member in $(jq -r '.[]' <<<"$above"); do members+=(-F "pull_requests[]=$member"); done
               gh api -X POST -H "X-GitHub-Api-Version: $API_VERSION" "repos/$REPOSITORY/stacks" "${members[@]}" >/dev/null \
                 || echo "::warning::AUTO-ARM: the pull requests above #${PULL_REQUEST} (${above}) could not be stacked again; the board still restacks their branches"
             fi
+            # Arming failed after the stack was dissolved: the members above are stacked again first, then the failure is shown as a refusal, not left as a red job.
+            if [ "$armed" = false ]; then refuse "$1; and #${PULL_REQUEST} was taken out of stack ${stack} but could not be armed"; fi
             exit 0
           }
           # The refusal that unstacking answers is the App's; any other is shown as before.

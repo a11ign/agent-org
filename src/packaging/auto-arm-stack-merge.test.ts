@@ -222,6 +222,15 @@ test("#2048: a stack that cannot be unstacked is a refusal: one comment naming b
   assert.ok(!out.calls.some((c) => c.startsWith("pr merge")), "nothing is armed");
 });
 
+test("#2048: auto-merge failing after the unstack stacks the members above again, then shows one refusal comment (the job is not left red)", () => {
+  const out = runStacked({ ...NOT_AUTHORIZED, ...stackOf([312, 313]), "pr merge": { stderr: "gh: auto-merge is not allowed", exit: 1 } });
+  assert.equal(out.status, 0, out.out);
+  const restack = out.calls.findIndex((c) => c.includes("-X POST") && c.endsWith(`${STACKS} -F pull_requests[]=312 -F pull_requests[]=313`));
+  const comment = out.calls.findIndex((c) => c.includes("-X POST") && c.includes("/comments"));
+  assert.ok(restack >= 0 && comment > restack, out.calls.join("\n"));
+  assert.match(out.calls[comment]!, /could not be armed/);
+});
+
 test("#2048: any other refusal is still shown, and nothing is unstacked", () => {
   const out = runStacked({ [`PUT ${MERGE_ASYNC}`]: { stdout: { message: "Pull request is not mergeable" }, stderr: "gh: Pull request is not mergeable (HTTP 422)", exit: 1 }, ...stackOf([312]) });
   assert.ok(!out.calls.some((c) => c.includes("/unstack") || c.startsWith("pr merge")), out.calls.join("\n"));
