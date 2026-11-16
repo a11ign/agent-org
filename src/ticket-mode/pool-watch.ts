@@ -31,6 +31,7 @@ import { judgedWait, pollWhenDue } from "./wait-on/wait-watch.ts";
 import type { Judged } from "./wait-on/wait-verdict.ts";
 import type { Woke } from "./wait-on/wait-types.ts";
 import { paneBackgroundWork } from "./background-work.ts";
+import { holdAllowance, holdChanges, readAllowance, releaseAllowance } from "./allowance.ts";
 import { endPublish, endWriter, finishWriter } from "./pool-board-runs.ts";
 import { finishCheckRun } from "./pool-check-runs.ts";
 import { isCheckRun, MIGRATION_LIMIT_MS, VERIFIER_LIMIT_MS } from "./after-merge/verify.ts";
@@ -171,6 +172,9 @@ async function watchRunning(ctx: PoolContext, status: ReadonlyMap<string, string
     // The pull requests the worker opened so far are the run's, whatever its outcome will list (A11-358).
     recordOpenedPulls(ctx, entry);
     const sitting = !["working", "idle", "done"].includes(seen);
+    // A worker out of Claude allowance waits for the reset (A11-434): its limit menu is no dialog for a person, and its idle agent has not stopped.
+    const outOfAllowance = await watchAllowance(ctx, entry, seen);
+    if (!stillRunning(ctx, key) || (outOfAllowance && sitting)) continue;
     if (sitting && await answerStartDialog(ctx, runPlace(ctx, entry))) continue;
     // A dialog that is not a start dialog (A11-174): a Claude Code safety prompt is answered No and the agent told why, any other is left for a person, with its first line.
     const prompt = sitting ? await readPrompt(ctx, runPlace(ctx, entry)) : null;
@@ -187,8 +191,8 @@ async function watchRunning(ctx: PoolContext, status: ReadonlyMap<string, string
       settle(ctx, current, parseOutcome(readFileSync(outcomePath, "utf8"), { talk: current.talk === true }));
       // A run still running after its outcome was read wrote `working`: its idle clock runs, and may mark it stalled. A decline it was not yet told of is told now, not to a run that just ended.
       if (sameRun(ctx, current)) {
-        // A run resumed this pass already has the one prompt it needs: its wake and its decline wait for a status read after it (A11-279).
-        if (resumed.has(name)) continue;
+        // A run resumed this pass already has the one prompt it needs: its wake and its decline wait for a status read after it (A11-279). One out of allowance is not stalled, nor idle at a prompt (A11-434).
+        if (resumed.has(name) || outOfAllowance) continue;
         // A plan attach or a result write being tried again keeps its retry note on the card for minutes: the stall watch must not read that as an agent gone quiet, nor prompt the agent (A11-216, A11-304).
         if (!ctx.attachRetries.has(name) && !ctx.writeRetries.has(name)) await watchStall(ctx, current, seen);
         // The pull requests it waits on or opened are read like the run's own: a review asking for changes on one is told to it at once, not at its `until` (A11-358).
@@ -198,6 +202,8 @@ async function watchRunning(ctx: PoolContext, status: ReadonlyMap<string, string
       }
       continue;
     }
+    // An idle run out of allowance has not stopped without an outcome, and is not resumed: the allowance is what it waits for (A11-434).
+    if (outOfAllowance) continue;
     // The message a refused one waits for, before an idle run with no outcome is called over: the status read before it is not the agent's answer to it (A11-174).
     const justTold = await retellDeclined(ctx, current, runPlace(ctx, entry), seen);
     if (!stillRunning(ctx, key)) continue;
@@ -208,6 +214,30 @@ async function watchRunning(ctx: PoolContext, status: ReadonlyMap<string, string
   // What was read of a wait belongs to a run that is still running: a run that ended or was stopped leaves nothing behind.
   for (const name of ctx.waitPolls.keys()) if (!watched.has(name)) ctx.waitPolls.delete(name);
   for (const name of ctx.pullReadAt.keys()) if (!watched.has(name)) ctx.pullReadAt.delete(name);
+}
+
+/**
+ * Read whether a running run's worker is out of Claude allowance, on the status this pass read, and hold or release it as Waiting: allowance on every member of the run (A11-434). Each change is logged once.
+ * True while it is held: the caller neither ends it nor treats its limit menu as a dialog.
+ */
+async function watchAllowance(ctx: PoolContext, entry: Entry, seen: string): Promise<boolean> {
+  const read = await readAllowance(ctx, entry, runPlace(ctx, entry), seen);
+  const current = ctx.store.get().entries.find((e) => e.ticket.key === entry.ticket.key);
+  if (current?.phase !== "running") return false;
+  const who = entry.batch ?? entry.ticket.key;
+  // What cannot be read now keeps the hold the run has: only a read that says the allowance is not spent drops it.
+  if (read.state === "unknown") return current.allowance !== undefined;
+  if (read.state === "clear") {
+    if (current.allowance === undefined) return false;
+    updateEach(ctx, runMembers(ctx, current), releaseAllowance);
+    log(`${who} is no longer out of Claude allowance: its hold is dropped`);
+    return false;
+  }
+  const { spent } = read;
+  if (current.allowance === undefined) log(`${who} is out of Claude allowance until ${new Date(spent.until).toISOString()}: held as Waiting: allowance, not ended ("${spent.text}")`);
+  const at = ctx.now();
+  if (holdChanges(current, spent)) updateEach(ctx, runMembers(ctx, current), (queue, member) => holdAllowance(queue, member, spent, at));
+  return true;
 }
 
 /** Whether the run of `key` is still running in the queue as it is now: its pane was read, or its worker prompted, without holding the loop (A11-282). */

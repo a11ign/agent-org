@@ -270,6 +270,8 @@ export function workStatus(entry: ViewEntry, entries: readonly ViewEntry[] = [])
   if (entry.phase === "queued") return queuedHeld(entry, entries) ? "blocked" : "queued";
   // A talk session is Talking, never Planning, though it carries its planning run's `plan` (A11-171). One whose agent is blocked on a person still needs them.
   // A run parked on a wait its worker declared, or on background work, is Waiting and never In progress: nothing is at work in it (A11-272). A stalled note carries no `waiting`, so it stays In progress, flagged.
+  // A run whose worker is out of Claude allowance is Waiting, never Needs you nor In progress: it waits for the reset, and nothing is asked of a person (A11-434).
+  if (entry.phase !== "finished" && entry.allowance !== undefined) return "waiting";
   if (entry.phase !== "finished") return entry.waiting ? "needs-you" : isTalking(entry) ? "talking" : entry.working?.waiting === true ? "waiting" : entry.plan ? "planning" : entry.review ? "reviewing" : "working";
   // The tracker's integration completed a ticket whose work is partial, and the board could not put it back: a person is asked, ahead of the tracker's word (A11-178).
   if (completedEarly(entry)) return "needs-you";
