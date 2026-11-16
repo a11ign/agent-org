@@ -1,4 +1,5 @@
-import type { ReadinessView, TicketView } from "../api/types.ts";
+import type { ReadinessView } from "../../../src/ticket-mode/readiness.ts";
+import type { TicketView } from "../api/types.ts";
 
 /** The button a low score offers. */
 export const IMPROVE = "Improve with the writer";

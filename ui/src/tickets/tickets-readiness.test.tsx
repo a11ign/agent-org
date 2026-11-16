@@ -1,6 +1,6 @@
 import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { queueingConfig, ticket } from "../../test/fixtures.ts";
-import type { ReadinessAnswer, ReadinessView } from "../api/types.ts";
+import type { ReadinessAnswer, ReadinessView } from "../../../src/ticket-mode/readiness.ts";
 import { answers, BACKLOG, openPage, posts, rowOf, standOf, textOf } from "./tickets-harness.tsx";
 
 // Each ticket's readiness score (A11-443): a low one shows its score, its reasons and "Improve with the writer", which opens the New ticket dialog filled in with the ticket and its reasons.

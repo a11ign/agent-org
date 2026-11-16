@@ -1,4 +1,5 @@
-import type { ConfigView, ReadinessView, TicketView } from "../api/types.ts";
+import type { ReadinessView } from "../../../src/ticket-mode/readiness.ts";
+import type { ConfigView, TicketView } from "../api/types.ts";
 import { NewTicketDialog } from "../new-ticket/NewTicketDialog.tsx";
 import { manualOptionsOf } from "../new-ticket/new-ticket-model.ts";
 import { useNewTicketRequest } from "../new-ticket/use-new-ticket-request.ts";

@@ -100,7 +100,8 @@ describe("every route renders inside the shell", () => {
     await sidebarOf(page).waitFor();
     // The sidebar is in the static HTML, but `/runs/<key>` is served as the runs page: its heading and title name the run only once the island has hydrated.
     await expectSettled(page, { h1, title });
-    expect((await currentItems(page)).sort()).toEqual([...current].sort());
+    // The marks are drawn as the island hydrates, which can end after the heading and title settle: they are waited for as those are, not read once (A11-436's merge queue failed on `[]`).
+    await expect.poll(async () => (await currentItems(page)).sort(), { timeout: HYDRATION_MS }).toEqual([...current].sort());
     await context.close();
   });
 
@@ -257,26 +258,26 @@ describe("keyboard focus", () => {
     return names;
   }
 
-  it("runs the bell, the switcher, Tickets, Runs, the projects, the goals, then Settings, then the page, as the boards lay them out", async () => {
+  it("runs the bell, the switcher, Tickets, Runs, Outcomes, the projects, the goals, then Settings, then the page, as the boards lay them out", async () => {
     const stand: Stand = { instances: { here: { ...STAND.instances?.here, queueFails: { status: 500, error: "boom" } } } };
     const { page, context } = await open("/runs", { stand });
     await page.getByRole("alert").waitFor();
-    expect(await tabbed(page, 5)).toEqual(["Notifications, 0", "select", "Tickets3", "Runs", "Settings"]);
+    expect(await tabbed(page, 6)).toEqual(["Notifications, 0", "select", "Tickets3", "Runs", "Outcomes", "Settings"]);
     expect(await tabbed(page, 1)).toEqual(["Retry"]);
     await context.close();
   });
 
-  it("puts the projects and goals between Runs and Settings on Tickets", async () => {
+  it("puts the projects and goals between Outcomes and Settings on Tickets", async () => {
     const { page, context } = await open("/tickets");
     await page.getByRole("button", { name: /^a11ign/ }).waitFor();
-    expect(await tabbed(page, 11)).toEqual(["Notifications, 0", "select", "Tickets3", "Runs3", "a11ign3", "agent-org1", "All goals3", "Clean boundaries1", "Fleet1", "(no Goal)1", "Settings"]);
+    expect(await tabbed(page, 12)).toEqual(["Notifications, 0", "select", "Tickets3", "Runs3", "Outcomes", "a11ign3", "agent-org1", "All goals3", "Clean boundaries1", "Fleet1", "(no Goal)1", "Settings"]);
     await context.close();
   });
 
-  it("puts the Settings sub-nav between Runs and Settings on Settings", async () => {
+  it("puts the Settings sub-nav between Outcomes and Settings on Settings", async () => {
     const { page, context } = await open("/settings/workers");
     await page.getByRole("link", { name: /^Tickets\s*3$/ }).waitFor();
-    expect(await tabbed(page, 9)).toEqual(["Notifications, 0", "select", "Tickets3", "Runs3", "Models", "Workers", "Machine", "Plugins", "Settings"]);
+    expect(await tabbed(page, 10)).toEqual(["Notifications, 0", "select", "Tickets3", "Runs3", "Outcomes", "Models", "Workers", "Machine", "Plugins", "Settings"]);
     await context.close();
   });
 

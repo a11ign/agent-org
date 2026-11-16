@@ -2,9 +2,10 @@ import type { Answer } from "./answer.ts";
 import { mutate } from "./mutate.ts";
 import { send, type Fetch, type Target } from "./request.ts";
 import type {
-  Change, CheckAnswer, ChoiceView, CloseRequest, ConfigView, ConnectionsView, EditFile, FlakesView, InterventionsView, People, PickView, ProjectView, PluginActionDone, PluginActionRequest, PluginsAnswer, ReadinessAnswer, SecretDone, QueueChildrenView, QueueEntryView, QueueView, RunAction, RunChoice,
+  Change, CheckAnswer, ChoiceView, CloseRequest, ConfigView, OutcomesView, ConnectionsView, EditFile, FlakesView, InterventionsView, People, PickView, ProjectView, PluginActionDone, PluginActionRequest, PluginsAnswer, SecretDone, QueueChildrenView, QueueEntryView, QueueView, RunAction, RunChoice,
   SavedChoice, SettingsPreview, SettingsRestored, SettingsSaved, SettingsView, SuggestionView, Ticket, TicketsPageView, TicketView, ViewConnection, WritersView,
 } from "./types.ts";
+import type { ReadinessAnswer } from "../../../src/ticket-mode/readiness.ts";
 
 /** What a queued run is started with: the model and effort, and whether it is planned first. */
 export type QueueRequest = RunChoice & Readonly<{ plan?: boolean }>;
@@ -64,6 +65,8 @@ export function createClient(connection: ViewConnection | null, { fetch: fetchWi
     flakes: read<FlakesView>("/api/flakes"),
     /** The model and effort the queue footer suggests for the selected tickets, from how past runs of their kind went (A11-435): advisory, the person still chooses. */
     suggestion: (keys: readonly string[], signal?: AbortSignal) => read<SuggestionView>(`/api/suggestion?${new URLSearchParams({ keys: keys.join(",") })}`)(signal),
+    /** The outcome rollups of a time window (A11-430): `query` is the page's own `?from=&to=`, passed on as it is, or empty for the last seven days. */
+    outcomes: (query: string) => read<OutcomesView>(`/api/outcomes${query}`),
     settings: read<SettingsView>("/api/settings"),
     plugins: read<PluginsAnswer>("/api/plugins"),
     /** The plugins, with the instance asked to run their checks again (A11-270): what a person's Retry and "Read the plugins again" send. */

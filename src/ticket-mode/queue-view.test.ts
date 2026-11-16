@@ -111,3 +111,14 @@ test("A11-270: the rows the pages word are the same from the list as from the fu
 });
 
 after(() => served.close());
+
+test("A11-434: a run held on the spent allowance keeps its hold in the list, so the board reads it Waiting: allowance from the list as from the full queue", () => {
+  const reset = Date.UTC(2026, 10, 13, 14, 0, 0);
+  const held = { ticket: { key: "NBF-9", title: "t", url: "u", description: "" }, phase: "running", queuedAt: 0, startedAt: 0, workspace: "w9", pane: "w9:p1",
+    allowance: { text: "You've hit your session limit · resets 2pm (UTC)", until: reset, since: reset - 3_600_000 } } as unknown as Entry;
+  const listed = listEntry(held);
+  assert.deepEqual(listed.allowance, held.allowance);
+  assert.equal(shownStatus(listed as never, undefined), "waiting");
+  assert.equal(reasonOf(listed as never, reset - 60_000).line, reasonOf(held as never, reset - 60_000).line);
+  assert.match(String(reasonOf(listed as never, reset - 60_000).line), /^Waiting: allowance until /);
+});

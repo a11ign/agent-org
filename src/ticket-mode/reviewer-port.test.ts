@@ -15,7 +15,7 @@ import { INSIDE, type DoorRun } from "../review-trust.ts";
 import { REPO } from "../project-identity.ts";
 import { runActions, runStatus } from "./board-view/pull-status-and-notes.ts";
 import { createPool, herdrName, ticketDir } from "./pool.ts";
-import { REVIEWER_LOGIN, earlierReviewWord, gateReviewJudge, loadReviewerGate, readReviewerMemory, cloneKeyForRepository, originOf, reviewedRepositoriesOf, reviewWordAt, writeReviewerMemory, type ReviewerPort, type ReviewerRef } from "./reviewer-port.ts";
+import { REVIEWER_LOGIN, earlierReviewWord, gateReviewJudge, loadReviewerGate, readReviewerMemory, cloneKeyForRepository, reviewedRepositoriesOf, warmOrigins, reviewWordAt, writeReviewerMemory, type ReviewerPort, type ReviewerRef } from "./reviewer-port.ts";
 import { emptyQueue } from "./queue.ts";
 import { enqueue, type Queue } from "./queue/queue-entries-and-outcomes.ts";
 import { pauseQueue, resumeQueue } from "./queue/queue-transitions.ts";
@@ -303,7 +303,7 @@ test("A11-360: the repositories the pool sweeps are the clones' real repositorie
   assert.ok(listed.includes("a11ign/gone"), "a clone whose remote cannot be read is listed under its key, as a repository name");
 });
 
-test("A11-360: cloneKeyForRepository names the key a repository's clone is listed under, and originOf keeps a read origin for a while and says nothing for a path that is no clone", async () => {
+test("A11-360: cloneKeyForRepository names the key a repository's clone is listed under, and the reader warmOrigins answers keeps a read origin for a while and says nothing for a path that is no clone", async () => {
   await loadReviewerGate();
   const remotes: Record<string, string> = { "/c/dotgithub": "https://github.com/a11ign/.github.git" };
   assert.equal(cloneKeyForRepository({ lab: "/c/lab", github: "/c/dotgithub" }, "a11ign/.github", (path) => remotes[path]), "github");
@@ -313,10 +313,17 @@ test("A11-360: cloneKeyForRepository names the key a repository's clone is liste
   git("init", "-q");
   git("remote", "add", "origin", "git@github.com:a11ign/.github.git");
   let clock = 1_000;
-  assert.equal(originOf(clone, () => clock), "git@github.com:a11ign/.github.git", "a clone's origin is read");
+  let origin = await warmOrigins({ github: clone }, () => clock);
+  assert.equal(origin(clone), "git@github.com:a11ign/.github.git", "a warmed clone's origin is read");
+  assert.equal(origin(join(clone, "never-warmed")), undefined, "a clone no warming asked about has no origin: the reader spawns nothing (A11-433)");
   git("remote", "set-url", "origin", "git@github.com:a11ign/lab.git");
-  assert.equal(originOf(clone, () => clock), "git@github.com:a11ign/.github.git", "the answer is kept, so the sweeps do not spawn git every time");
+  origin = await warmOrigins({ github: clone }, () => clock);
+  assert.equal(origin(clone), "git@github.com:a11ign/.github.git", "the answer is kept, so the sweeps do not spawn git every time");
   clock += 400_000;
-  assert.equal(originOf(clone, () => clock), "git@github.com:a11ign/lab.git", "and read again once it is old");
-  assert.equal(originOf(join(clone, "no-such-clone"), () => clock), undefined, "a path that is no clone has no origin");
+  assert.equal(origin(clone), "git@github.com:a11ign/.github.git", "an old answer is still the last one read until the clones are warmed again");
+  origin = await warmOrigins({ github: clone }, () => clock);
+  assert.equal(origin(clone), "git@github.com:a11ign/lab.git", "and read again once it is old");
+  const gone = join(clone, "no-such-clone");
+  origin = await warmOrigins({ gone }, () => clock);
+  assert.equal(origin(gone), undefined, "a path that is no clone has no origin");
 });

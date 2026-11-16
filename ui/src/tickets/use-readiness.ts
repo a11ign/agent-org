@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import type { Client } from "../api/client.ts";
-import type { ReadinessView } from "../api/types.ts";
+import type { ReadinessView } from "../../../src/ticket-mode/readiness.ts";
 
 // EACH TICKET'S READINESS SCORE (A11-443): asked once for the listed tickets each time the list changes, and again every READINESS_POLL_MS while any of them is still being scored. The instance
 // answers from the scores it keeps by each description's hash, so asking again costs no model call; it only starts one for a description it has no score for. It only advises: nothing here holds a

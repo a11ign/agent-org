@@ -3,7 +3,8 @@ import { NEEDS_DECISION, GRILL, GRILL_TITLE, safeHref } from "../../../src/ticke
 import { QUEUE_CHILDREN, QUEUE_CHILDREN_TITLE, childrenNote, isParentTicket, missingPlan, parentTick, projectOf, selectable, ticketCount, type TicketNode } from "../../../src/ticket-mode/board-view/view-types-and-filters.ts";
 import { ownerName } from "../../../src/ticket-mode/assignee-filter.ts";
 import { groupTags } from "../../../src/ticket-mode/label-filters.ts";
-import type { QueueView, ReadinessView, TicketView } from "../api/types.ts";
+import type { ReadinessView } from "../../../src/ticket-mode/readiness.ts";
+import type { QueueView, TicketView } from "../api/types.ts";
 import { FoldChevron, NoPlanMark, PriorityMark } from "./icons.tsx";
 import { IMPROVE, IMPROVE_TITLE, readinessLabel, readinessTitle } from "./readiness-model.ts";
 import type { ReadinessScores } from "./use-readiness.ts";

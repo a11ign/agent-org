@@ -17,7 +17,8 @@ function figures(over: { uptimeMs?: number; sinceFill?: number | null; sinceStar
   return {
     at: NOON, uptimeMs: over.uptimeMs ?? 60 * MINUTE,
     loop: { lastMinute: { p50Ms: 1, p99Ms: 5 }, lastHour: { p50Ms: 1, p99Ms: 9 } }, syncHolds: { lastHour: 0, holdMs: 100 },
-    calls: { linear: { calls: 0, failures: 0, failuresPer100: 0 }, github: { calls: 0, failures: 0, failuresPer100: 0 } },
+    calls: { linear: { calls: 0, failures: 0, failuresPer100: 0 }, github: { calls: 0, failures: 0, failuresPer100: 0 }, herdr: { calls: 0, failures: 0, failuresPer100: 0 } },
+    outsideCalls: { calls: 0, failures: 0, failuresPer100: 0 },
     runs: { sinceLastStartMs: over.sinceStart === undefined ? 2 * MINUTE : over.sinceStart, startable: over.startable ?? 0, freeSlots: over.freeSlots ?? 2, starting: over.starting ?? 0, oldestStartingMs: over.oldestStarting ?? null, holding: null },
     fill: { sinceLastCompletedMs: over.sinceFill === undefined ? 4_000 : over.sinceFill, lastEarlyReturn: over.early === undefined ? null : { reason: over.early, agoMs: 1_000 }, held: [] },
   };
