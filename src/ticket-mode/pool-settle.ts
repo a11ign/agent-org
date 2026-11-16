@@ -26,6 +26,8 @@ import { batchPlanDone, finish, noteWorking, park, planDone, recordPullFiles, re
 import { doneComment, outcomeWritten, PLAN_FILE_BYTES, QUESTION_CHARS } from "./pool-outcome.ts";
 import { writtenStep } from "./outcome.ts";
 import { escalationItem, escalationReason, questionEscalation, questionText } from "./escalation.ts";
+import { mayAnswer } from "./auto-answer.ts";
+import { answerBeforeParking } from "./pool-auto-answer.ts";
 import { isRetryableWrite, WRITE_GIVE_UP_MS, WRITE_RETRY_NOTE, writeWait } from "./result-write-retry.ts";
 import { logEvent, logHas, shortReason, type TrackerWriteStep } from "./queue/run-log.ts";
 import { recordCurrentStep } from "./queue/queue-run-detail.ts";
@@ -53,6 +55,7 @@ import { namedIn } from "./org-repos.ts";
 import { checkoutsOf, checkPush, claimsLostPush, isWorkersOwnRun, reasonWithGitError, wakeWorker } from "./pool-push-check.ts";
 // eslint-disable-next-line clean-code/no-duplication -- import list: the rule matches statement shape, and imports are not duplicated logic
 import { type PoolContext } from "./pool-context.ts";
+import { readFeedbackOf } from "./read-feedback.ts";
 import { recordPlannerDecision, recordWorkerRoundEnded, settlePlannerRound } from "./pool-standoff.ts";
 import { recordCapDecision, settleCapRound } from "./pool-cap.ts";
 import { isCapPlanner } from "./queue/queue-cap.ts";
@@ -116,6 +119,8 @@ export function settle(ctx: PoolContext, entry: Entry, outcome: WrittenOutcome):
   if (claimsLostPush(outcome) && checkouts.length > 0) return void settleLostPush(ctx, entry, outcome, checkouts).catch(settleFailed(entry));
   if (outcome.kind === "done") return void completeDone(ctx, entry, outcome).catch(settleFailed(entry));
   if (outcome.kind === "wrong-repo") return settleWrongRepo(ctx, entry, outcome);
+  // A question already written down is answered before the run is parked for a person (A11-438); with the switch off, or a question it may not take, the run ends as it always has.
+  if (mayAnswer(ctx.settings.autoAnswer, entry, outcome)) return void answerBeforeParking(ctx, entry, outcome, (current) => end(ctx, current, outcome)).catch(settleFailed(entry));
   if (outcome.kind !== "planned") return end(ctx, entry, outcome);
   if (!isPlanning(ctx, entry)) return end(ctx, entry, { kind: "needs-human", reason: "the worker wrote a planned outcome, but its run was not a planning run" });
   // Nothing waits on the attach, so its own failure is caught here rather than left to stop the board.
@@ -901,7 +906,8 @@ export function pullHeadsOf(open: readonly { url: string; read: PullFeedback }[]
   return Object.fromEntries(open.flatMap(({ url, read }) => {
     if (read.head === null) return [];
     const review = reviewAtHead(read);
-    return [[url, { head: read.head, approved: read.approvedAtHead, ...(review === undefined ? {} : { review }), red: read.failing,
+    const comment = read.commentReviewAtHead;
+    return [[url, { head: read.head, approved: read.approvedAtHead, ...(review === undefined ? {} : { review }), ...(comment == null ? {} : { commentReview: { author: comment.author, at: comment.at } }), red: read.failing,
       ...(read.pendingRequired === undefined ? {} : { pending: read.pendingRequired }), mergeable: read.mergeable, ...(read.state === "open" && read.conflicting ? { conflict: { base: read.base } } : {}) }]];
   }));
 }
@@ -924,7 +930,7 @@ export function headCommitsOf(open: readonly { url: string; read: PullFeedback }
  * round's it continued. Only a draft or ready pull request's files are recorded, as before.
  */
 async function recordPullsAtEnd(ctx: PoolContext, entry: Entry, outcome: Outcome): Promise<void> {
-  const { codeHost, feedbackIgnores, ownLogin } = ctx;
+  const { codeHost, ownLogin } = ctx;
   const key = entry.ticket.key;
   const isDraftOrReady = outcome.kind === "draft-pr" || outcome.kind === "ready-pr";
   // Only a run that is asking (`needs-human`) is answered by a push, so no other kind pays for a read of its pull requests.
@@ -935,7 +941,7 @@ async function recordPullsAtEnd(ctx: PoolContext, entry: Entry, outcome: Outcome
   if (self === null) return;
   // What is recorded is the head and files the run ended with, compared with the pull request later: read afresh, not as the sweep read them (A11-365).
   for (const { url } of pulls) codeHost.refreshPull?.(url);
-  const reads = await readEach(pulls, async ({ url }) => ({ url, read: await codeHost.readPullFeedback(url, self, feedbackIgnores) }));
+  const reads = await readEach(pulls, async ({ url }) => ({ url, read: await readFeedbackOf(ctx, url, self) }));
   const readable = reads.filter((pull): pull is { url: string; read: PullFeedback } => pull.read !== null);
   if (readable.length < reads.length) {
     log(`${key}: the files and heads of its pull requests could not be read, so its repository is held until the next watch reads them`);

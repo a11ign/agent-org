@@ -23,7 +23,8 @@ import { cachedWatchdogView, watchdogPath } from "./watchdog-record.ts";
 import { sendJson, type Json } from "./local-http.ts";
 import { pluginsApi } from "./plugins-api.ts";
 import type { ProblemOptions } from "./plugins.ts";
-import { type Api, answerKeyed, plansOf, type ReadBoard, readRoute, terminalRunFor, trackerReads } from "./read-routes.ts";
+import { type Api, answerKeyed, plansOf, type ReadBoard, readinessAnswer, readRoute, terminalRunFor, trackerReads } from "./read-routes.ts";
+import { instanceReadiness } from "./readiness.ts";
 import { hostFilePath, type TicketSettings } from "./settings.ts";
 import type { TicketSource } from "./source.ts";
 import { applyCopies, type BoardSnapshot, copiesOf, LISTEN_FAILED, namedKeys, REQUEST_THREAD, type RequestThreadData, type ToBoard, type ToRequests } from "./thread-messages.ts";
@@ -49,6 +50,8 @@ export function onPathOf(path: string | undefined): (command: string) => boolean
 /** The requests this thread answers itself: the GET routes of `read-routes.ts` and `POST /api/terminal-run`, which reads only the queue and the terminal address. `undefined` for the rest. */
 export async function localRoute(board: ReadBoard, method: string, path: string, body: Json, query: URLSearchParams): Promise<[number, unknown] | undefined> {
   if (method === "POST" && path === "/api/terminal-run") return [200, await terminalRunFor(board, body)];
+  const readiness = readinessAnswer(board, method, path, body);
+  if (readiness !== undefined) return readiness;
   return method === "GET" ? readRoute(board, method, path, query) : undefined;
 }
 
@@ -75,6 +78,8 @@ export function readBoardOf(data: RequestThreadData, parts: Readonly<{ source: T
     store: { get: () => latest().queue },
     pool: { held: () => latest().held, pullReviews: () => latest().pullReviews, claimWarning: () => latest().claimWarning, hostAlerts: () => latest().hostAlerts, reviewerState: () => latest().reviewerState ?? reviewerStateOf(settings, null) },
     known: { tickets: new Map(), claims: new Map() },
+    // The scores are made here, from this thread's copies of the page's tickets, and the model runs under `execFile`, so neither thread is held (A11-443).
+    readiness: instanceReadiness(settings.stateDir),
     claimant: () => data.claimant,
     plans: plansOf(settings, source),
     update: () => latest().update,

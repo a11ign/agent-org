@@ -28,6 +28,7 @@ import { EFFORTS, MODELS, readSettingsView } from "./settings-read.ts";
 import { hostFilePath, type TicketSettings } from "./settings.ts";
 import type { Assignee, People, ScopePage, Ticket, TicketSource, TrackerProject } from "./source.ts";
 import { suggestionView } from "./suggest-model.ts";
+import { type Readiness, readinessRoute } from "./readiness.ts";
 import { type TerminalRun, terminalRunOf } from "./terminal-pair.ts";
 import { PRIORITIES } from "./writer.ts";
 
@@ -88,6 +89,8 @@ export type ReadBoard = Readonly<{
   health?: () => unknown;
   /** The clock `/api/interventions` names today by: the time now when absent. */
   now?: () => number;
+  /** Each listed ticket's readiness score (A11-443), made from this thread's own copies of the page's tickets. Absent, `POST /api/readiness` is not served here. */
+  readiness?: Readiness;
 }> & TrackerReads;
 
 /** Whether the request carries the instance's key in its `x-ticket-token` header. A cookie is never read. */
@@ -246,7 +249,18 @@ async function configView(board: ReadBoard) {
     publish: settings.publish !== null, publisher: publisherStateOf(settings), reviewer: board.pool.reviewerState?.() ?? reviewerStateOf(settings, null), pick: pickLabel(settings.pick), pickDefault: settings.pick === "assigned" ? "you" : "anyone", scopes: board.scopesOnDemand(),
     pickOpen: settings.pick === "assigned" ? "open" : pickLabel(settings.pick), viewer: await board.whoAmI(), projects: board.projectsOnDemand(), search: board.searchable(),
     writer: settings.writer !== null, writerDefault: settings.writer === null ? null : { model: settings.writer.model, effort: settings.writer.effort },
-    writerGrill: settings.terminal !== null, repos: Object.keys(settings.clones), priorities: PRIORITIES, version: update.version, updateNote: update.note };
+    writerGrill: settings.terminal !== null, repos: Object.keys(settings.clones), priorities: PRIORITIES, version: update.version, updateNote: update.note,
+    // The Tickets page asks for readiness scores only while `tickets.readiness` is on (A11-443).
+    readiness: settings.readiness === true };
+}
+
+/**
+ * `POST /api/readiness` (A11-443), from `board`'s own copies of the page's tickets. The request thread answers it itself, so the poll never carries every listed ticket's copy to the board thread,
+ * whose `known` a forwarded call replaces while others are under way (`answerCall`). `undefined` for any other request, or a board with no scorer.
+ */
+export function readinessAnswer(board: Pick<ReadBoard, "settings" | "known" | "readiness">, method: string, path: string, body: Json): [number, unknown] | undefined {
+  if (board.readiness === undefined) return undefined;
+  return readinessRoute({ on: board.settings.readiness === true, readiness: board.readiness, known: board.known.tickets }, method, path, body);
 }
 
 /** The GET routes: the board's config, the Pick lists, the queue and the new-ticket requests. `undefined` when no route here names the request. */

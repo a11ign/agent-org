@@ -41,6 +41,7 @@ import { decisionsChange, decisionsChangedSection } from "./decisions-change.ts"
 import { diffText, type Finding, findingsText, lostText, type OpenedPull, openedText, readLine, type Replan, replanText } from "./brief-ticket-text.ts";
 import type { TicketRead } from "./ticket-read.ts";
 import { commentsText, type CommentsRead } from "./ticket-comments.ts";
+import { localReviewStep } from "./local-review-record.ts";
 
 /** The file a worker writes last, and the one thing the pool and the stop hook read to know a run has ended. */
 export const OUTCOME_FILE = "outcome.json";
@@ -658,15 +659,17 @@ function openPullRequestStep(opening: string, ticket: Ticket, prReview: string |
  * `prReview` is the skill `tickets.prReview` names, which the worker runs on its whole diff before any push or pull request, or null for none.
  * `keywords` are the two words the tracker reads a pull request's body by (`source.ts`), which the brief names; a source without its own gets the defaults.
  * `numberedSteps` is true when the run's plan numbers its steps, which has the worker write the step it is on in its outcome file (A11-219).
+ * `localReviewCommand` is the command that runs the reviewer on the worker's local diff (`ticket:review-local`), given when the machine has `tickets.localReview: true` (A11-440); absent, the brief asks for no such review.
  */
 export function briefText({ ticket, folder, ticketDir, attachments, parent = null, blockers = [], stackedOn = [], overlapStack, steps = [], clones, worktreeCommand, prOpenCommand, notes,
-  connectors = [], planned = false, drafts = true, designTools = false, capture = false, prReview = null, keywords = DEFAULT_KEYWORDS, repo = null, read, comments, findings = [], closed = [], numberedSteps = false, opened = [], held, lost }: {
+  connectors = [], planned = false, drafts = true, designTools = false, capture = false, prReview = null, keywords = DEFAULT_KEYWORDS, repo = null, read, comments, findings = [], closed = [], numberedSteps = false, opened = [], held, lost, localReviewCommand }: {
   ticket: Ticket; folder: string; ticketDir: string; attachments: readonly string[]; parent?: ParentTicket | null; blockers?: readonly Blocker[];
   stackedOn?: readonly StackBase[]; overlapStack?: OverlapStackRecord; steps?: readonly MergedStep[]; clones: Readonly<Record<string, string>>; worktreeCommand: string; prOpenCommand: string; notes?: string;
   connectors?: readonly string[]; planned?: boolean; drafts?: boolean; designTools?: boolean; capture?: boolean; prReview?: string | null; keywords?: Keywords; repo?: string | null;
   read?: TicketRead; comments?: CommentsRead; findings?: readonly Finding[]; closed?: readonly KeptClosedWork[]; numberedSteps?: boolean; opened?: readonly OpenedPull[]; held?: string;
   /** When the board found the run lost in a restart and queued it again (A11-279), for the section that says its worktree holds the earlier run's work. */
   lost?: number;
+  localReviewCommand?: string;
 }): string {
   const stacked = new Set(stackedOn.map(({ key }) => key));
   const repos = Object.entries(clones).map(([name, path]) => `- \`${name}\` at \`${path}\``).join("\n");
@@ -711,7 +714,7 @@ ${plannedText({ planned })}1. Find the cause in the code. Fix it, with a test th
 3. Check your diff against what was asked. List each acceptance criterion in the ticket. Add each decision in its files, its parent's description and its parent's files that applies to this ticket. Find where your diff meets each one, and finish any it misses. If you leave one unmet on purpose, say which and why in the pull request body.
 4. Check what your pull request body will claim. For each behaviour it says you fixed, kept or changed, name the test assertion that checks exactly that behaviour, not a neighbouring value. Run it on the base: a fix must fail there, and a kept behaviour must pass there too. Claim nothing you have no such assertion for, or say it is unchecked.
 ${commitStep(prReview)}
-${capture ? `${captureStep(ticketDir)}\n` : ""}${drafts ? draftPullRequestStep(ticket, prOpenCommand, prReview, keywords, read) : readyPullRequestStep(ticket, prOpenCommand, prReview, keywords, read)}
+${capture ? `${captureStep(ticketDir)}\n` : ""}${localReviewCommand === undefined ? "" : `${localReviewStep(localReviewCommand)}\n`}${drafts ? draftPullRequestStep(ticket, prOpenCommand, prReview, keywords, read) : readyPullRequestStep(ticket, prOpenCommand, prReview, keywords, read)}
 ${designTools ? DESIGN_CHECK_DONE : DESIGN_CHECK_DECLINED}
 
 ${END_AT_PUSH}

@@ -61,13 +61,16 @@ import { PRIORITIES } from "./writer.ts";
 import { sectionsNeeded } from "./open-decisions.ts";
 import { boardDependencySweep } from "./dependency-updates/board.ts";
 import { idleBlockerSweep } from "./idle-blockers.ts";
+import { askClaude, retroSweep } from "./retro/retro-job.ts";
+import { realExecAsync } from "../plugins/real-seams.ts";
 import { afterMergeRoute } from "./after-merge/route.ts";
 import { sessionAnswerRoute } from "./session-answers.ts";
 import { sessionAsksRoute } from "./session-asks.ts";
 import { startHealth } from "./health-route.ts";
 import { CLOSES_WAIT_MS, STARTS_WAIT_MS, untilNoneStarting } from "./shutdown-wait.ts";
 import { startingRunCount } from "./queue/queue-readopt.ts";
-import { answerKeyed, holdsRun, plansOf, readChoice, type ReadBoard, readRoute, type SavedChoice, terminalRunFor, trackerReads, writersViewOf } from "./read-routes.ts";
+import { instanceReadiness, type Readiness, type ReadinessDeps } from "./readiness.ts";
+import { answerKeyed, holdsRun, plansOf, readChoice, type ReadBoard, readinessAnswer, readRoute, type SavedChoice, terminalRunFor, trackerReads, writersViewOf } from "./read-routes.ts";
 import { queueView, type QueueView } from "./queue-view.ts";
 import { startBoardThread } from "./board-thread.ts";
 import { REQUEST_THREAD } from "./thread-messages.ts";
@@ -128,6 +131,8 @@ export type BoardDeps = Readonly<{
   health?: () => unknown;
   /** Told the queue after every change to it: the board thread posts the request thread a snapshot (A11-282). */
   queueChanged?: (queue: Queue) => void;
+  /** How a ticket's readiness is asked of the model (A11-443): a headless `claude` on the cheap model unless a test names its own. */
+  askReadiness?: ReadinessDeps["ask"];
 }>;
 
 /** The name the exposure answers to on this machine, or null when it has none: an exposure that serves nothing is not asked. */
@@ -227,6 +232,7 @@ type Board = ReadBoard & Readonly<{
   wake: () => void;
   queueTickets: (tickets: readonly Ticket[], choice: RunChoice, options: { plan: boolean }) => void;
   plugins: PluginsApi;
+  readiness: Readiness;
 }>;
 
 /** What `/api/choice` answers: the choice as saved. */
@@ -628,6 +634,7 @@ async function routeApi(board: Board, method: string, path: string, body: Json, 
     ?? (await settingsEditRoute(board, method, path, body))
     ?? (await pluginActionRoute(board, method, path, body))
     ?? (await queueActionRoute(board, method, path, body))
+    ?? readinessAnswer(board, method, path, body)
     ?? afterMergeRoute({ stateDir: board.settings.stateDir, now: board.now }, method, path, body)
     ?? sessionAsksRoute({ stateDir: board.settings.stateDir, now: board.now, queue: board.store.get }, method, path, query)
     ?? sessionAnswerRoute({ stateDir: board.settings.stateDir, now: board.now, queue: board.store.get }, method, path, body)
@@ -706,7 +713,8 @@ export function createBoard(deps: BoardDeps) {
   const plugins = pluginsApi({ hostPath: deps.hostPath ?? hostFilePath(), settings, seam: deps.plugins, warm: deps.warmPlugins });
   const update = updateReader(deps, store);
   const paths = { hostPath: deps.hostPath, queuePath: deps.queuePath, choicePath: deps.choicePath, pluginRecord: deps.poolDeps?.pluginRecord };
-  const board: Board = { deps, settings, source, store, pool, now, known, claimant, plans, paths, update, wake, queueTickets, terminalAddress, plugins, health: deps.health, ...trackerReads(source, settings) };
+  const readiness = instanceReadiness(settings.stateDir, deps.askReadiness);
+  const board: Board = { deps, settings, source, store, pool, now, known, claimant, plans, paths, update, wake, queueTickets, terminalAddress, plugins, readiness, health: deps.health, ...trackerReads(source, settings) };
 
   async function api(method: string, path: string, body: Json, query = new URLSearchParams()): Promise<[number, unknown]> {
     return routeApi(board, method, path, body, query);
@@ -718,7 +726,8 @@ export function createBoard(deps: BoardDeps) {
 
   // `known`, `terminalAddress` and `update` are what the board thread's snapshot reads, and where a forwarded write's copies of the page's tickets are kept (`board-thread.ts`).
   // `queueWritten` is the pool's way to queue a new-ticket run's tickets (A11-420), returned so a test of the board drives it as the pool does.
-  return { handle, api, pool, store, queueTickets, queueWritten, wake, plugins, known, terminalAddress, update };
+  // `readiness` is returned so a test of the board can wait for its background scoring (A11-443).
+  return { handle, api, pool, store, queueTickets, queueWritten, wake, plugins, known, terminalAddress, update, readiness };
 }
 
 /**
@@ -739,6 +748,15 @@ export function idleBlockersOf(board: Pick<ReturnType<typeof createBoard>, "stor
   return idleBlockerSweep({
     source, store: board.store, queueTickets: board.queueTickets, takenStates: settings.takenStates, claimant: () => claimantOf(settings),
     runChoice: () => { const { model, effort } = readChoice(deps.choicePath); return { model, effort }; }, log: (line) => process.stderr.write(`ticket:serve: ${line}\n`),
+  });
+}
+
+/** The daily retro's sweep over a board made by {@link createBoard} (A11-432): it reads the queue's run logs and asks `claude` without holding the loop. `serve` schedules it with the feedback sweeps. */
+export function retroOf(board: Pick<ReturnType<typeof createBoard>, "store">, deps: BoardDeps): () => Promise<void> {
+  const { settings } = deps;
+  return retroSweep({
+    on: () => settings.lessons === true, stateDir: settings.stateDir, runLog: () => board.store.get().runLog ?? {}, ask: askClaude(realExecAsync, settings.stateDir),
+    now: deps.now ?? Date.now, log: (line) => process.stderr.write(`ticket:serve: ${line}\n`),
   });
 }
 
@@ -789,7 +807,7 @@ export type Sweeping<P> = { [K in keyof P]: K extends "watchFeedback" | "release
  * what schedules a sweep, which `serve` passes `setInterval` for, so a test sees each sweep and its interval without a timer.
  */
 export function startFeedbackSweeps(pool: Sweeping<Pick<ReturnType<typeof createPool>, "watchFeedback" | "releaseReviewers" | "retargetStacked" | "rebaseStacked" | "reviewNewHeads"> & Partial<Pick<ReturnType<typeof createPool>, "startGreenReviewers" | "cloneMissing">>>,
-  every: (run: () => void, ms: number) => unknown, board: { dependencyUpdates?: () => void | Promise<void>; idleBlockers?: () => void | Promise<void> } = {}): void {
+  every: (run: () => void, ms: number) => unknown, board: { dependencyUpdates?: () => void | Promise<void>; idleBlockers?: () => void | Promise<void>; retro?: () => void | Promise<void> } = {}): void {
   const sweeps: { sweep: () => unknown; failure: string; ms?: number }[] = [
     { sweep: () => pool.watchFeedback(), failure: "the pull requests' feedback could not be read" },
     // Its own sweep, not `watchFeedback`'s: that one returns early when no run is watched, and a merged run is no longer watched.
@@ -808,6 +826,8 @@ export function startFeedbackSweeps(pool: Sweeping<Pick<ReturnType<typeof create
     ...(board.dependencyUpdates === undefined ? [] : [{ sweep: board.dependencyUpdates, failure: "the dependency updates could not be turned into tickets" }]),
     // A ticket In Progress with no run that holds queued runs back is completed or queued (A11-347). Asynchronous, so a failure is said when it settles.
     ...(board.idleBlockers === undefined ? [] : [{ sweep: board.idleBlockers, failure: "the tickets that hold queued runs back with no run could not be completed or queued" }]),
+    // The daily ticket-mode retro writes each repository's lessons (A11-432): it does nothing unless tickets.lessons is on and today's has not run. Asynchronous, so a failure is said when it settles.
+    ...(board.retro === undefined ? [] : [{ sweep: board.retro, failure: "the daily retro could not write the lessons" }]),
   ];
   const said = (failure: string, err: unknown) => process.stderr.write(`ticket:serve: ${failure}: ${String((err as Error)?.message ?? err)}\n`);
   for (const { sweep, failure, ms = FEEDBACK_MS } of sweeps) {
@@ -905,7 +925,7 @@ async function serve(): Promise<void> {
   setInterval(() => { void board.pool.tick(); }, intervalMs(process.env, "TICK_MS", TICK_MS));
   void board.pool.refreshTracker();
   setInterval(() => { void board.pool.refreshTracker(); }, intervalMs(process.env, "TRACKER_MS", TRACKER_MS));
-  startFeedbackSweeps(board.pool, (run, ms) => { setInterval(run, intervalMs(process.env, ms === REVIEW_START_MS ? "REVIEW_START_MS" : "FEEDBACK_MS", ms)); }, { dependencyUpdates: dependencyUpdatesOf(board, boardDeps), idleBlockers: idleBlockersOf(board, boardDeps) });
+  startFeedbackSweeps(board.pool, (run, ms) => { setInterval(run, intervalMs(process.env, ms === REVIEW_START_MS ? "REVIEW_START_MS" : "FEEDBACK_MS", ms)); }, { dependencyUpdates: dependencyUpdatesOf(board, boardDeps), idleBlockers: idleBlockersOf(board, boardDeps), retro: retroOf(board, boardDeps) });
 }
 
 if (import.meta.url === pathToFileURL(process.argv[1] ? realpathSync(process.argv[1]) : "").href) {

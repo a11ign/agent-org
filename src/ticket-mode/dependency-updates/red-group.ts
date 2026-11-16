@@ -26,6 +26,7 @@ async function failingJobsOf({ deps }: SweepContext, failures: readonly Readonly
  */
 export async function watchGroup(ctx: SweepContext, ask: (request: TicketRequest) => Promise<void>, { repository, pull, group, self }: GroupPull): Promise<void> {
   const { deps, state, commit } = ctx;
+  // Read with no review comments: a dependency group is judged by its checks, and the read never reaches a card.
   const read = await deps.codeHost.readPullFeedback(pull.url, self);
   if (read === null) {
     sayOnce(ctx, `dependency updates: ${pull.url}'s checks could not be read, so the next sweep asks again`);

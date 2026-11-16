@@ -82,6 +82,7 @@ test("A11-129: a worker link's run lookup is passed on as a POST, and never as a
 test("the worker terminal's pairing code is passed on as a POST, and never as a GET", () => {
   assert.equal(passedOn("POST", "/api/terminal-pair"), true);
   assert.equal(passedOn("POST", "/api/grill-ticket"), true, "a Grill on a ticket is a write the page makes through the proxy (A11-134)");
+  assert.equal(passedOn("POST", "/api/readiness"), true, "the Tickets page asks for each listed ticket's readiness score (A11-443)");
   assert.equal(passedOn("GET", "/api/terminal-pair"), false);
 });
 

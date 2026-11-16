@@ -13,7 +13,7 @@ import { dismiss as dismissRun, remove as removeQueued, retry as retryQueued } f
 import { retryRefusal } from "./queue/queue-retry-refusal.ts";
 import { refusal } from "./local-http.ts";
 import { logEvent } from "./queue/run-log.ts";
-import { checkGhWrapperAtStart, STOPPED_BEFORE_QUEUEING, createBoard, runNodeProgram, dependencyUpdatesOf, FEEDBACK_MS, holdsKey, idleBlockersOf, REVIEW_START_MS, startFeedbackSweeps, type BoardDeps } from "./server.ts";
+import { checkGhWrapperAtStart, STOPPED_BEFORE_QUEUEING, createBoard, runNodeProgram, dependencyUpdatesOf, FEEDBACK_MS, holdsKey, idleBlockersOf, REVIEW_START_MS, retroOf, startFeedbackSweeps, type BoardDeps } from "./server.ts";
 import type { Outcome } from "./queue/queue-entries-and-outcomes.ts";
 import { DEPENDENCY_PULL_AUTHOR } from "../plugins/contracts/code-host.ts";
 import type { Ticket, TicketSource } from "./source.ts";
@@ -398,7 +398,7 @@ test("A11-257: /api/interventions answers the last 7 days and today's total, fro
   assert.equal(fixed, 200);
   assert.equal(after.today, 1, "the answer to a record is the view after it");
   const [, read] = await b.api("GET", "/api/interventions", {}) as [number, any];
-  assert.deepEqual(read.days.slice(-2), [{ date: "2026-10-25", needsYou: 1, fixes: 0, total: 1, standoffs: 0 }, { date: "2026-10-26", needsYou: 0, fixes: 1, total: 1, standoffs: 0 }]);
+  assert.deepEqual(read.days.slice(-2), [{ date: "2026-10-25", needsYou: 1, fixes: 0, total: 1, standoffs: 0, autoAnswers: 0, personAnswers: 0 }, { date: "2026-10-26", needsYou: 0, fixes: 1, total: 1, standoffs: 0, autoAnswers: 0, personAnswers: 0 }]);
   assert.equal("interventions" in ((await b.api("GET", "/api/queue", {}))[1] as object), false, "the queue's own answer does not carry the tally");
 });
 
@@ -989,6 +989,25 @@ test("A11-199: a placement that is not auto or manual is refused, and so is an a
   assert.deepEqual(b.ticks, [], "and wakes nothing");
 });
 
+test("A11-443: POST /api/readiness scores the page's listed tickets through the board, once per description, and /api/config says whether the page asks; off, the model is never asked", async () => {
+  const asked: string[] = [];
+  const askReadiness = async (prompt: string) => { asked.push(prompt); return { status: 0, stdout: JSON.stringify({ result: '{"score": 15, "reasons": ["No acceptance criteria."]}' }), stderr: "" }; };
+  const vague = () => createFakeTracker([{ ...ticket("NBF-1"), description: "Make the board nicer." }]);
+  const on = board(4747, { readiness: true }, { askReadiness }, vague());
+  await on.api("GET", "/api/tickets", {});
+  const [, config] = await on.api("GET", "/api/config", {}) as [number, any];
+  assert.equal(config.readiness, true);
+  assert.deepEqual(await on.api("POST", "/api/readiness", { keys: ["NBF-1"] }), [200, { on: true, scores: { "NBF-1": { state: "pending" } } }]);
+  await on.readiness.idle();
+  assert.deepEqual(await on.api("POST", "/api/readiness", { keys: ["NBF-1"] }), [200, { on: true, scores: { "NBF-1": { state: "scored", score: 15, reasons: ["No acceptance criteria."], low: true } } }]);
+  assert.equal(asked.length, 1);
+  const off = board(4747, {}, { askReadiness }, vague());
+  await off.api("GET", "/api/tickets", {});
+  assert.equal(((await off.api("GET", "/api/config", {})) as [number, any])[1].readiness, false);
+  assert.deepEqual(await off.api("POST", "/api/readiness", { keys: ["NBF-1"] }), [200, { on: false, scores: {} }]);
+  assert.equal(asked.length, 1);
+});
+
 test("grill is refused without a terminal, and a machine with no writer writes no tickets", async () => {
   const tracker = creating();
   const plain = board(4747, { writer: WRITER.writer }, {}, tracker);
@@ -1497,7 +1516,7 @@ test("A11-163: GET /api/plugins answers every concern in order with each plugin'
   assert.equal(status, 200);
   assert.deepEqual(view.concerns.map(({ concern }) => concern), ["tracker", "codeHost", "publisher", "reviewer", "exposure", "messaging"]);
   assert.deepEqual(["linear", "github", "tailscale", "local", "slack"].map((name) => { const e = entryOf(view, name); return [name, e.version, e.contract, e.state]; }),
-    [["linear", "v1.2.3", "1.9", "enabled"], ["github", "v1.2.3", "4.1", "enabled"], ["tailscale", "v1.2.3", "1.2", "enabled"], ["local", "v1.2.3", "1.1", "not installed"], ["slack", "v1.2.3", "1.1", "not installed"]]);
+    [["linear", "v1.2.3", "1.9", "enabled"], ["github", "v1.2.3", "4.2", "enabled"], ["tailscale", "v1.2.3", "1.2", "enabled"], ["local", "v1.2.3", "1.1", "not installed"], ["slack", "v1.2.3", "1.1", "not installed"]]);
   assert.equal(view.concerns.find(({ concern }) => concern === "publisher")?.empty?.text, "None");
   assert.deepEqual(Object.keys(view.bases).sort(), ["host.json"], "this machine declares no project, so only the host file has a base");
   assert.equal(view.note, null);
@@ -1713,6 +1732,20 @@ test("A11-347: the idle-blocker sweep is scheduled on the feedback cadence besid
   const said = await saidWhileRunning(scheduled[5]!.run);
   assert.deepEqual(calls, ["idleBlockers"]);
   assert.deepEqual(said, ["ticket:serve: the tickets that hold queued runs back with no run could not be completed or queued: the tracker is down\n"]);
+});
+
+test("A11-432: the daily retro is scheduled on the feedback cadence beside the others, and a failure of it is said when it settles, without stopping the rest", async () => {
+  const scheduled = scheduledWith({ idleBlockers: () => {}, retro: () => Promise.reject(new Error("the outcome log is not JSON")) });
+  assert.deepEqual(scheduled.map(({ ms }) => ms), Array(7).fill(FEEDBACK_MS), "on the feedback cadence, a sweep of its own");
+  const said = await saidWhileRunning(scheduled[6]!.run);
+  assert.deepEqual(said, ["ticket:serve: the daily retro could not write the lessons: the outcome log is not JSON\n"]);
+});
+
+test("A11-432: the board's retro sweep does nothing while tickets.lessons is off: no model is asked and no lessons are written", async () => {
+  const b = board();
+  await retroOf(b, { settings: b.settings, now: () => 7 } as BoardDeps)();
+  assert.equal(existsSync(join(b.settings.stateDir, "tickets", "lessons")), false);
+  assert.equal(existsSync(join(b.settings.stateDir, "tickets", "lessons-retro.json")), false);
 });
 
 test("A11-347: the board's idle-blocker sweep queues a ticket this instance claimed, on the saved choice, and wakes the pool; the same ticket claimed by nobody is left", async () => {
