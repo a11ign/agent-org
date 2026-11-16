@@ -44,6 +44,7 @@ function refusal(off: StoredRun, on: StoredRun): string | null {
   if (setting(off) !== false || setting(on) !== true) return `the bar needs a run with ${PRE_REVIEW_KEY}=off, then one with ${PRE_REVIEW_KEY}=on`;
   if (off.sha !== on.sha) return `the two runs are at different shas (${off.sha.slice(0, 7)} and ${on.sha.slice(0, 7)}): the bar compares the key alone, at one sha`;
   if (off.dirty || on.dirty) return "a run with uncommitted changes is not named by its sha: run both from a commit";
+  if (off.model !== on.model || off.effort !== on.effort) return `the two runs used different workers (${off.model} at ${off.effort}, ${on.model} at ${on.effort}): the bar compares the key alone`;
   return null;
 }
 
@@ -115,6 +116,7 @@ export function barText(off: StoredRun, on: StoredRun, round: RoundCost): { text
   const bar = preReviewBar(off, on, round);
   const lines = [
     `pre-PR review bar (${PRE_REVIEW_KEY}), ${on.set} at ${on.sha.slice(0, 7)}: off → on (${on.model}, effort ${on.effort})`,
+    ...[off, on].filter(({ stopped }) => stopped !== null).map(({ key, stopped }) => `the ${key?.on === true ? "on" : "off"} run was stopped by the token cap after ${stopped?.ran} of ${stopped?.of} tickets: the bar is over the tickets both ran`),
     "", ...ticketRows(pairsOf(off, on)), "",
     verdictLine(bar),
     `feedback rounds saved: ${bar.roundsSaved}, at ${withCommas(round.tokens)} tokens a round (the median of ${round.rounds} rounds after a run's first in the outcome log) = ${withCommas(bar.savedTokens)} tokens`,

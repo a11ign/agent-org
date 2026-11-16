@@ -20,7 +20,7 @@ test("each review's tokens are appended to the record and its reply handed back;
   await assert.rejects(countingReview(record, async () => {
     throw new Error("codex: not logged in");
   })(ASK), /not logged in/, "a reviewer that could not run still fails the review, as ticket:review-local records it");
-  assert.equal(readFileSync(join(record, LOCAL_REVIEW_TOKENS_FILE), "utf8"), "1500\n?\n?\n");
+  assert.equal(readFileSync(join(record, LOCAL_REVIEW_TOKENS_FILE), "utf8"), "started\n1500\nstarted\n?\nstarted\n?\n");
 });
 
 test("a ticket's reviews are counted and their tokens added up; one unknown makes the total unknown; none is 0 reviews of 0 tokens", async () => {
@@ -33,11 +33,20 @@ test("a ticket's reviews are counted and their tokens added up; one unknown make
   assert.deepEqual(localReviewsOf(tmpDir("eval-local-review-")), { count: 0, tokens: 0 });
 });
 
+test("a review killed before it answered (the worker's command timed out) is counted, with its tokens unknown rather than free", async () => {
+  const record = tmpDir("eval-local-review-");
+  await countingReview(record, async () => ({ text: "", tokens: 1500 }))(ASK);
+  void countingReview(record, () => new Promise<never>(() => {}))(ASK);  // never answers, as a killed stand-in never does
+  assert.deepEqual(localReviewsOf(record), { count: 2, tokens: null });
+});
+
 test("codex's tokens are every completed turn's input (cached included) and output (reasoning included), and unknown when no turn completed", () => {
   const turn = (input: number, output: number) => JSON.stringify({ type: "turn.completed", usage: { input_tokens: input, cached_input_tokens: input - 1, output_tokens: output, reasoning_output_tokens: 1 } });
   assert.equal(codexTokensOf([JSON.stringify({ type: "thread.started" }), turn(11890, 5), "Reading additional input from stdin...", turn(100, 20), ""].join("\n")), 12015);
   assert.equal(codexTokensOf(JSON.stringify({ type: "item.completed", item: { type: "agent_message", text: "ok" } })), null);
   assert.equal(codexTokensOf(""), null);
+  assert.equal(codexTokensOf([turn(100, 20), JSON.stringify({ type: "turn.completed", usage: {} })].join("\n")), null, "a turn whose usage does not say is unknown, never 0");
+  assert.equal(codexTokensOf(JSON.stringify({ type: "turn.completed" })), null);
 });
 
 test("the stand-in's program starts in the worker's offline environment, whose host file does not exist, and refuses a call that names no ticket folder", () => {
@@ -49,4 +58,7 @@ test("the stand-in's program starts in the worker's offline environment, whose h
     "it loaded agent-org's modules, which read the host file as they load, and reached its own refusal");
   assert.equal(ran.status, 2);
   assert.equal(spawnSync(program, [...args, "--ticket-dir", record, "--record", record, "--repo", "x"], { cwd: record, env, encoding: "utf8" }).status, 2, "an unknown flag is refused");
+  const redirected = spawnSync(program, [...args, "--ticket-dir", record, "--record", record, "--record", join(record, "elsewhere")], { cwd: record, env, encoding: "utf8" });
+  assert.deepEqual([redirected.status, redirected.stderr], [2, "eval-review-local: --record is the eval's to give; run it as eval-review-local [--base <branch>]\n"],
+    "a worker that names the record again would have its review read as free");
 });

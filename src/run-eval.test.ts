@@ -40,7 +40,7 @@ const WORKS = (files: Record<string, string>) => [
 ].join(" && ");
 
 /** The pre-PR review's program: it appends a review of 1,234 tokens to the record its stand-in names, as `scripts/eval-review-local.ts` does through `countingReview`, and is convinced. */
-const FAKE_REVIEWER = ["sh", "-c", `while [ $# -gt 0 ]; do [ "$1" = --record ] && record="$2"; shift; done; echo 1234 >> "$record/${LOCAL_REVIEW_TOKENS_FILE}"`, "fake-reviewer"];
+const FAKE_REVIEWER = ["sh", "-c", `while [ $# -gt 0 ]; do [ "$1" = --record ] && record="$2"; shift; done; printf 'started\\n1234\\n' >> "$record/${LOCAL_REVIEW_TOKENS_FILE}"`, "fake-reviewer"];
 
 /** A source repository with the base and the merged answer, and fakes for everything the eval reads and runs. `over` replaces any of them. */
 function world(over: Partial<RunEvalDeps> & { worker?: string } = {}) {

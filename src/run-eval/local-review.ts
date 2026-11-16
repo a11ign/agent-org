@@ -3,8 +3,9 @@
 //
 // WITH `tickets.localReview` ON, the eval's brief asks the worker to run `eval-review-local` (`sandbox.ts`) where a board's brief names `agent-org ticket:review-local`. The stand-in runs
 // `runLocalReview` itself, the same prompt, reviewer, record and exit codes, against the eval's ticket folder, so the worker reads what a real one would. Only the reviewer's tokens are added:
-// each review appends one line to the record's `local-review-tokens.log`, its tokens or `?` when the reviewer's output did not say or it could not run, so the cost of the pre-PR review can be
-// set against the feedback rounds it saves (`pre-review-bar.ts`).
+// each review appends `started` to the record's `local-review-tokens.log` before it asks, and its tokens after, or `?` when the reviewer's output did not say or it could not run. A review
+// killed before it answered (the worker's command timed out) leaves a `started` with nothing after it, and its tokens are unknown, never 0. So the cost of the pre-PR review can be set
+// against the feedback rounds it saves (`pre-review-bar.ts`).
 import { appendFileSync, existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -25,11 +26,13 @@ export const reviewerProgram = (hostFile: string, node: string = process.execPat
 export const LOCAL_REVIEW_TOKENS_FILE = "local-review-tokens.log";
 
 const UNKNOWN = "?";
+const STARTED = "started";
 
 /** The reviewer `runLocalReview` is handed: `review`, with each call's tokens appended to the record, `?` when unknown or when it threw (which it still throws). */
 export function countingReview(record: string, review: (ask: ReviewAsk) => Promise<CountedReview>): (ask: ReviewAsk) => Promise<string> {
   const log = join(record, LOCAL_REVIEW_TOKENS_FILE);
   return async (ask) => {
+    appendFileSync(log, `${STARTED}\n`);
     let counted: CountedReview;
     try {
       counted = await review(ask);
@@ -45,10 +48,12 @@ export function countingReview(record: string, review: (ask: ReviewAsk) => Promi
 /** The pre-PR reviews of one ticket: how many ran, and their tokens added up, null when any one's is unknown. */
 export type LocalReviews = Readonly<{ count: number; tokens: number | null }>;
 
-/** The pre-PR reviews the record holds: none when the worker ran none (or the key was off). */
+/** The pre-PR reviews the record holds: none when the worker ran none (or the key was off). The tokens are unknown when one review's are, or one never answered. */
 export function localReviewsOf(record: string): LocalReviews {
   const log = join(record, LOCAL_REVIEW_TOKENS_FILE);
   const lines = existsSync(log) ? readFileSync(log, "utf8").split("\n").filter((line) => line.trim() !== "") : [];
-  const known = lines.map(Number).filter((tokens) => Number.isFinite(tokens));
-  return { count: lines.length, tokens: known.length === lines.length ? known.reduce((total, tokens) => total + tokens, 0) : null };
+  const started = lines.filter((line) => line === STARTED).length;
+  const answered = lines.filter((line) => line !== STARTED);
+  const known = answered.map(Number).filter((tokens) => Number.isFinite(tokens));
+  return { count: started, tokens: known.length === started && answered.length === started ? known.reduce((total, tokens) => total + tokens, 0) : null };
 }

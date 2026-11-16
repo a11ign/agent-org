@@ -22,14 +22,20 @@ function refuse(why: string): never {
   process.exit(2);
 }
 
+/** The options only the stand-in gives: a worker that names one again would send the review's record or tokens elsewhere, and the eval would read its review as free. */
+const STAND_IN_ONLY = ["ticket-dir", "record"];
+
 /** The ticket's folder and the record the stand-in names, and the `--base` the worker may give. */
 function argsOf(): { ticketDir: string; record: string; base: string | null } {
   let values: { "ticket-dir"?: string; record?: string; base?: string };
+  let tokens: readonly { kind: string; name?: string }[];
   try {
-    ({ values } = parseArgs({ options: { "ticket-dir": { type: "string" }, record: { type: "string" }, base: { type: "string" } }, strict: true }));
+    ({ values, tokens } = parseArgs({ options: { "ticket-dir": { type: "string" }, record: { type: "string" }, base: { type: "string" } }, strict: true, tokens: true }));
   } catch (error) {
     return refuse(`${(error as Error).message}\nusage: eval-review-local [--base <branch>]`);
   }
+  const repeated = STAND_IN_ONLY.find((name) => tokens.filter((token) => token.kind === "option" && token.name === name).length > 1);
+  if (repeated !== undefined) return refuse(`--${repeated} is the eval's to give; run it as eval-review-local [--base <branch>]`);
   const { "ticket-dir": ticketDir, record, base } = values;
   if (ticketDir === undefined || record === undefined) return refuse("the eval's stand-in names --ticket-dir and --record; run it as eval-review-local [--base <branch>]");
   return { ticketDir, record, base: base ?? null };

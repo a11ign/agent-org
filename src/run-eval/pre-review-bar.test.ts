@@ -79,6 +79,15 @@ test("only the key's off run and on run, at one committed sha, are set against t
   assert.throws(() => preReviewBar(runOf(false, [], { key: null }), on, ROUND), /needs a run with tickets\.localReview=off/);
   assert.throws(() => preReviewBar(runOf(false, [], { sha: "0d450e9".padEnd(40, "0") }), on, ROUND), /different shas \(0d450e9 and a1b2c3d\)/);
   assert.throws(() => preReviewBar(OFF, runOf(true, [], { dirty: true }), ROUND), /uncommitted changes/);
+  assert.throws(() => preReviewBar(OFF, runOf(true, [], { model: "sonnet" }), ROUND), /different workers \(opus at medium, sonnet at medium\)/);
+  assert.throws(() => preReviewBar(OFF, runOf(true, [], { effort: "high" }), ROUND), /different workers/);
+});
+
+test("a run the token cap stopped is named, and the bar is over the tickets both ran", () => {
+  const on = runOf(true, [row("A11-1", "convinced", { count: 1, tokens: 1 })], { stopped: { ran: 1, of: 4, tokens: 9, cap: 9, notStarted: ["A11-2", "A11-3", "A11-4"] } });
+  const { text } = barText(OFF, on, ROUND);
+  assert.match(text, /^the on run was stopped by the token cap after 1 of 4 tickets: the bar is over the tickets both ran$/m);
+  assert.match(text, /^first-pass verdict: 0 → 1 convinced of 1 /m);
 });
 
 const tokens = (input: number) => ({ "claude-opus-5-5": { input, output: 0, cacheRead: 0, cacheWrite5m: 0, cacheWrite1h: 0 } });
