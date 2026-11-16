@@ -7,13 +7,17 @@ import { repoOf } from "./board-view/waits-on.ts";
 import { overlapHits } from "./board-view/overlap-hold.ts";
 import { blockingHits } from "./board-view/overlap-stack.ts";
 import { READ_RETRY_MS } from "./queue/start-reads.ts";
-import { dropSettledOverlapStacks, recordOverlapStack, recordPushedHeads, recordRegionPaths, sameList } from "./queue/queue-overlap-stack.ts";
+import { dropSettledOverlapStacks, recordOverlapStack, recordCommittedFiles, recordPushedHeads, recordRegionPaths, sameList } from "./queue/queue-overlap-stack.ts";
 import type { Entry } from "./queue/queue-entries-and-outcomes.ts";
-import { log, messageOf, update } from "./pool-state.ts";
+import { isPlanning, log, messageOf, runPlace, update } from "./pool-state.ts";
+import { worktreesIn } from "./pool-paths.ts";
+import { pullsOf } from "./board-view/view-types-and-filters.ts";
+import type { Git } from "./worktree.ts";
 import { regionClaimsOf } from "./region-claims.ts";
 import { remoteHead } from "./stack-rebase.ts";
 import { withinTime } from "../install/time-limit.ts";
 import type { PoolContext } from "./pool-context.ts";
+import { join } from "node:path";
 
 /** Record the Region of `description` on the run `key`, when it is not the one the run holds. Nothing is written for a run that is gone or holds it already. */
 export function noteRegion(ctx: PoolContext, key: string, description: string): void {
@@ -87,4 +91,64 @@ export async function readPushedHeads(ctx: PoolContext, runs: readonly Entry[]):
   }));
   const pushed = new Map(found.filter((each) => each !== null));
   if (pushed.size > 0) update(ctx, (queue) => recordPushedHeads(queue, pushed));
+}
+
+/** When the worktrees of the runs at work were last read, by pool: the diffs are not taken on every pass. */
+const worktreesAskedAt = new WeakMap<object, number>();
+
+/** The remote-tracking refs a worktree's diff is taken from, in order: the default branch as the clone knows it, then the two names a default branch has. */
+const DIFF_BASES = ["origin/HEAD", "origin/main", "origin/master"] as const;
+
+/**
+ * The runs whose worktree the board is to read now (A11-452): a run at work (not planning, not a talk) in a repository this machine has, with no pull request yet, while a run is queued in that repository, since only a queued run
+ * is held by what the worker holds. Asked for at most once in {@link READ_RETRY_MS}, and the time is taken here, as the read is begun. A run keeps being read while it is at work, so the files it commits later are held too.
+ */
+export function takeWorktreesToRead(ctx: PoolContext): Entry[] {
+  const { entries } = ctx.store.get();
+  const asked = worktreesAskedAt.get(ctx.store);
+  if (asked !== undefined && ctx.now() - asked < READ_RETRY_MS) return [];
+  const queuedIn = new Set(entries.filter((entry) => entry.phase === "queued").map((entry) => repoOf(entry)));
+  const runs = entries.filter((entry) => isWorktreeToRead(ctx, entry) && queuedIn.has(repoOf(entry)));
+  if (runs.length > 0) worktreesAskedAt.set(ctx.store, ctx.now());
+  return runs;
+}
+
+/** Whether the worktree of `entry` is to be read: it is at work and plans nothing, has no pull request, and its repository is cloned here. PURE. */
+function isWorktreeToRead(ctx: PoolContext, entry: Entry): boolean {
+  const repo = repoOf(entry);
+  const atWork = (entry.phase === "starting" || entry.phase === "running") && !isPlanning(ctx, entry) && entry.talk !== true;
+  return atWork && repo !== null && ctx.settings.clones[repo] !== undefined && pullsOf(entry).length === 0;
+}
+
+/** The files `HEAD` of `worktree` has beyond the default branch (`git diff --name-only <base>...HEAD`), each as `<repo>:<path>`, from the first of {@link DIFF_BASES} the worktree has. Throws when none is there or git fails. */
+async function committedFilesOf(git: Git, worktree: string, repo: string): Promise<string[]> {
+  for (const base of DIFF_BASES) {
+    const has = await git(worktree, ["rev-parse", "--verify", "--quiet", base]).then(() => true, () => false);
+    if (has) return (await git(worktree, ["diff", "--name-only", `${base}...HEAD`])).split("\n").filter((file) => file !== "").map((file) => `${repo}:${file}`);
+  }
+  throw new Error(`the worktree has none of ${DIFF_BASES.join(", ")} to diff from`);
+}
+
+/**
+ * Record the files each of `runs` has committed in its worktree (A11-452): `git diff --name-only <default>...HEAD` in the worktree of its repository, all at once and each given `ctx.readMs`. A run whose worktree is not there or cannot be read
+ * clears what it held, and holds its repository as before; so does one with no commit. A failed or late read is logged once for the run. Never throws.
+ */
+export async function readCommittedFiles(ctx: PoolContext, runs: readonly Entry[]): Promise<void> {
+  const found = await Promise.all(runs.map(async (run) => {
+    const repo = repoOf(run) ?? "";
+    try {
+      const { folder } = runPlace(ctx, run);
+      if (!worktreesIn(folder).includes(repo)) return [run.ticket.key, [] as string[]] as const;
+      const worktree = join(folder, repo);
+      const files = await withinTime(ctx.readMs, `the diff of ${run.ticket.key}'s worktree`, committedFilesOf(ctx.git, worktree, repo));
+      return [run.ticket.key, files] as const;
+    } catch (err) {
+      if (!ctx.recordSaid.has(`worktree:${run.ticket.key}`)) log(`${run.ticket.key}: its worktree's commits could not be read, so it holds its whole repository: ${messageOf(err)}`);
+      ctx.recordSaid.add(`worktree:${run.ticket.key}`);
+      // An earlier list is cleared, so the hold is the repository's, as the log says, and not a list that may be out of date.
+      return [run.ticket.key, [] as string[]] as const;
+    }
+  }));
+  const read = new Map(found.filter((each) => each !== null));
+  if (read.size > 0) update(ctx, (queue) => recordCommittedFiles(queue, read));
 }

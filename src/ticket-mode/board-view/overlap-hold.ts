@@ -132,10 +132,15 @@ export function claimOf(entry: ViewEntry): Claim {
 export const isLive = (entry: ViewEntry): boolean => entry.phase === "starting" || entry.phase === "running";
 
 /**
- * What a run that holds its footprint holds (A11-374): its footprint, else, for a run at work, the paths its ticket's Region names, else its whole repository, since the files it changes are not known. A planning run reads and changes no file, so it holds none. PURE.
+ * What a run that holds its footprint holds (A11-374): its footprint and the files its worktree has committed (`committedFiles`, A11-452), else, for a run at work, the paths its ticket's Region names, else its whole repository, since the files it
+ * changes are not known. A run with commits holds those files whether or not it has pushed them, so a run that waits on a person for hours does not hold its whole repository. A planning run reads and changes no file, so it holds none. PURE.
  */
 export function holderClaimOf(entry: ViewEntry): Claim {
-  const footprint = footprintOf(entry);
+  // A run with a pull request holds that pull request's files, which are exact: the committed files read before it opened are no longer its own.
+  const committed = openPulls(entry).length > 0 ? [] : (entry.committedFiles ?? []).filter(countsForOverlap);
+  const footprint = [...new Set([...footprintOf(entry), ...committed])];
+  const worksOnCommits = committed.length > 0 && isLive(entry) && entry.plan === undefined;
+  if (worksOnCommits) return { paths: [...new Set([...footprint, ...regionPathsOf(entry)])], repoWide: null };
   if (footprint.length > 0 || !isLive(entry) || entry.plan !== undefined) return { paths: footprint, repoWide: null };
   const region = regionPathsOf(entry);
   return region.length > 0 ? { paths: region, repoWide: null } : { paths: [], repoWide: repoOf(entry) };

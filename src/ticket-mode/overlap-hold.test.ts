@@ -213,4 +213,38 @@ test("A11-272: a run that holds none of a queued run's files, is its own ticket,
     assert.equal(overlapWait(queuedRun("A"), [working("B", { projectRepo: "lab" })]), null, "and not a run in another repository");
     assert.equal(overlapHolders(queuedRun("A"), [working("B")]).join(), "B", "the wait cycles see the same overlap");
   });
+
+  // A11-452: a run at work that has committed holds the files its worktree's diff names, not its whole repository.
+  test("A11-452: a run at work whose worktree has commits holds those files (and its plan's paths), and not its repository", () => {
+    const committed = [`${REPO}:src/install/doctor.ts`, `${REPO}:docs/doctor.md`];
+    assert.deepEqual(holderClaimOf(working("B", { committedFiles: committed })), { paths: committed, repoWide: null });
+    assert.deepEqual(holderClaimOf(working("B", { committedFiles: committed, paths: [`${REPO}:src/plan.ts`] })).paths, [`${REPO}:src/plan.ts`, ...committed], "with the plan's paths too");
+    assert.deepEqual(holderClaimOf(working("B", { committedFiles: [`${REPO}:.acceptance/b.md`] })), { paths: [], repoWide: REPO }, "scaffolding alone is no file: its repository, as before");
+  });
+
+  test("A11-452: committed files do not outlive a pull request, and a run that commits keeps the paths its Region names", () => {
+    const committed = [`${REPO}:src/b.ts`];
+    assert.deepEqual(holderClaimOf(working("B", { committedFiles: committed, ...withPull })).paths, [`${REPO}:src/pull.ts`], "the pull request's files alone");
+    assert.deepEqual(holderClaimOf(working("B", { committedFiles: committed, regionPaths: [":docs/"] })).paths, [...committed, `${REPO}:docs/`], "its Region too");
+  });
+
+  test("A11-452: a queued run whose files the committed ones do not touch starts, and the wait note no longer says files not known", () => {
+    const holder = working("B", { committedFiles: [`${REPO}:src/install/doctor.ts`], ticket: { key: "B", branch: "b" } });
+    const waiting = queuedRun("A", { paths: [`${REPO}:.github/workflows/auto-arm.yml`] });
+    assert.equal(overlapWait(waiting, [waiting, holder]), null, "no overlap: nothing holds it");
+    assert.equal(waitNote(waiting, [waiting, holder]), null, "and the card says nothing of a wait");
+    const clashing = queuedRun("A", { paths: [`${REPO}:src/install/`] });
+    const wait = overlapWait(clashing, [clashing, holder]);
+    assert.equal(wait?.path, "src/install/", "a queued run that shares a committed file is held for it");
+    assert.equal(wait?.repoWide, undefined, "by that file, not by the repository");
+    assert.doesNotMatch(waitNote(clashing, [clashing, holder]) ?? "", /files not known/);
+  });
+
+  test("A11-452: a run with no commit read, or whose worktree could not be read, holds its repository against every queued run, as before", () => {
+    const waiting = queuedRun("A", { paths: [`${REPO}:.github/workflows/auto-arm.yml`] });
+    for (const unread of [working("B"), working("B", { committedFiles: [] })]) {
+      assert.equal(overlapWait(waiting, [waiting, unread])?.repoWide, REPO, "the repository-wide hold");
+      assert.match(waitNote(waiting, [waiting, unread]) ?? "", /files not known/);
+    }
+  });
 }

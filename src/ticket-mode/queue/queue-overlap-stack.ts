@@ -25,6 +25,16 @@ export function recordPushedHeads(queue: Queue, pushed: ReadonlyMap<string, Read
   }) };
 }
 
+/** Record the files the worktree of each run in `read` has committed beyond the default branch (A11-452), by ticket key. A run whose list is empty (no commit, or only scaffolding) keeps none, so it holds its repository as before. PURE. */
+export function recordCommittedFiles(queue: Queue, read: ReadonlyMap<string, readonly string[]>): Queue {
+  return { ...queue, entries: queue.entries.map((entry) => {
+    const found = read.get(entry.ticket.key);
+    if (found === undefined || sameList(entry.committedFiles ?? [], found)) return entry;
+    const { committedFiles: _old, ...rest } = entry;
+    return found.length === 0 ? rest : { ...rest, committedFiles: found };
+  }) };
+}
+
 /** Record the run `key` is stacked on because their files overlap, before its worker is prepared: its brief reads it (`stackedOn`). PURE. */
 export function recordOverlapStack(queue: Queue, key: string, stack: OverlapStackRecord): Queue {
   return replace(queue, key, (entry) => ({ ...entry, overlapStack: stack }));
