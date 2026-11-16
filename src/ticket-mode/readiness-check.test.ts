@@ -4,11 +4,11 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import type { OutcomeRecord } from "./outcomes/outcome-record.ts";
 import type { RunEvent } from "./queue/run-log.ts";
-import { historiesOf, LINK_RATIO, linkOf, MAX_SET, MIN_PER_GROUP, pickSet, publicResultOf, verdictOf, type CheckedTicket, type CheckResult, type PublicResult } from "./readiness-check.ts";
+import { checkPaths, historiesOf, LINK_RATIO, linkOf, MAX_SET, MIN_PER_GROUP, pickSet, publicResultOf, verdictOf, type CheckedTicket, type CheckResult, type PublicResult } from "./readiness-check.ts";
 import { SCHEMA } from "./config-schema.ts";
 import { DEFAULT_READINESS, parseTicketSettings } from "./settings.ts";
 
-/** A run's record: `rounds` rounds ending in `outcomes` (the last repeated), `needsYou` of them handed to a person. */
+/** A run's latest record, its run started at `since`: `rounds` rounds, `needsYou` of them handed to a person, written at `at`. */
 const record = (ticket: string, since: number, rounds: number, needsYou = 0, at = since + 1): OutcomeRecord => ({
   v: 1, run: `${ticket}@${since}`, ticket, at, model: "opus", effort: "high", repos: ["agent-org"], labels: [],
   rounds: Array.from({ length: rounds }, (_, index) => ({ startedAt: since + index, endedAt: since + index + 1, outcome: "reviewed" })),
@@ -74,6 +74,12 @@ test("A11-443: the checked-in result carries no reason and no failure, only keys
   const full: CheckResult = { ranAt: "r", sha: "s", model: "haiku", capped: false, score: linkOf(tickets), verdict: "v", tickets };
   assert.deepEqual(publicResultOf(full).tickets, [ticket("A11-1", 40, 2), ticket("A11-2", null, 1)]);
   assert.deepEqual(linkOf(publicResultOf(full).tickets), full.score, "the score reads the same from it");
+});
+
+test("A11-443: the check asks the model in the state directory, as the board does, and keeps the full result there, never in the public checkout", () => {
+  assert.deepEqual(checkPaths("/state", "/repo"), {
+    set: "/state/evals/readiness/tickets.json", full: "/state/evals/readiness/result.json", public: "/repo/evals/readiness/result.json", askIn: "/state",
+  });
 });
 
 const stored = JSON.parse(readFileSync(new URL("../../evals/readiness/result.json", import.meta.url), "utf8")) as PublicResult;

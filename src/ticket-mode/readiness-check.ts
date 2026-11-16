@@ -15,6 +15,7 @@
 import type { OutcomeRecord } from "./outcomes/outcome-record.ts";
 import { latestOutcomes } from "./outcomes/outcome-record.ts";
 import type { RunEvent } from "./queue/run-log.ts";
+import { join } from "node:path";
 import { LOW_READINESS } from "./readiness.ts";
 
 /** The most tickets one set may hold (A11-429, grill Q4: at most 10 tickets per eval set). */
@@ -105,9 +106,9 @@ export const meetsBar = (low: GroupMeans, rest: GroupMeans, linked: readonly Mea
 
 /** The score of a checked set: the scored tickets split at {@link LOW_READINESS}, each side's means, and the bar. PURE. */
 export function linkOf(checked: readonly CheckedTicket[]): LinkScore {
-  const scored = checked.filter((each) => each.score !== null);
-  const low = meansOf(scored.filter(({ score }) => score! < LOW_READINESS));
-  const rest = meansOf(scored.filter(({ score }) => score! >= LOW_READINESS));
+  const scored = checked.filter((each): each is CheckedTicket & { score: number } => each.score !== null);
+  const low = meansOf(scored.filter(({ score }) => score < LOW_READINESS));
+  const rest = meansOf(scored.filter(({ score }) => score >= LOW_READINESS));
   const linked = MEASURES.filter((measure) => showsLink(low, rest, measure));
   const against = MEASURES.filter((measure) => goesAgainst(low, rest, measure));
   return { checked: checked.length, scored: scored.length, low, rest, linked, against, meetsBar: meetsBar(low, rest, linked, against) };
@@ -139,6 +140,16 @@ export function verdictOf(score: LinkScore): string {
   const means = score.low.tickets > 0 && score.rest.tickets > 0 ? ` Low against the rest, per ticket: ${meansText(score)}.` : "";
   if (score.meetsBar) return `${sample}${means} A clear link on ${score.linked.map((measure) => MEASURE_NAMES[measure]).join(" and ")}, so the key is on by default.`;
   return `${sample}${means} No clear link, so the key stays off: ${missesOf(score).join("; ")}.`;
+}
+
+/**
+ * Where the check reads and writes on a host whose state directory is `stateDir`, from a checkout at `root`: the set (`--set` overrides it), the full result (always in the state directory,
+ * whatever `--set` names, so the model's reasons never land in the public checkout), the public result (in the checkout), and the folder the model is asked in (the state directory, as the
+ * board's scorer asks it, `instanceReadiness`). PURE.
+ */
+export function checkPaths(stateDir: string, root: string): Readonly<{ set: string; full: string; public: string; askIn: string }> {
+  const dir = join(stateDir, "evals", "readiness");
+  return { set: join(dir, "tickets.json"), full: join(dir, "result.json"), public: join(root, "evals", "readiness", "result.json"), askIn: stateDir };
 }
 
 /** One ticket as the full result keeps it, on the host: its history, its score or why it has none, and the model's reasons. */
