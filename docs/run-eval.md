@@ -42,7 +42,51 @@ node scripts/run-eval.ts --set first --key tickets.lessons=on
 node scripts/run-eval.ts compare --set first <sha>@tickets.lessons=off <sha>@tickets.lessons=on
 ```
 
-The key must be a switch of the host file (an entry marked `switch` in `src/ticket-mode/config-schema.ts`) that the eval hands its worker, listed in `EVAL_SWITCHES` (`src/run-eval/worker.ts`); any other name is refused before a ticket starts. Today that is `tickets.drafts` alone: a switch the eval does not carry into the worker's brief or settings would run a whole set and change nothing. `tickets.lessons` (M3's daily retro) is a switch now, but the eval does not yet hand it on, so the commands above are refused until it does. A feature that ships off reads its key from the settings the eval reads (`readTicketSettings`), carries it into `HostBrief` so the brief the eval writes depends on it, and adds the key to `EVAL_SWITCHES` in the same pull request. The eval sets the key only in its own read of the host file: the file is not written, and the board does not see it. Each setting is stored apart, as `<sha>@<key>=on.json` and `<sha>@<key>=off.json`.
+The key must be a switch of the host file (an entry marked `switch` in `src/ticket-mode/config-schema.ts`) that the eval hands its worker, listed in `EVAL_SWITCHES` (`src/run-eval/worker.ts`); any other name is refused before a ticket starts. Today that is `tickets.drafts` and `tickets.localReview` (the pre-PR review, below): a switch the eval does not carry into the worker's brief or settings would run a whole set and change nothing. `tickets.lessons` (M3's daily retro) is a switch now, but the eval does not yet hand it on, so the commands above are refused until it does. A feature that ships off reads its key from the settings the eval reads (`readTicketSettings`), carries it into `HostBrief` so the brief the eval writes depends on it, and adds the key to `EVAL_SWITCHES` in the same pull request. The eval sets the key only in its own read of the host file: the file is not written, and the board does not see it. Each setting is stored apart, as `<sha>@<key>=on.json` and `<sha>@<key>=off.json`.
+
+## The pre-PR review on and off (A11-440)
+
+`tickets.localReview` has the worker run the reviewer on its own diff before it opens a pull request. With it on, the eval's brief has step 5b, naming the stand-in `eval-review-local` where a board's brief names `agent-org ticket:review-local`. The stand-in runs `ticket:review-local`'s own logic (`scripts/eval-review-local.ts`): the same prompt, the same Codex reviewer, the same record beside the brief and the same exit codes. It also writes each review's Codex tokens to `record/local-review-tokens.log`. A review that never answered (the worker's command was killed) and a review whose tokens Codex did not report count as unknown, never as 0. The eval's `eval-pr-open` stand-in does not refuse a pull request that skipped the review, as `pr:open` would. The run's table shows the worker's tokens; the pre-PR reviews are kept per ticket as `localReviews` in the stored run.
+
+The epic's bar for turning the key on by default is a better first-pass reviewer verdict, for reviewer tokens no more than the feedback rounds it saves. `bar` reads the two runs at one sha and the board's outcome log, and runs nothing:
+
+```sh
+node scripts/run-eval.ts --set first --key tickets.localReview=off
+node scripts/run-eval.ts --set first --key tickets.localReview=on
+node scripts/run-eval.ts bar --set first <sha>@tickets.localReview=off <sha>@tickets.localReview=on
+```
+
+- **The first-pass verdict** is the eval's own verdict column: the convinced tickets among those both runs have. An unknown verdict counts as not convinced. Better means strictly more.
+- **The rounds saved** are the convinced tickets gained, and none when the on run has fewer.
+- **A round's tokens** are the median of every round after a run's first in `<stateDir>/tickets/outcomes.jsonl`. That counts review rounds, talk sessions and rounds resumed by an answer, all of them worker turns. The board's review of the head a round pushes is not counted, so the saving is, if anything, low.
+- **The reviewer tokens** are every pre-PR review's Codex tokens on the on run: input (cached included) plus output (reasoning included). One unknown makes the total unknown, and an unknown total misses the bar.
+
+`bar` refuses two runs that are not the key's off run and on run, at one committed sha, from the same model and effort. It names a run the token cap stopped, and compares only the tickets both runs have. It prints a row per ticket, the verdict and token lines, and `BAR MET` (exit 0) or `BAR MISSED` (exit 1), saying which condition failed and by how much.
+
+### The measured bar: missed, so the key stays off
+
+The two runs, `--set first` at f76d22d85 with `tickets.localReview` off and on, opus at effort medium, run side by side on the board's host on 2026-11-16 from about 08:55 UTC (off finished at 13:49, on at 14:41):
+
+| ticket | verdict off → on | pre-PR reviews | reviewer tokens | worker tokens off → on |
+|---|---|---|---|---|
+| A11-376 | convinced → convinced | 1 | 212,749 | 7,819,062 → 4,471,769 |
+| A11-397 | convinced → not convinced | 3 | 573,181 | 4,795,561 → 6,283,614 |
+| A11-344 | convinced → convinced | 1 | 331,371 | 4,180,083 → 3,252,410 |
+| A11-340 | not convinced → not convinced | 1 | 373,397 | 13,774,384 → 14,975,437 |
+| A11-341 | not convinced → convinced | 2 | 661,947 | 6,445,846 → 10,629,115 |
+| A11-297 | not convinced → not convinced | 4 | 1,276,418 | 4,047,838 → 9,888,730 |
+| A11-449 | not convinced → not convinced | 5 | 1,012,012 | 17,693,107 → 35,982,610 |
+| A11-394 | not convinced → not convinced | 5 | 1,250,851 | 7,295,578 → 13,506,582 |
+| A11-239 | convinced → convinced | 1 | 221,587 | 3,994,431 → 4,832,231 |
+| A11-140 | convinced → convinced | 1 | 227,284 | 4,604,015 → 5,114,840 |
+| **total** | **5 → 5 convinced** | **24** | **6,140,797** | **74,649,905 → 108,937,338** |
+
+- **The first-pass verdict is not better:** 5 of 10 convinced both ways (+0). The on run needs 1 more convinced ticket to be better. One ticket was gained (A11-341) and one lost (A11-397).
+- **The reviewer tokens are not within the rounds saved:** no rounds were saved, so the 6,140,797 tokens of the 24 pre-PR reviews are 6,140,797 more than the 0 tokens saved. A round costs 2,762,926 tokens (the median of 52 rounds after a run's first in the outcome log), so the reviews cost about 2.2 rounds. The key would have had to gain 3 convinced tickets to pay for them.
+- **The worker spent 46% more with the key on** (+34,287,433 tokens, +58 minutes of ticket time), mostly fixing what the pre-PR reviewer found and reviewing again: the tickets that ran 4 or 5 reviews account for most of it, and none of them ended convinced. The bar does not count this, because the ticket's words name the reviewer's tokens, but it would only raise the cost.
+- **One pair of runs is noisy.** The run of the same set from 30a8a5b59 (below) had 6 of 10 convinced with no pre-PR review at all, and 3 tickets' verdicts differ between it and the off run here (A11-340, A11-297, A11-140). A gain of one or two tickets would not have been told apart from that noise. A loss of 34M worker tokens is far outside it.
+
+Every review the on run's workers started has a token line in its record, and none named `--record` or `--ticket-dir` (read from each ticket's `record/attempts.log`). The off run's records have no token log.
 
 ## The token cap
 
@@ -85,6 +129,7 @@ A step that fails is shown as an unknown (`?`) and its note gives the reason. It
 - **The code host:** `gh` is a stand-in that records `gh pr create` (its title and body go to `record/pull-request.md`, and it answers with an `eval.invalid` URL). It refuses every other call. The environment has no tokens and an empty `GH_CONFIG_DIR`, and the settings deny the host's own `gh` by its path.
 - **The tracker and the board:** the worker starts with no MCP server (`--strict-mcp-config`, and claude.ai's connectors off). `agent-org` is a stand-in that refuses, and the settings deny the host's own launcher by its path. Every `AGENT_ORG_*` variable is dropped, and `AGENT_ORG_HOST` names a file that does not exist. So agent-org code that the worker or its check runs (the clone's own `src/bin.ts`) refuses for want of a host file. It never falls back to `~/.agent-org/host.json` and the tracker key that file names.
 - **The board's serves:** `tailscale` is a stand-in, so a test the worker or the check runs cannot switch off the board's serves.
+- **The pre-PR review** (`tickets.localReview` on): `eval-review-local` is the one stand-in that runs agent-org code of the eval's own, not the worker's (`scripts/eval-review-local.ts`, from the eval's checkout). That code reads a host file as it loads, so the stand-in gives it the eval's own `AGENT_ORG_HOST`, as the eval itself has. The worker can only start it, with `--base`. It refuses an unknown option, and refuses `--ticket-dir` or `--record` given a second time. Its reviewer is the eval's Codex reviewer, read-only, and sends the worker's diff to the Codex account, as the eval's own review of every ticket already does. The worker's environment still names no host file.
 
 Every call a stand-in receives is written to `record/attempts.log`.
 

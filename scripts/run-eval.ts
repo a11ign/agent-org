@@ -6,7 +6,8 @@
 // `sh -c`, both in the offline environment `src/run-eval/sandbox.ts` makes; the reviewer is `codex exec` in a read-only sandbox. NOTHING IS WRITTEN TO THE TRACKER OR THE CODE HOST.
 // The model and effort default to the board's saved choice (`<stateDir>/tickets/choice.json`). Run it from any directory: it writes its tickets' folders under a fresh temporary
 // directory it prints, and the run's results under `<stateDir>/evals/<set>/`, named by this checkout's sha. `--key <switch>=on|off` is applied to the eval's own read of the host
-// file before anything else reads it, so the whole run sees it (`src/run-eval/key.ts`); the host file itself is never written. `compare` reads two stored runs and runs nothing.
+// file before anything else reads it, so the whole run sees it (`src/run-eval/key.ts`); the host file itself is never written. `compare` reads two stored runs and runs nothing, and `bar`
+// reads a `tickets.localReview` off run and on run and the board's outcome log, and runs nothing (A11-440).
 import { execFile, execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -17,10 +18,14 @@ import type { RowsRun } from "../src/plugins/contracts/code-host-rows.ts";
 import { defaultCatalog } from "../src/plugins/registry.ts";
 import { rows } from "../src/plugins/rows.ts";
 import { defaultSchema } from "../src/plugins/schema.ts";
-import { compareMain, main, parseArgs, type RunEvalDeps } from "../src/run-eval.ts";
+import { barMain, compareMain, main, parseArgs, type RunEvalDeps } from "../src/run-eval.ts";
 import { type Revision } from "../src/run-eval/store.ts";
+// eslint-disable-next-line clean-code/no-duplication -- import list: the rule matches statement shape, and imports are not duplicated logic
 import { parseKey, withKey, type KeySetting } from "../src/run-eval/key.ts";
 import { codexReview } from "../src/run-eval/codex-reviewer.ts";
+import { reviewerProgram } from "../src/run-eval/local-review.ts";
+import { outcomesPath } from "../src/ticket-mode/outcomes/outcome-record.ts";
+// eslint-disable-next-line clean-code/no-duplication -- import list: the rule matches statement shape, and imports are not duplicated logic
 import { readChoice } from "../src/ticket-mode/read-routes.ts";
 import { hostFilePath, readTicketSettings, type TicketSettings } from "../src/ticket-mode/settings.ts";
 import { sandboxGitEnv } from "../src/lib/git-env.ts";
@@ -105,9 +110,10 @@ async function realDeps(settings: TicketSettings): Promise<RunEvalDeps> {
       }
     },
     review: codexReview,
+    reviewer: reviewerProgram(hostFilePath(process.env)),
     host: {
       ...(settings.brief === null ? {} : { notes: readFileSync(settings.brief, "utf8") }),
-      plugins: settings.plugins, drafts: settings.drafts, prReview: settings.prReview, keywords: tracker.keywords ?? DEFAULT_KEYWORDS, binDir: settings.binDir,
+      plugins: settings.plugins, drafts: settings.drafts, prReview: settings.prReview, localReview: settings.localReview === true, keywords: tracker.keywords ?? DEFAULT_KEYWORDS, binDir: settings.binDir,
     },
     env: process.env,
     now: Date.now,
@@ -134,5 +140,11 @@ async function runEval(): Promise<number> {
   return main(argv, await realDeps(settings), { defaults: { model, effort }, store, schema: defaultSchema() });
 }
 
-// `compare` reads the two stored runs alone: no tracker, brief or choice, so it works wherever the host file names its state directory.
-process.exitCode = argv[0] === "compare" ? compareMain(argv.slice(1), { resultsDir: join(readTicketSettings().stateDir, "evals") }) : await runEval();
+/** `compare` and `bar` read stored runs (and `bar` the outcome log) alone: no tracker, brief or choice, so they work wherever the host file names its state directory. */
+function readOnly(command: string): number {
+  const { stateDir } = readTicketSettings();
+  const resultsDir = join(stateDir, "evals");
+  return command === "compare" ? compareMain(argv.slice(1), { resultsDir }) : barMain(argv.slice(1), { resultsDir, outcomesFile: outcomesPath(stateDir) });
+}
+
+process.exitCode = argv[0] === "compare" || argv[0] === "bar" ? readOnly(argv[0]) : await runEval();

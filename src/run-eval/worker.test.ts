@@ -10,7 +10,7 @@ import { evalBrief, evalSettings, tokensOfResult, workerArgs, type HostBrief, ty
 const TICKET: Ticket = { key: "A11-1", title: "Fix the thing", description: "## Acceptance criteria\n\nIt works.", url: "https://linear.app/a11ign/issue/A11-1", branch: "admin/a11-1-fix",
   status: "Done", statusOrder: 0, team: "A11", project: null, priority: 2, parent: null, updatedAt: "2026-11-01T00:00:00.000Z" };
 const PLACE: Place = { folder: "/eval/folder", ticketDir: "/eval/ticket", clones: { "agent-org": "/eval/clone" }, standIns: "/eval/bin" };
-const HOST: HostBrief = { notes: "# House rules\n", plugins: ["a11ign@a11ign"], drafts: false, prReview: null, keywords: DEFAULT_KEYWORDS, binDir: "/home/x/.local/bin" };
+const HOST: HostBrief = { notes: "# House rules\n", plugins: ["a11ign@a11ign"], drafts: false, prReview: null, localReview: false, keywords: DEFAULT_KEYWORDS, binDir: "/home/x/.local/bin" };
 
 test("the brief is today's `briefText` with the ticket's parent, pointed at the eval's clone and its stand-in commands, with no connector", () => {
   const parent = { ticket: { ...TICKET, key: "A11-0", title: "The epic" }, attachments: ["/eval/ticket/parent/epic-plan.md"] };
@@ -23,6 +23,16 @@ test("the brief is today's `briefText` with the ticket's parent, pointed at the 
   assert.match(brief, /A11-0: The epic/, "the parent's Decisions bind the worker, so the parent is in its brief");
   assert.match(brief, /epic-plan\.md/);
   assert.doesNotMatch(brief, /ticket:worktree|pr:open create/, "no command of the real board is named");
+});
+
+test("with tickets.localReview on, the brief asks for the review of the local diff before the pull request opens, by the eval's stand-in; off, it asks for none (A11-440)", () => {
+  const brief = (localReview: boolean) => evalBrief({ ticket: TICKET, attachments: [], parent: null, place: PLACE, host: { ...HOST, localReview }, repo: "agent-org", now: 5 });
+  assert.equal(brief(true), briefText({ ticket: TICKET, folder: PLACE.folder, ticketDir: PLACE.ticketDir, attachments: [], parent: null, clones: PLACE.clones, repo: "agent-org",
+    worktreeCommand: "/eval/bin/eval-worktree", prOpenCommand: "/eval/bin/eval-pr-open", localReviewCommand: "/eval/bin/eval-review-local", notes: HOST.notes, connectors: [], drafts: false,
+    designTools: false, capture: false, prReview: null, keywords: DEFAULT_KEYWORDS, read: ticketReadOf(TICKET, 5) }));
+  assert.match(brief(true), /^5b\. .*`\/eval\/bin\/eval-review-local`/m);
+  assert.doesNotMatch(brief(true), /ticket:review-local/, "no command of the real board is named");
+  assert.doesNotMatch(brief(false), /^5b\. |eval-review-local/m);
 });
 
 test("the settings are a worker's without the board's hooks, with the host's own gh and agent-org denied by path", () => {
