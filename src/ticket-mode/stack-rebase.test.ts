@@ -149,21 +149,38 @@ test("A11-150: a push the remote refuses puts the run's branch back where it was
   assert.equal(gitSync(worktree, ["rev-parse", "HEAD"]), before, "the branch is put back where it was");
 });
 
-test("A11-150: a run's branch that the remote moved on is never overwritten: the push is refused and the other commit stays", async () => {
-  const { root, origin, seed, worktree, base } = stackedWorktree();
-  // Someone else pushes to the run's branch from another clone, after the worktree was made.
+/** Push a commit to the run's branch from another clone, after the worktree was made: someone else moving the branch. Its sha. */
+function pushFromElsewhere(root: string, origin: string): string {
   const other = join(root, "other");
   gitSync(root, ["clone", "-q", origin, other]);
   gitSync(other, ["checkout", "-q", "-b", "ticket", "origin/ticket"]);
   const otherHead = commit(other, "other.txt", "elsewhere\n", "ticket: pushed from elsewhere");
   gitSync(other, ["push", "-q", "origin", "HEAD:ticket"]);
+  return otherHead;
+}
+
+test("#2059: a run's branch that the remote moved on is caught up first: the merge is made on the remote's head, so the other commit stays and the push is accepted", async () => {
+  const { root, origin, seed, worktree, base } = stackedWorktree();
+  const otherHead = pushFromElsewhere(root, origin);
+  const head = moveBlocker(seed, "one\ntwo\n");
+  const result = await mergeBaseIn({ git: defaultGit, worktree, own: "ticket", base });
+  assert.equal(result.ok, true, JSON.stringify(result));
+  assert.deepEqual(result.ok ? result.pushed?.from : undefined, otherHead, "the merge was made on the remote's head, not the stale one");
+  assert.equal(gitSync(worktree, ["rev-parse", "HEAD^1"]), otherHead, "the other commit is the merge's first parent: nothing is overwritten");
+  assert.equal(gitSync(worktree, ["rev-parse", "HEAD^2"]), head, "the blocker's new head is merged in");
+  assert.equal(gitSync(origin, ["rev-parse", "refs/heads/ticket"]), gitSync(worktree, ["rev-parse", "HEAD"]), "and pushed plainly");
+});
+
+test("A11-150: a run's branch that the remote moved on while the worktree holds a commit of its own is never overwritten: the push is refused and both commits stay", async () => {
+  const { root, origin, seed, worktree, base } = stackedWorktree();
+  const otherHead = pushFromElsewhere(root, origin);
+  const local = commit(worktree, "local.txt", "here\n", "ticket: not pushed");
   moveBlocker(seed, "one\ntwo\n");
-  const before = gitSync(worktree, ["rev-parse", "HEAD"]);
   const result = await mergeBaseIn({ git: defaultGit, worktree, own: "ticket", base });
   assert.equal(result.ok, false);
   assert.match(result.ok ? "" : result.reason, /^was refused by the remote: /, "a plain push is not a forced one");
   assert.equal(gitSync(origin, ["rev-parse", "refs/heads/ticket"]), otherHead, "the other commit is still the branch's head");
-  assert.equal(gitSync(worktree, ["rev-parse", "HEAD"]), before, "and the run's merge is put back");
+  assert.equal(gitSync(worktree, ["rev-parse", "HEAD"]), local, "and the worktree's own commit is put back, not dropped");
 });
 
 test("A11-150: the record after a merge keeps the merge for the board; a conflict is recorded against its head, and a failure keeps the branch to be tried again", () => {
