@@ -13,6 +13,12 @@ import { ticketReadOf } from "../ticket-mode/ticket-read.ts";
 import { firstPrompt, briefText, protectedPaths, workerFlags, workerSettings, type ParentTicket } from "../ticket-mode/worker-files.ts";
 import { type Tokens, tokensOf } from "../trace/tokens.ts";
 
+/**
+ * The switches of the host file that reach the eval's worker: the ones `HostBrief` carries into its brief or settings. `--key` may name only these (`key.ts`), since a switch the
+ * eval does not hand on would run a whole set and change nothing. A feature that ships off adds its key here when it carries it into `HostBrief`.
+ */
+export const EVAL_SWITCHES: readonly string[] = ["tickets.drafts"];
+
 /** What the host says about how its workers behave, read from its host file. */
 export type HostBrief = Readonly<{ notes?: string; plugins: readonly string[]; drafts: boolean; prReview: string | null; keywords: Keywords; binDir: string }>;
 

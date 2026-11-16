@@ -106,6 +106,7 @@ interface Reason { file: string; call: string; kind: Kind; reason: string }
 const UNNAMED_CALLS: Reason[] = [
   { file: "src/acceptance-commands/suite-and-checkout-commands.ts", call: '"ls-files"', kind: "session", reason: "reached only by `unresolvedAcceptancePaths`, whose one caller is `row-file`, which an author runs in their own worktree" },
   { file: "src/branch-inventory-report.ts", call: '"git"', kind: "session", reason: "the `branches:inventory` CLI, run by an operator standing in the project tree; no unit or workflow runs it" },
+  { file: "src/ticket-mode/local-review-command.ts", call: '"git"', kind: "session", reason: "the `ticket:review-local` CLI, run by a ticket worker standing in its own worktree, whose diff is the one reviewed; no importer" },
   { file: "src/control-plane-hygiene.ts", call: '"git"', kind: "session", reason: "the `hygiene:report` CLI derives `this checkout` from where the operator runs it; no importer" },
   { file: "src/host-units/host-drift-findings-and-notes.ts", call: '"--file", path', kind: "param", reason: "`git config --file <path>` reads the named file and no repository" },
   { file: "src/install/herdr-upkeep.ts", call: '"ls-remote"', kind: "param", reason: "`git ls-remote --tags <https url>` reads the named remote and no repository: the release tags of a herdr plugin's GitHub repository (A11-184)" },

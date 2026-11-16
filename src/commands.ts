@@ -63,6 +63,7 @@ export const COMMANDS = {
   "ticket:pull-now": "ticket-mode/pull-now-command.ts",
   "ticket:remote-info": "ticket-mode/remote-info-command.ts",
   "ticket:review": "ticket-mode/review-command.ts",
+  "ticket:review-local": "ticket-mode/local-review-command.ts",
   "ticket:serve": "ticket-mode/server.ts",
   "ticket:stack-live-check": "../plugins/github/stack-live-check-command.ts",
   "ticket:ui": "ticket-mode/ui-server.ts",

@@ -112,6 +112,17 @@ export type TicketSettings = Readonly<{
    */
   lessons?: boolean;
   /**
+   * Whether a worker runs the reviewer on its local diff before it opens a pull request (A11-440, `local-review.ts`), and `pr:open` refuses a create until that review ran at the
+   * worker's current commit. The board's own review of each new head still runs. False by default: the feature turns on only once the offline eval shows a better first-pass verdict
+   * at no more tokens than the rounds it saves. Optional, so a settings object made by hand (a test's) leaves it off.
+   */
+  localReview?: boolean;
+  /**
+   * Whether the Tickets page shows each ticket's readiness score, which a cheap model makes once per description (A11-443, `readiness.ts`), and offers the writer for a low one. False by default:
+   * the feature turns on only once the offline check shows low scores go with more rounds, re-plans or Needs-you. Optional, so a settings object made by hand (a test's) leaves it off.
+   */
+  readiness?: boolean;
+  /**
    * The answerer (A11-438, `auto-answer.ts`): whether a cheap model tries to answer a worker's `needs-human` question from what is written down before the run is parked for a person (`on`, off by default), the confidence
    * an answer needs (`threshold`, 0.9 by default) and the model asked (`model`, `haiku` by default). Optional, so a settings object made by hand (a test's) leaves it off.
    */
@@ -148,6 +159,8 @@ export type TicketSettings = Readonly<{
   stallMinutes: number;
   /** How many decided past runs of one model and effort, of a kind, the queue footer needs before it suggests them (A11-435, `suggest-model.ts`). */
   suggestMinSample: number;
+  /** The tokens one worker eval run may spend before it stops at the next ticket (A11-431, `run-eval.ts`). {@link DEFAULT_EVAL_TOKEN_CAP} by default. */
+  evalTokenCap: number;
   /**
    * The weighted CI minutes one ticket's pushes may run before the board warns its worker, and, at twice that, holds the run (A11-261); 0 is none. {@link DEFAULT_CI_BUDGET_MINUTES} by default. The figures show whatever it is.
    */
@@ -492,6 +505,20 @@ function lessonsOf(value: unknown): boolean {
   return value;
 }
 
+/** `tickets.readiness`: true for the Tickets page to show each ticket's readiness score (A11-443). Absent is false. Any other value is refused by name. */
+function readinessOf(value: unknown): boolean {
+  if (value === undefined) return false;
+  if (typeof value !== "boolean") throw new TicketSettingsRefusal("tickets.readiness", `must be true or false, not ${JSON.stringify(value)}`);
+  return value;
+}
+
+/** `tickets.localReview`: true for a worker to run the reviewer on its local diff before it opens a pull request (A11-440). Absent is false. Any other value is refused by name. */
+function localReviewOf(value: unknown): boolean {
+  if (value === undefined) return false;
+  if (typeof value !== "boolean") throw new TicketSettingsRefusal("tickets.localReview", `must be true or false, not ${JSON.stringify(value)}`);
+  return value;
+}
+
 /** `tickets.capture`: true when this machine can capture the board for a worker. Absent is false. Any other value is refused by name. */
 function captureOf(value: unknown): boolean {
   if (value === undefined) return false;
@@ -608,11 +635,18 @@ function instanceOf(value: unknown, machine: string): string {
   return value;
 }
 
-/** The whole-number limits on a worker's run, in the order they are checked: its idle time, the runs a suggestion needs (A11-435), its CI budget and how long an update may wait for it. */
-function workerLimitsOf(tickets: Readonly<Record<string, unknown>>): Pick<TicketSettings, "stallMinutes" | "suggestMinSample" | "ciBudgetMinutes" | "updateMaxDeferHours"> {
+/**
+ * The tokens a worker eval run spends before it stops (A11-431): ten tickets at the 90th percentile of a first round on this board's outcome log on 2026-11-16 (29M tokens, cache
+ * reads included, of 104 runs), rounded up.
+ */
+export const DEFAULT_EVAL_TOKEN_CAP = 300_000_000;
+
+/** The whole-number limits on a worker's run, in the order they are checked: its idle time, the runs a suggestion needs (A11-435), an eval run's tokens (A11-431), its CI budget and how long an update may wait for it. */
+function workerLimitsOf(tickets: Readonly<Record<string, unknown>>): Pick<TicketSettings, "stallMinutes" | "suggestMinSample" | "evalTokenCap" | "ciBudgetMinutes" | "updateMaxDeferHours"> {
   return {
     stallMinutes: positiveInteger(tickets.stallMinutes, "tickets.stallMinutes", 30),
     suggestMinSample: positiveInteger(tickets.suggestMinSample, "tickets.suggestMinSample", 20),
+    evalTokenCap: positiveInteger(tickets.evalTokenCap, "tickets.evalTokenCap", DEFAULT_EVAL_TOKEN_CAP),
     ciBudgetMinutes: nonNegativeInteger(tickets.ciBudgetMinutes, "tickets.ciBudgetMinutes", DEFAULT_CI_BUDGET_MINUTES),
     updateMaxDeferHours: positiveInteger(tickets.updateMaxDeferHours, "tickets.updateMaxDeferHours", 2),
   };
@@ -691,6 +725,8 @@ export function parseTicketSettings(host: unknown, home: string = homedir(), mac
     designTools: designToolsOf(tickets.designTools),
     fixRedMain: fixRedMainOf(tickets.fixRedMain),
     lessons: lessonsOf(tickets.lessons),
+    localReview: localReviewOf(tickets.localReview),
+    readiness: readinessOf(tickets.readiness),
     autoAnswer: autoAnswerOf(tickets),
     capture: captureOf(tickets.capture),
     prReview: prReviewOf(tickets.prReview),

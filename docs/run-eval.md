@@ -3,10 +3,50 @@
 The worker eval measures a change to the worker brief, the model or the effort before it merges. It replays merged tickets through a headless worker, offline, and scores what the worker made against what was merged. The reviewer has its own eval, `scripts/review-eval.ts`; this one is for the worker.
 
 ```sh
-node scripts/run-eval.ts --set <name|path/to/set.json> [--only A11-1,A11-2] [--model opus] [--effort high]
+node scripts/run-eval.ts --set <name|path/to/set.json> [--only A11-1,A11-2] [--model opus] [--effort high] [--key <switch>=on|off] [--replace]
+node scripts/run-eval.ts compare --set <name|path/to/set.json> <A> <B>
 ```
 
-A set named without a path is read from `evals/sets/<name>.json`. The model and effort default to the board's saved choice (`<stateDir>/tickets/choice.json`), so a run measures what the board would run today. The command prints the table and each ticket's throwaway folder. Every folder is kept, so you can read the worker's result, the brief, its diff and the review.
+A set named without a path is read from `evals/sets/<name>.json`; the first is `first`. The model and effort default to the board's saved choice (`<stateDir>/tickets/choice.json`), so a run measures what the board would run today. The command prints the table and each ticket's throwaway folder. Every folder is kept, so you can read the worker's result, the brief, its diff and the review.
+
+## Measuring a change
+
+1. On `main`, run the set: `node scripts/run-eval.ts --set first`.
+2. On your branch, with the change committed, run it again.
+3. Compare the two: `node scripts/run-eval.ts compare --set first <main's sha> <your sha>`.
+
+Each run is stored by its set and the sha of the checkout it ran from, at `<stateDir>/evals/<set>/<sha>.json`. A run already stored at that sha is refused before any ticket starts; `--replace` runs it again. A run from a checkout with uncommitted changes, untracked files included, is stored apart as `<sha>-dirty`, named so in a comparison (`compare --set first <sha>-dirty <sha>`), and marked "uncommitted changes". A run with `--only` is printed and not stored, since it is not the whole set.
+
+`compare` takes each run as a sha or its first seven or more characters, and prints a row per ticket with each score as `A → B (change)`, and the totals the same way. Its shape, with made-up numbers:
+
+```text
+worker eval of first, A → B
+A: 0d450e9 (opus, effort medium, finished 2026-11-16T09:12:40.000Z)
+B: a1b2c3d (opus, effort medium, finished 2026-11-16T15:02:11.000Z)
+
+ticket  tests        verdict                      similarity           outside     tokens                       wall
+A11-376 fail → pass  not convinced → convinced    0.25 → 0.50 (+0.25)  2 → 1 (-1)  21000000 → 18000000 (-3000000)  900s → 840s (-60s)
+...
+total   6 → 7 (+1) of 10  5 → 6 (+1) convinced  0.31 → 0.35 (+0.04)  ...
+```
+
+The totals count only the tickets both runs have; the others are named under the table. An unknown (`?`) stays unknown, with no change, and the similarity and token totals are over the tickets known on both sides, saying how many they left out.
+
+## A config key on and off
+
+A feature that ships off (the epic's M3 and F2) is measured by running the set with its key on and off at the same sha:
+
+```sh
+node scripts/run-eval.ts --set first --key tickets.lessons=off
+node scripts/run-eval.ts --set first --key tickets.lessons=on
+node scripts/run-eval.ts compare --set first <sha>@tickets.lessons=off <sha>@tickets.lessons=on
+```
+
+The key must be a switch of the host file (an entry marked `switch` in `src/ticket-mode/config-schema.ts`) that the eval hands its worker, listed in `EVAL_SWITCHES` (`src/run-eval/worker.ts`); any other name is refused before a ticket starts. Today that is `tickets.drafts` alone: a switch the eval does not carry into the worker's brief or settings would run a whole set and change nothing. `tickets.lessons` (M3's daily retro) is a switch now, but the eval does not yet hand it on, so the commands above are refused until it does. A feature that ships off reads its key from the settings the eval reads (`readTicketSettings`), carries it into `HostBrief` so the brief the eval writes depends on it, and adds the key to `EVAL_SWITCHES` in the same pull request. The eval sets the key only in its own read of the host file: the file is not written, and the board does not see it. Each setting is stored apart, as `<sha>@<key>=on.json` and `<sha>@<key>=off.json`.
+
+## The token cap
+
+`tickets.evalTokenCap` in the host file is the most tokens one run may spend, 300,000,000 by default (ten tickets at the 90th percentile of a first round on the board's outcome log). The eval adds up each ticket's worker tokens, cache reads included. A worker that fails is counted at the tokens its printed result reports; one killed at its two hours printed none, and counts as unknown, which the report says. When the total has reached the cap and a ticket is still to start, the run stops: it prints how many tickets ran, the tokens they spent and the tickets it never started, stores the run marked as stopped, and exits 1. A ticket already running finishes. The reviewer's tokens, on the Codex account, are not counted.
 
 ## A set
 
@@ -52,4 +92,31 @@ These walls close every path the brief and the board's tools give a worker. They
 
 ## Spend
 
-Evals run on the board's own Claude and Codex accounts: at most 10 tickets per set, and at most 2 runs per pull request (a config key off and on).
+Evals run on the board's own Claude and Codex accounts: at most 10 tickets per set, at most 2 runs per pull request (a config key off and on), and under the token cap.
+
+### The measured cost of the first set
+
+One run, `node scripts/run-eval.ts --set first` from 30a8a5b59 (step 2 of A11-431), opus at effort medium, 2026-11-16 02:44–07:42 UTC on the board's host:
+
+| ticket | tests | verdict | similarity | outside | tokens | wall |
+|---|---|---|---|---|---|---|
+| A11-376 | fail | convinced | 0.11 | 3 | 4,878,818 | 2265s |
+| A11-397 | fail | convinced | 0.25 | 0 | 4,181,052 | 739s |
+| A11-344 | fail | convinced | 0.13 | 1 | 5,999,623 | 1201s |
+| A11-340 | fail | convinced | 0.06 | 3 | 13,616,095 | 1029s |
+| A11-341 | fail | not convinced | 0.12 | 0 | 7,348,419 | 2093s |
+| A11-297 | fail | convinced | 0.11 | 1 | 6,802,865 | 1401s |
+| A11-449 | fail | not convinced | 0.08 | 4 | 36,947,107 | 2943s |
+| A11-394 | fail | not convinced | 0.11 | 0 | 8,711,888 | 2198s |
+| A11-239 | fail | convinced | 0.10 | 0 | 4,871,442 | 689s |
+| A11-140 | fail | not convinced | 0.12 | 0 | 3,545,182 | 371s |
+| **total** | **0/10** | **6/10 convinced** | **0.12** | **12** | **96,902,491** | **14,927s** |
+
+**The cost: about 97M tokens and 5 hours of wall time for the set** (4h09m of ticket time, 4h58m end to end), one ticket at a time. That is a third of the 300M default cap, so one run of the set fits under it with room for a ticket like A11-449 (37M) going long.
+
+**The tests column of this run does not measure the workers.** Two reasons, both found by re-running the check in the run's own trees:
+
+- A11-140, A11-239 and A11-297 start from commits older than `check:changed`, so `DEFAULT_TEST` fails there with `Missing script: check:changed` whatever the worker did. Those entries need their own `test` (or replacing) before their tests score means anything.
+- The other seven fail on tests that fail on this host without any change: in A11-397's tree, 8 of 5,438 failed, all in `src/packaging/host-units`, `src/packaging/org-health`, `src/ticket-mode/serve-ticket-only-host` and `src/tmp-fixtures-are-removed`, and the files the worker changed passed. The same files fail on a clean checkout of main on this host.
+
+So until those are fixed, read the verdict, similarity and outside columns, and compare tests only between two runs on the same host, where the same host failures sit on both sides.

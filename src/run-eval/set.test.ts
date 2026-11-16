@@ -1,7 +1,10 @@
-// no-token: gh -- parses JSON text; nothing here reaches `gh`, `git` or a model
+// no-token: gh -- parses JSON text and the checked-in sets; nothing here reaches `gh`, `git` or a model
 /** A11-431: an eval set is read from its JSON list and refused by name when it is malformed or holds more than ten tickets. */
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { readdirSync, readFileSync } from "node:fs";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { MAX_SET_SIZE, parseSet } from "./set.ts";
 
 const SHA = "0d450e9".padEnd(40, "0");
@@ -33,4 +36,14 @@ test("a malformed set is refused naming the entry and the field", () => {
 
 test("a ticket listed twice is refused: its two results would be one row", () => {
   assert.throws(() => parseSet(JSON.stringify([entry("A11-1"), entry("A11-1")])), /A11-1 is listed twice/);
+});
+
+test("A11-431, step 2 of 2: every checked-in set parses, and the first holds ten agent-org tickets", () => {
+  const dir = fileURLToPath(new URL("../../evals/sets/", import.meta.url));
+  const sets = readdirSync(dir).filter((file) => file.endsWith(".json"));
+  assert.ok(sets.includes("first.json"));
+  for (const file of sets) assert.doesNotThrow(() => parseSet(readFileSync(join(dir, file), "utf8")), file);
+  const first = parseSet(readFileSync(join(dir, "first.json"), "utf8"));
+  assert.equal(first.length, 10);
+  assert.ok(first.every(({ repo }) => repo === "a11ign/agent-org"));
 });
