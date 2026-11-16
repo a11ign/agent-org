@@ -110,6 +110,7 @@ export async function mergeBaseIn({ git, worktree, own, base }: {
     return { ok: false, reason: `could not fetch ${base.branch}: ${firstLine(err)}` };
   }
   const to = (await git(worktree, ["rev-parse", `origin/${base.branch}`])).trim();
+  await catchUp(git, worktree, own);
   const before = (await git(worktree, ["rev-parse", "HEAD"])).trim();
   // A merge writes its commit with a committer: the one the run's own last commit was made with, so no identity is invented, and a machine with no git identity
   // of its own (a CI runner, the instance's service) can still merge.
@@ -131,6 +132,22 @@ export async function mergeBaseIn({ git, worktree, own, base }: {
     return { ok: false, reason: `was refused by the remote: ${firstLine(err)}` };
   }
   return { ok: true, from: base.sha, to, moved: true, pushed: { from: before, to: merged } };
+}
+
+/**
+ * Bring the worktree up to the run's own branch on the remote, when the remote is ahead of it and holds every commit it has: a fast-forward, so nothing is lost.
+ * The branch moves without the worktree when anyone else pushes to it (a person, the code host's update, the board's own merge from another clone), and a
+ * merge made on the stale head is refused by the remote on every sweep (#2059, 82 commits behind). A worktree with a commit the remote does not hold is left
+ * as it is, so the push is refused as before and that commit is never dropped. A fetch or fast-forward that fails leaves it as it is too.
+ */
+async function catchUp(git: Git, worktree: string, own: string): Promise<void> {
+  try {
+    await git(worktree, ["fetch", "--quiet", "origin", own]);
+    await git(worktree, ["merge-base", "--is-ancestor", "HEAD", "FETCH_HEAD"]);
+    await git(worktree, ["merge", "--ff-only", "--quiet", "FETCH_HEAD"]);
+  } catch {
+    // Not pushed yet, diverged, or unreadable: the merge goes on from the worktree's own head.
+  }
 }
 
 /**
