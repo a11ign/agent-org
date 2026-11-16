@@ -43,6 +43,7 @@ import { SENT_BACK_FILE } from "./pool-plan-send-back.ts";
 import { recordBriefed, recordFindingsGiven } from "./queue/queue-ticket-text.ts";
 import { DECISIONS_ROUND_FILE } from "./decisions-files.ts";
 import { writeDecisionsMark } from "./pool-decisions-change.ts";
+import { briefLessons, type RepoLessons } from "./retro/lessons-brief.ts";
 
 const SETTINGS_FILE = ".claude/settings.local.json";
 
@@ -144,7 +145,7 @@ export async function prepare(ctx: PoolContext, entry: Entry): Promise<{ folder:
     const replan = entry.previousPlan === undefined ? undefined : { files: entry.previousPlan, ...(entry.ticketChange ? { change: entry.ticketChange } : {}), findings: findings.length > 0 };
     const claims = heldClaims(store.get().entries, [entry]);
     writeFileSync(join(dir, BRIEF_FILE), planBriefText({ ticket, ticketDir: dir, planDir, attachments, parent, clones: settings.clones, uncloned: await unclonedNames(ctx), run: settings.planner.run,
-      notes, connectors, read, comments: await readTicketComments(source, ticket.key), blockers: entry.blockers, findings, closed, claims, ...(replan ? { replan } : {}) }));
+      notes, connectors, read, comments: await readTicketComments(source, ticket.key), blockers: entry.blockers, findings, closed, claims, ...(replan ? { replan } : {}), lessons: lessonsFor(ctx, [repoOf(entry)]) }));
     writeClaimsGiven(dir, claims);
     const urls = findings.map(({ url }) => url);
     writeFindingsGiven(dir, [{ key: ticket.key, planDir, urls }]);
@@ -157,12 +158,21 @@ export async function prepare(ctx: PoolContext, entry: Entry): Promise<{ folder:
     writeFileSync(join(dir, BRIEF_FILE), briefText({ ticket, folder, ticketDir: dir, attachments, parent, blockers: entry.blockers,
       stackedOn: stackedOn(entry, store.get().entries), ...(entry.overlapStack === undefined ? {} : { overlapStack: entry.overlapStack }), steps: entry.steps, clones: settings.clones, worktreeCommand, prOpenCommand, repo: repoOf(entry),
       notes, connectors, planned: entry.planned === true, drafts: settings.drafts, designTools: settings.designTools, capture: settings.capture, prReview: settings.prReview, keywords: source.keywords ?? DEFAULT_KEYWORDS,
-      read, comments: await readTicketComments(source, ticket.key), findings, closed, numberedSteps: startedSteps(store.get().entries, entry), opened: await openedPullsOf(ctx, entry), held: entry.ciHold?.reason ?? entry.ciTold, lost: lostBeforeThisStart(entry), ...localReviewCommand }));
+      read, comments: await readTicketComments(source, ticket.key), findings, closed, numberedSteps: startedSteps(store.get().entries, entry), opened: await openedPullsOf(ctx, entry), held: entry.ciHold?.reason ?? entry.ciTold, lost: lostBeforeThisStart(entry), ...localReviewCommand,
+      lessons: lessonsFor(ctx, [repoOf(entry), ...entry.repos]) }));
   }
   update(ctx, (queue) => recordBriefed(queue, [ticket.key], read));
   await writeRunFiles(ctx, entry, folder, dir);
   recordPluginCopies(ctx, [entry.ticket.key], folder);
   return { folder, dir, ...(resume ? { resume } : {}) };
+}
+
+/**
+ * The lessons a worker or planner brief carries for `repos` (A11-432): each one's lessons file, read now so a person's edit or delete on the board is in it, and none while `tickets.lessons` is off.
+ * A file that cannot be read is said on the board's log and left out.
+ */
+function lessonsFor({ settings }: PoolContext, repos: readonly (string | null)[]): RepoLessons[] {
+  return briefLessons({ stateDir: settings.stateDir, on: settings.lessons === true, repos, log: (line) => process.stderr.write(`ticket:serve: ${line}\n`) });
 }
 
 /** Whether the run being prepared recorded numbered plan steps as it started (A11-219): the entry the start was given is the queued one, so the queue's is read. PURE. */
@@ -334,7 +344,7 @@ export async function prepareBatch(ctx: PoolContext, members: readonly Entry[]):
   const planDir = emptyPlanDir(dir);
   const claims = heldClaims(store.get().entries, members);
   writeFileSync(join(dir, BRIEF_FILE), batchPlanBriefText({ tickets, runDir: dir, planDir, clones: settings.clones, uncloned: await unclonedNames(ctx), run: settings.planner.run,
-    notes: notesFile(settings.brief, "tickets.brief"), connectors: settings.connectors, claims }));
+    notes: notesFile(settings.brief, "tickets.brief"), connectors: settings.connectors, claims, lessons: lessonsFor(ctx, members.map(repoOf)) }));
   writeClaimsGiven(dir, claims);
   writeFindingsGiven(dir, tickets.map(({ ticket, findings = [] }) => ({ key: ticket.key, planDir: join(planDir, ticket.key), urls: findings.map(({ url }) => url) })));
   for (const { ticket, read, findings } of tickets) {

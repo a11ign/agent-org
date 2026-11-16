@@ -107,7 +107,7 @@ export type TicketSettings = Readonly<{
    */
   fixRedMain?: boolean;
   /**
-   * Whether the board runs the daily ticket-mode retro, which writes each repository's lessons from its recent runs (A11-432, `retro/retro-job.ts`). False by default: the feature turns on only once
+   * Whether the board runs the daily ticket-mode retro, which writes each repository's lessons from its recent runs (A11-432, `retro/retro-job.ts`), and worker and planner briefs carry them (`retro/lessons-brief.ts`). False by default: the feature turns on only once
    * the offline eval shows no drop. Optional, so a settings object made by hand (a test's) leaves it off.
    */
   lessons?: boolean;

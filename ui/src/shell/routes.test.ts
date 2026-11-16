@@ -1,4 +1,4 @@
-import { isSettingsPage, outcomesHref, pageOf, runHref, runKeyOf, SETTINGS_SECTIONS, settingsHref, settingsSectionHref, TITLES } from "./routes.ts";
+import { isSettingsPage, lessonsHref, outcomesHref, pageOf, runHref, runKeyOf, SETTINGS_SECTIONS, settingsHref, settingsSectionHref, TITLES } from "./routes.ts";
 
 describe("runKeyOf", () => {
   it("is the key in /runs/<key>", () => {
@@ -41,20 +41,21 @@ describe("the addresses", () => {
     expect(SETTINGS_SECTIONS.map(({ id }) => settingsSectionHref(id))).toEqual(["/settings/models", "/settings/workers", "/settings/machine", "/settings/plugins"]);
   });
 
-  it("give Outcomes its own address, and a run's page an address runKeyOf reads its key back from", () => {
+  it("give Outcomes and Lessons their own addresses, and a run's page an address runKeyOf reads its key back from", () => {
     expect(outcomesHref).toBe("/outcomes");
+    expect(lessonsHref).toBe("/lessons");
     expect(runHref("A11-1")).toBe("/runs/A11-1");
     expect(runKeyOf(runHref("A 1/2"))).toBe("A 1/2");
   });
 
   it("know which pages are Settings sections", () => {
-    expect(["tickets", "runs", "run", "outcomes"].some((page) => isSettingsPage(page as never))).toBe(false);
+    expect(["tickets", "runs", "run", "outcomes", "lessons"].some((page) => isSettingsPage(page as never))).toBe(false);
     expect(SETTINGS_SECTIONS.every(({ id }) => isSettingsPage(id))).toBe(true);
   });
 
   it("give each page the boards' document title", () => {
     expect(TITLES).toEqual({
-      tickets: "Atomaut: Tickets", runs: "Atomaut: Runs", run: "Atomaut: Run detail", outcomes: "Atomaut: Outcomes", models: "Atomaut: Settings, Models", workers: "Atomaut: Settings, Workers",
+      tickets: "Atomaut: Tickets", runs: "Atomaut: Runs", run: "Atomaut: Run detail", outcomes: "Atomaut: Outcomes", lessons: "Atomaut: Lessons", models: "Atomaut: Settings, Models", workers: "Atomaut: Settings, Workers",
       machine: "Atomaut: Settings, Machine", plugins: "Atomaut: Plugins",
     });
   });
