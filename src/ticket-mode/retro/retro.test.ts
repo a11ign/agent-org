@@ -8,7 +8,7 @@ import { appendOutcome, outcomeRecordOf, type OutcomeRecord, outcomesPath } from
 import type { RunEvent } from "../queue/run-log.ts";
 import { retroEvidence } from "./evidence.ts";
 import { type Lesson, LESSON_TTL_MS, LESSONS_MAX, lessonsDir, lessonsPath, mergeLessons, readLessons, writeLessons } from "./lessons-store.ts";
-import { proposalsOf } from "./retro-prompt.ts";
+import { PERSONS_STEPS, proposalsOf, retroPrompt } from "./retro-prompt.ts";
 import { askClaude, claudeArgs, RETRO_ENV, type RetroDeps, retroStatePath, retroSweep } from "./retro-job.ts";
 
 const DAY = 24 * 60 * 60 * 1000;
@@ -206,4 +206,12 @@ test("A11-432: a stray file in the lessons folder whose name is not a repository
 test("A11-432: a lesson nobody re-confirms is dropped at exactly 30 days", () => {
   const merged = mergeLessons([{ ...lesson("edge", "edge", 0), confirmedAt: NOW - LESSON_TTL_MS }, { ...lesson("inside", "inside", 0), confirmedAt: NOW - LESSON_TTL_MS + 1 }], [], NOW, () => "x");
   assert.deepEqual(merged.map((each) => each.id), ["inside"]);
+});
+
+test("A11-432 step 3: the retro's model is told never to write a lesson that asks a worker to merge or to take another of the person's steps", () => {
+  const prompt = retroPrompt("agent-org", [], [{ run: "A11-1@1", at: 1, source: "needs-you", text: "the approved pull request is not merging" }]);
+  assert.ok(prompt.includes(PERSONS_STEPS));
+  assert.match(PERSONS_STEPS, /Never write or re-confirm a lesson that asks a worker to merge a pull request, enable auto-merge, mark a pull request ready, request a review/);
+  assert.match(prompt, /merging the base branch into the worker's own branch is the worker's/, "the brief's own merge of the base branch stays a lesson the retro may write");
+  assert.match(prompt, /never that it should merge it/);
 });

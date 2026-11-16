@@ -19,6 +19,7 @@ import { defaultCatalog } from "../src/plugins/registry.ts";
 import { rows } from "../src/plugins/rows.ts";
 import { defaultSchema } from "../src/plugins/schema.ts";
 import { barMain, compareMain, main, parseArgs, type RunEvalDeps } from "../src/run-eval.ts";
+import { hostLessons } from "../src/run-eval/worker.ts";
 import { type Revision } from "../src/run-eval/store.ts";
 // eslint-disable-next-line clean-code/no-duplication -- import list: the rule matches statement shape, and imports are not duplicated logic
 import { parseKey, withKey, type KeySetting } from "../src/run-eval/key.ts";
@@ -114,6 +115,7 @@ async function realDeps(settings: TicketSettings): Promise<RunEvalDeps> {
     host: {
       ...(settings.brief === null ? {} : { notes: readFileSync(settings.brief, "utf8") }),
       plugins: settings.plugins, drafts: settings.drafts, prReview: settings.prReview, localReview: settings.localReview === true, keywords: tracker.keywords ?? DEFAULT_KEYWORDS, binDir: settings.binDir,
+      lessons: hostLessons({ on: settings.lessons === true, stateDir: settings.stateDir, log: (line) => process.stderr.write(`run-eval: ${line}\n`) }),
     },
     env: process.env,
     now: Date.now,

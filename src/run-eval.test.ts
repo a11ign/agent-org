@@ -70,7 +70,7 @@ function world(over: Partial<RunEvalDeps> & { worker?: string } = {}) {
     test: async (opts) => (calls.tests.push(opts), true),
     review: async (opts) => (calls.reviews.push(opts), "Looks right.\nVERDICT: convinced\n"),
     reviewer: FAKE_REVIEWER,
-    host: { plugins: [], drafts: false, prReview: null, localReview: false, keywords: DEFAULT_KEYWORDS, binDir: "/home/x/.local/bin" },
+    host: { plugins: [], drafts: false, prReview: null, localReview: false, lessons: [], keywords: DEFAULT_KEYWORDS, binDir: "/home/x/.local/bin" },
     env: { PATH: process.env.PATH, HOME: process.env.HOME, GH_TOKEN: "must-not-reach-the-worker" },
     now: () => clock,
     ...over,
