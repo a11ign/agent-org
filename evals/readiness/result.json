@@ -1,0 +1,108 @@
+{
+  "ranAt": "2026-11-16T15:11:51.982Z",
+  "sha": "cf4c0bcce",
+  "model": "haiku",
+  "capped": false,
+  "score": {
+    "checked": 10,
+    "scored": 10,
+    "low": {
+      "tickets": 0,
+      "roundsPerRun": null,
+      "replans": null,
+      "needsYou": null
+    },
+    "rest": {
+      "tickets": 10,
+      "roundsPerRun": 1.975,
+      "replans": 0,
+      "needsYou": 0
+    },
+    "linked": [],
+    "against": [],
+    "meetsBar": false
+  },
+  "verdict": "10 scored of 10 past tickets: 0 under 60, 10 at 60 or more. No clear link, so the key stays off: 0 scored under 60, short of the 3 the bar needs; no measure is 1.5 times as high for the low tickets.",
+  "tickets": [
+    {
+      "ticket": "A11-434",
+      "runs": 2,
+      "rounds": 3,
+      "needsYou": 0,
+      "replans": 0,
+      "score": 68
+    },
+    {
+      "ticket": "A11-441",
+      "runs": 2,
+      "rounds": 2,
+      "needsYou": 0,
+      "replans": 0,
+      "score": 72
+    },
+    {
+      "ticket": "A11-447",
+      "runs": 2,
+      "rounds": 6,
+      "needsYou": 0,
+      "replans": 0,
+      "score": 72
+    },
+    {
+      "ticket": "A11-442",
+      "runs": 2,
+      "rounds": 4,
+      "needsYou": 0,
+      "replans": 0,
+      "score": 78
+    },
+    {
+      "ticket": "A11-431",
+      "runs": 2,
+      "rounds": 4,
+      "needsYou": 0,
+      "replans": 0,
+      "score": 62
+    },
+    {
+      "ticket": "A11-437",
+      "runs": 3,
+      "rounds": 3,
+      "needsYou": 0,
+      "replans": 0,
+      "score": 68
+    },
+    {
+      "ticket": "A11-439",
+      "runs": 1,
+      "rounds": 1,
+      "needsYou": 0,
+      "replans": 0,
+      "score": 65
+    },
+    {
+      "ticket": "A11-433",
+      "runs": 4,
+      "rounds": 5,
+      "needsYou": 0,
+      "replans": 0,
+      "score": 72
+    },
+    {
+      "ticket": "A11-445",
+      "runs": 1,
+      "rounds": 3,
+      "needsYou": 0,
+      "replans": 0,
+      "score": 70
+    },
+    {
+      "ticket": "A11-435",
+      "runs": 1,
+      "rounds": 4,
+      "needsYou": 0,
+      "replans": 0,
+      "score": 70
+    }
+  ]
+}
