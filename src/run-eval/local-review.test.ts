@@ -53,12 +53,15 @@ test("the stand-in's program starts in the worker's offline environment, whose h
   const record = tmpDir("eval-local-review-");
   const env = offlineEnv({ ...process.env }, { standIns: join(record, "bin"), ghConfig: join(record, "gh"), noHost: join(record, "no-host.json") });
   const [program, ...args] = reviewerProgram(hostFilePath(process.env));
-  const ran = spawnSync(program, args, { cwd: record, env, encoding: "utf8" });
+  // The program is `env` setting the host file, then node: named by its literal path here, so the spawn is shown not to be git (`git-spawn-classification.test.ts`).
+  assert.equal(program, "/usr/bin/env");
+  const run = (words: readonly string[]) => spawnSync("/usr/bin/env", words, { cwd: record, env, encoding: "utf8" });
+  const ran = run(args);
   assert.equal(ran.stderr, "eval-review-local: the eval's stand-in names --ticket-dir and --record; run it as eval-review-local [--base <branch>]\n",
     "it loaded agent-org's modules, which read the host file as they load, and reached its own refusal");
   assert.equal(ran.status, 2);
-  assert.equal(spawnSync(program, [...args, "--ticket-dir", record, "--record", record, "--repo", "x"], { cwd: record, env, encoding: "utf8" }).status, 2, "an unknown flag is refused");
-  const redirected = spawnSync(program, [...args, "--ticket-dir", record, "--record", record, "--record", join(record, "elsewhere")], { cwd: record, env, encoding: "utf8" });
+  assert.equal(run([...args, "--ticket-dir", record, "--record", record, "--repo", "x"]).status, 2, "an unknown flag is refused");
+  const redirected = run([...args, "--ticket-dir", record, "--record", record, "--record", join(record, "elsewhere")]);
   assert.deepEqual([redirected.status, redirected.stderr], [2, "eval-review-local: --record is the eval's to give; run it as eval-review-local [--base <branch>]\n"],
     "a worker that names the record again would have its review read as free");
 });
