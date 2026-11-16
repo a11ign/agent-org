@@ -476,6 +476,12 @@ function designToolsOf(value: unknown): boolean {
 /** What the answerer is set to (A11-438): see `TicketSettings.autoAnswer`. */
 export type AutoAnswerSettings = Readonly<{ on: boolean; threshold: number; model: string }>;
 
+/**
+ * Whether the answerer is on when `tickets.autoAnswer` is absent (A11-438). It turns on only by evidence: true only when the stored replay of past answered questions (`evals/auto-answer/result.json`) meets the bar
+ * (`auto-answer-replay.ts`), and a test holds the two together.
+ */
+export const DEFAULT_AUTO_ANSWER = false;
+
 /** The confidence an automatic answer needs when `tickets.autoAnswerThreshold` is absent (A11-438). */
 export const DEFAULT_AUTO_ANSWER_THRESHOLD = 0.9;
 
@@ -484,7 +490,7 @@ export const DEFAULT_AUTO_ANSWER_THRESHOLD = 0.9;
  * model that is not a word are each refused by name.
  */
 function autoAnswerOf(tickets: Readonly<Record<string, unknown>>): AutoAnswerSettings {
-  const { autoAnswer: on = false, autoAnswerThreshold: threshold = DEFAULT_AUTO_ANSWER_THRESHOLD, autoAnswerModel: model = "haiku" } = tickets;
+  const { autoAnswer: on = DEFAULT_AUTO_ANSWER, autoAnswerThreshold: threshold = DEFAULT_AUTO_ANSWER_THRESHOLD, autoAnswerModel: model = "haiku" } = tickets;
   if (typeof on !== "boolean") throw new TicketSettingsRefusal("tickets.autoAnswer", `must be true or false, not ${JSON.stringify(on)}`);
   if (typeof threshold !== "number" || !(threshold > 0 && threshold <= 1)) throw new TicketSettingsRefusal("tickets.autoAnswerThreshold", `must be a number above 0 and at most 1, not ${JSON.stringify(threshold)}`);
   if (typeof model !== "string" || !/^[\w.[\]-]+$/.test(model)) throw new TicketSettingsRefusal("tickets.autoAnswerModel", `must be a model name, such as "haiku", not ${JSON.stringify(model)}`);
