@@ -1,4 +1,5 @@
-/* The shell: the 248px sidebar and the main column beside it, as the boards lay them out. Every value is a token; the only length written here is the 820px of the media rule. */
+/* The shell: the 248px sidebar and the main column beside it, as the boards lay them out; at 1024px and below the top bar, and at 640px and below the bottom tab bar too (A11-427). Every value is a token;
+   the only lengths written here are the two breakpoints of the media rules. */
 
 .shell {
   min-height: 100vh;
@@ -262,14 +263,470 @@
   letter-spacing: var(--tracking-h1);
 }
 
-/* The boards' media rule: a custom property cannot be read in a media query, so 820px is written here, once, beside the sidebar width it mirrors. */
-@media (max-width: 820px) {
+/* The page's middle section takes no box of its own: its sections are the sidebar's flex items. */
+.sidebar-middle {
+  display: contents;
+}
+
+/* The switcher's dot, the top bar's mark and its tabs are drawn only at 1024px and below. */
+.switcher-dot,
+.topbar-brand,
+.tabs {
+  display: none;
+}
+.switcher-dot {
+  flex: 0 0 auto;
+  width: var(--chip-dot-size);
+  height: var(--chip-dot-size);
+  border-radius: 50%;
+}
+.switcher-dot-connected {
+  background: var(--color-success-dot);
+}
+.switcher-dot-unreachable {
+  background: var(--color-danger-dot);
+}
+.switcher-dot-updating {
+  background: var(--color-warn-text);
+}
+
+/*
+ * Tablet, 1024px and below (A11-427): the sidebar is the sticky top bar. Its head and brand row give their controls to the bar's row, so the bell, the instance switcher and the Search tickets button
+ * each exist once; the sidebar's mark, its links, the pill's drawing and the loop line give way to the bar's mark and tabs. A middle section that is a strip (the Settings sections, the Runs statuses)
+ * hangs under the bar and moves with it; any other (the projects and goals) is left out, as the Tickets page offers it as chips. A custom property cannot be read in a media query, so 1024px and
+ * 640px are written in these rules, and nowhere else.
+ */
+@media (max-width: 1024px) {
+  .shell {
+    flex-direction: column;
+    flex-wrap: nowrap;
+  }
   .sidebar {
-    flex: 1 1 100%;
+    position: sticky;
+    top: 0;
+    z-index: var(--z-topbar);
+    flex: 0 0 var(--topbar-height);
+    flex-direction: row;
+    align-items: center;
+    gap: var(--space-6);
+    height: var(--topbar-height);
+    padding: var(--topbar-padding);
+    background: var(--color-page);
     border-right: 0;
     border-bottom: 1px solid var(--color-border);
   }
+  .sidebar-head,
+  .brand,
+  .sidebar-middle {
+    display: contents;
+  }
+  .brand > .mark,
+  .brand-name,
+  .loop-line,
+  .main-nav,
+  .sidebar > .sidebar-spacer,
+  .sidebar > .nav-link,
+  .sidebar-middle > :not(.strip) {
+    display: none;
+  }
+  /* The pill is still read, as the instance chip's dot shows its colour. */
+  .sidebar .pill {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+    white-space: nowrap;
+  }
+
+  .topbar-brand {
+    display: flex;
+    align-items: center;
+    gap: var(--space-10);
+    min-width: var(--hit-target);
+    min-height: var(--hit-target);
+    margin: 0 var(--space-8) 0 calc(-1 * var(--space-6));
+    padding: 0 var(--space-6);
+    border-radius: var(--radius-8);
+  }
+  .topbar-wordmark {
+    font-size: var(--font-size-mark);
+    font-weight: var(--font-weight-semibold);
+    letter-spacing: var(--tracking-mark);
+  }
+  .tabs {
+    display: flex;
+    gap: var(--space-2);
+  }
+  .tab {
+    display: flex;
+    align-items: center;
+    gap: var(--space-8);
+    min-height: var(--hit-target);
+    padding: 0 var(--space-12);
+    border-radius: var(--radius-8);
+    color: var(--color-text-nav);
+    font-size: var(--font-size-14);
+  }
+  .tab:hover {
+    background: var(--color-hover);
+  }
+  .tab[aria-current="page"] {
+    background: var(--color-active);
+    color: var(--color-text);
+    font-weight: var(--font-weight-medium);
+  }
+  .tab svg {
+    width: var(--icon-16);
+    height: var(--icon-16);
+  }
+  .tab-badge {
+    display: none;
+  }
+
+  .switcher {
+    position: relative;
+    display: flex;
+    align-items: center;
+    gap: var(--space-8);
+    max-width: var(--chip-max-width);
+    min-height: var(--hit-target);
+    padding: 0 var(--space-10);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-pill);
+    background: var(--color-sidebar);
+  }
+  .switcher-dot {
+    display: block;
+  }
+  .switcher select {
+    appearance: none;
+    width: auto;
+    max-width: var(--chip-select-max-width);
+    min-height: var(--chip-select-height);
+    padding: 0 var(--space-4) 0 0;
+    border: 0;
+    background: transparent;
+    text-overflow: ellipsis;
+  }
+
+  /* The bell and the Search tickets button are the bar's 44px icon buttons. */
+  .sidebar .bell,
+  .sidebar .search-button {
+    flex: 0 0 auto;
+    justify-content: center;
+    width: var(--hit-target);
+    height: var(--hit-target);
+    padding: 0;
+    border: 0;
+    border-radius: var(--radius-8);
+    background: transparent;
+    color: var(--color-text-nav);
+  }
+  .sidebar .bell:hover,
+  .sidebar .search-button:hover,
+  .sidebar .bell[aria-expanded="true"] {
+    background: var(--color-hover);
+  }
+  .sidebar .bell svg,
+  .sidebar .search-button svg {
+    width: var(--icon-18);
+    height: var(--icon-18);
+  }
+  .sidebar .bell-badge {
+    top: var(--space-4);
+    right: var(--space-3);
+  }
+  .sidebar .search-button-label,
+  .sidebar .search-button-key {
+    display: none;
+  }
+
+  /* A middle section that is a strip: a row of pills under the bar that scrolls sideways, each drawn 36px tall with a 44px hit area. */
+  .strip {
+    position: absolute;
+    /* Under the bar's bottom border. */
+    top: calc(100% + 1px);
+    left: 0;
+    right: 0;
+    flex-direction: row;
+    align-items: center;
+    gap: var(--space-6);
+    overflow-x: auto;
+    scrollbar-width: none;
+    padding: var(--strip-padding-block) var(--page-padding-tablet);
+    border-bottom: 1px solid var(--color-border);
+    background: var(--color-page);
+  }
+  .strip .section-label,
+  .strip .rail-head,
+  .strip .rail-button-empty {
+    display: none;
+  }
+  .strip > a,
+  .strip > button {
+    position: relative;
+    flex: 0 0 auto;
+    display: flex;
+    align-items: center;
+    gap: var(--space-6);
+    min-height: var(--pill-height);
+    padding: 0 var(--space-12);
+    border: 1px solid var(--color-border-strong);
+    border-radius: var(--radius-pill);
+    font-size: var(--font-size-body);
+    white-space: nowrap;
+  }
+  /* A button's 44px hit area is every button's (`styles.css`); a link's is drawn here the same way. */
+  .strip > a::after {
+    content: "";
+    position: absolute;
+    left: 0;
+    right: 0;
+    top: 50%;
+    height: var(--hit-target);
+    transform: translateY(-50%);
+  }
+  .strip > [aria-current="page"],
+  .strip > [aria-pressed="true"] {
+    border-color: var(--color-border-hover);
+  }
+  /* A dialog stands over the sticky bar and the bars that stand over the tab bar, which stand over the page. */
+  .nt-overlay,
+  .dialog-overlay {
+    z-index: var(--z-sheet);
+  }
+
+  /* The page starts under the strip, which the bar carries over it. */
+  .shell:has(.strip) .shell-main {
+    padding-top: calc(var(--strip-height) + var(--page-padding-tablet));
+  }
+
   .shell-main {
-    flex-basis: 100%;
+    flex: 1 1 auto;
+    padding-left: calc(var(--page-padding-tablet) + var(--safe-left));
+    padding-right: calc(var(--page-padding-tablet) + var(--safe-right));
+  }
+}
+
+/* Phone, 640px and below (A11-427): the bar keeps the mark without the wordmark, and its tabs are the bottom tab bar, with the number of runs running on Runs. The tab bar is hidden while a sheet or a modal is open. */
+@media (max-width: 640px) {
+  .topbar-wordmark {
+    display: none;
+  }
+  .topbar-brand {
+    margin-right: 0;
+  }
+  .tabs {
+    position: fixed;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    z-index: var(--z-tabbar);
+    height: calc(var(--tabbar-height) + var(--safe-bottom));
+    padding: 0 var(--space-8) var(--safe-bottom);
+    gap: 0;
+    border-top: 1px solid var(--color-border);
+    background: var(--color-surface);
+  }
+  .tab {
+    position: relative;
+    flex: 1 1 0;
+    flex-direction: column;
+    justify-content: center;
+    gap: var(--space-3);
+    min-height: var(--tabbar-item-height);
+    margin: var(--space-4) var(--space-2);
+    padding: 0;
+    border-radius: var(--radius-10);
+    color: var(--color-text-count);
+    font-size: var(--font-size-label);
+    font-weight: var(--font-weight-medium);
+  }
+  .tab[aria-current="page"] {
+    background: var(--color-hover);
+  }
+  .tab[aria-current="page"] svg {
+    color: var(--color-accent-lighter);
+  }
+  .tab svg {
+    width: var(--icon-20);
+    height: var(--icon-20);
+  }
+  .tab-badge {
+    position: absolute;
+    top: var(--space-6);
+    left: calc(50% + var(--space-6));
+    display: block;
+    min-width: var(--space-16);
+    height: var(--space-16);
+    padding: 0 var(--space-4);
+    border-radius: var(--radius-8);
+    background: var(--color-warn-text);
+    color: var(--color-page);
+    font-size: var(--font-size-badge);
+    font-weight: var(--font-weight-semibold);
+    line-height: var(--space-16);
+    text-align: center;
+    font-variant-numeric: tabular-nums;
+  }
+  body:has([role="dialog"]) .tabs {
+    display: none;
+  }
+
+  .strip {
+    padding: var(--strip-padding-block) var(--page-padding-phone);
+  }
+  .shell-main,
+  .shell-main-detail,
+  .shell-main-settings {
+    padding: var(--page-padding-phone) calc(var(--page-padding-phone) + var(--safe-right)) var(--page-bottom-phone) calc(var(--page-padding-phone) + var(--safe-left));
+  }
+  .shell:has(.strip) .shell-main {
+    padding-top: calc(var(--strip-height) + var(--page-padding-phone));
+  }
+}
+
+/* The Project and Goal chips under the Tickets header, and the dialog they open (A11-427): drawn only at 1024px and below. */
+.scope-chips {
+  display: none;
+}
+.sheet-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: var(--z-sheet);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--space-32);
+  background: var(--color-search-overlay);
+}
+.sheet {
+  display: flex;
+  flex-direction: column;
+  width: var(--scope-dialog-width);
+  max-width: 100%;
+  max-height: 100%;
+  border: 1px solid var(--color-border-hover);
+  border-radius: var(--radius-12);
+  background: var(--color-raised);
+  box-shadow: var(--shadow-dialog);
+}
+.sheet:focus {
+  outline: none;
+}
+.sheet-grab {
+  display: none;
+  width: var(--sheet-grab-width);
+  height: var(--sheet-grab-height);
+  margin: var(--space-8) auto 0;
+  border-radius: var(--radius-4);
+  background: var(--color-border-hover);
+}
+.sheet-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-12);
+  padding: var(--space-8) var(--space-16);
+  border-bottom: 1px solid var(--color-border);
+}
+.sheet-head .primary {
+  min-height: var(--hit-target);
+  justify-content: center;
+}
+.sheet-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  overflow: auto;
+  padding: var(--space-8) var(--space-8) calc(var(--space-16) + var(--safe-bottom));
+}
+.sheet-body .section-label {
+  padding: var(--space-10) var(--space-8) var(--space-4);
+}
+.scope-group {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+.scope-choice {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-8);
+  min-height: var(--hit-target);
+  padding: 0 var(--space-12);
+  border: 0;
+  border-radius: var(--radius-8);
+  background: transparent;
+  color: var(--color-text);
+  font-size: var(--font-size-14);
+  text-align: left;
+}
+.scope-choice:hover {
+  background: var(--color-hover);
+}
+.scope-choice[aria-pressed="true"] {
+  background: var(--color-active);
+}
+.scope-choice-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.scope-choice-count {
+  color: var(--color-text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+@media (max-width: 1024px) {
+  .scope-chips {
+    display: flex;
+    gap: var(--space-8);
+    overflow-x: auto;
+    scrollbar-width: none;
+    padding: var(--space-4) 0;
+  }
+  .scope-chip {
+    flex: 0 0 auto;
+    display: flex;
+    align-items: center;
+    gap: var(--space-8);
+    max-width: 80%;
+    min-height: var(--pill-height);
+    padding: 0 var(--space-12);
+    border: 1px solid var(--color-border-strong);
+    border-radius: var(--radius-8);
+    background: var(--color-sidebar);
+    color: var(--color-text);
+    font-size: var(--font-size-body);
+    white-space: nowrap;
+  }
+  .scope-chip-kind {
+    color: var(--color-text-muted);
+    font-size: var(--font-size-small);
+  }
+  .scope-chip-value {
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+}
+
+/* Phone: the dialog is a bottom sheet. */
+@media (max-width: 640px) {
+  .sheet-overlay {
+    align-items: flex-end;
+    padding: 0;
+  }
+  .sheet {
+    width: 100%;
+    max-width: var(--sheet-max-width);
+    max-height: var(--sheet-max-height);
+    border-radius: var(--radius-sheet) var(--radius-sheet) 0 0;
+  }
+  .sheet-grab {
+    display: block;
   }
 }

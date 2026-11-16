@@ -60,9 +60,9 @@ test("the check sees the filter that left a stacked pull request with no CI", ()
   assert.equal(stackedGap({ ...ci, pull_request: { ...ci.pull_request, branches: ["main", "admin/**"] } }), null);
 });
 
-test("main stays behind the merge queue: ci.yml still runs on merge_group, and the pull_request types still carry edited", () => {
+test("main stays behind the merge queue: ci.yml still runs on merge_group, and a retarget or a body edit starts no run (A11-403: gate is a check on the head, and pr-body-edit.yml repairs a body fix)", () => {
   assert.ok("merge_group" in ci, "merge_group is the merge condition for main");
-  assert.ok(ci.pull_request?.types?.includes("edited"), "a body edit re-reads the changeset line");
+  assert.ok(!ci.pull_request?.types?.includes("edited"), "an `edited` event started a second ci run in the pull request's group (src/ci-one-run-per-push.test.ts)");
 });
 
 test("a push to any pull request cancels the run of the head it replaced, and nothing else is cancelled or replaced", () => {

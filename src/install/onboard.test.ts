@@ -573,7 +573,7 @@ function greenDoctor(home: string): DoctorDeps {
     pnpmVersion: () => ({ version: "10.34.5", via: "npm exec" as const }),
     probe: async () => 200,
     hostPlace: async () => ({ kind: "no-project" }), platform: "linux", arch: "x64",
-    herdrPlace: () => ({ kind: "unit", where: "/user.slice/agent-org-herdr.service" }), guards: () => ({ watchdog: false, dropIn: false, readCacheDropIn: false }), updateStatus: () => ({ kind: "absent" }),
+    herdrPlace: () => ({ kind: "unit", where: "/user.slice/agent-org-herdr.service" }), guards: () => ({ watchdog: false, dropIn: false, readCacheDropIn: false }), ghWrapperDeclared: async () => true, updateStatus: () => ({ kind: "absent" }),
     herdrIntegrations: () => ({ status: 0, stdout: "claude: current (v10)\ncodex: current (v8)\n", stderr: "" }), herdrVersion: () => "herdr 0.9.3", herdrPlugins: () => null, herdrStatus: () => ({ kind: "absent" }),
     uiBuild: () => ({ found: "/t/ui-build", declared: true, looked: "/t/ui-build", version: "v0.280.0" }),
     drain: () => ({ kind: "none" }), runs: () => [], longWaits: () => [], boardFigures: async () => null, reliabilityWatches: () => null, watchdog: () => null, instanceVersion: () => "v0.280.0", pluginCopies: () => [], releaseTags: () => [],
@@ -908,7 +908,7 @@ test("A11-163 done-when: a fresh machine's onboard enables the Linear and GitHub
   const said: string[] = [];
   const run = async (...argv: string[]) => ({ status: await runPlugin(argv, { hostPath, catalog: defaultCatalog(), log: (line) => said.push(line), error: (line) => said.push(line) }), said: said.splice(0).join("\n") });
   const list = await run("list");
-  assert.match(list.said, /tracker: linear \(from tickets\.providers\.tracker\)\n {2}linear +enabled/);
+  assert.match(list.said, /tracker: linear \(from tickets\.providers\.tracker\)\n(?: {2}\S+ +available .*\n)* {2}linear +enabled/);
   assert.match(list.said, /code host: github \(from tickets\.providers\.codeHost\)\n {2}github +enabled/);
   const disable = await run("disable", "github");
   assert.equal(disable.status, 1);

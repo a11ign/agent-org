@@ -80,9 +80,9 @@ test("`plugin list` shows each concern in order with the plugin enabled for it, 
   assert.match(out, /^ {2}slack +enabled +contract 1\.1 +plugins\/slack$/m, "the publisher is a bundled package since A11-161");
   assert.match(out, /^ {2}atomic +available +contract 2\.0 +plugins\/atomic-reviewer$/m, "and so is the reviewer, whose folder is not its name");
   assert.match(out, /^ {2}fake-tracker +available +contract 1\.9 +fake/m);
-  assert.match(out, /^ {2}fake-codeHost +available +contract 4\.1 +fake/m);
+  assert.match(out, /^ {2}fake-codeHost +available +contract 4\.2 +fake/m);
   assert.match(out, /^ {2}linear +enabled +contract 1\.9 +plugins\/linear$/m);
-  assert.match(out, /^ {2}github +enabled +contract 4\.1 +plugins\/github$/m, "the code host is the bundled github, enabled by the default");
+  assert.match(out, /^ {2}github +enabled +contract 4\.2 +plugins\/github$/m, "the code host is the bundled github, enabled by the default");
   assert.match(out, /^ {2}local +available +contract 1\.1 +plugins\/local$/m, "local is a bundled plugin since A11-162");
   assert.match(out, /^ {2}tailscale +enabled +contract 1\.2 +plugins\/tailscale$/m);
   assert.match(out, /^ {2}telegram +available +contract 1\.1 +plugins\/telegram$/m, "and so is telegram, which no project here enables");
@@ -320,7 +320,7 @@ test("a host file the reader refuses cannot be changed, and the command says why
   const host = scratch(JSON.stringify({ clones: { app: "/tmp/app" }, tickets: { providers: { tracker: { provider: "jira" } } } }));
   const { status, err } = await host.run("list");
   assert.equal(status, 1);
-  assert.match(err, /the host file is refused, so no plugin can be changed: ticket mode: `tickets\.providers\.tracker\.provider` in the host file must be one of "linear", not "jira"/);
+  assert.match(err, /the host file is refused, so no plugin can be changed: ticket mode: `tickets\.providers\.tracker\.provider` in the host file must be one of "github-issues", "linear", not "jira"/);
 });
 
 test("a command that is not one, and one with no plugin name, are usage errors and change nothing", async () => {

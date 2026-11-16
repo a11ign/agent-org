@@ -37,12 +37,37 @@ export function queueNote(entry: ViewEntry): string | null {
   return notes.length > 0 ? notes.join("; ") : null;
 }
 
+/**
+ * The line the board shows for a finished run whose open pull request it has stopped rerunning the cancelled runs of (A11-403), one per pull request, or null when none: "a11ign/agent-org #2017 is blocked behind a cancelled run of gate at 2f3f57e1: cancelled 3 times, the
+ * board has stopped rerunning it; a new push or a rerun clears it". A pull request that is no longer open says nothing, and the run's status does not change for it. PURE.
+ */
+export function cancelledStopNote(entry: ViewEntry): string | null {
+  const open = new Set(openPulls(entry).map(({ url }) => url));
+  const notes = entry.phase === "finished" ? Object.entries(entry.cancelledRerunStopped ?? {}).flatMap(([url, { note }]) => (open.has(url) ? [note] : [])) : [];
+  return notes.length > 0 ? notes.join("; ") : null;
+}
+
 /** What a card says of a run's agent sitting on a dialog (A11-174): the safety prompt the board declined for it (naming the subagent that raised it, A11-209), or the dialog a person must answer, with its first line when one could be read. PURE. */
 export function promptNote(entry: ViewEntry): string | null {
   if (entry.waiting === true) return entry.prompt === undefined ? "Waiting on a person" : `Waiting on a person: ${entry.prompt}`;
   if (entry.phase !== "running" || entry.declined === undefined) return null;
   const { agent, command } = entry.declined;
   return `A safety prompt${agent === undefined ? "" : ` from the ${agent} subagent`} was declined automatically: ${command}`;
+}
+
+/** The day of a reset that is not today, as the card names it, `15 Oct `, or nothing for one later today: the viewer's clock, as {@link clockOf} is. PURE. */
+const dayOf = (ms: number, now: number): string =>
+  (new Date(ms).toDateString() === new Date(now).toDateString() ? "" : `${new Date(ms).toLocaleDateString("en-GB", { day: "numeric", month: "short" })} `);
+
+/**
+ * What a running run's card says while its worker is out of Claude allowance (A11-434), or null: `Waiting: allowance until 14:00`, with the day when the reset is not today, and, once the reset has
+ * passed (`now`), that the allowance was due back then. PURE.
+ */
+export function allowanceLine(entry: ViewEntry, now?: number): string | null {
+  const held = entry.allowance;
+  if (entry.phase !== "running" || held === undefined) return null;
+  const at = `${dayOf(held.until, now ?? held.since)}${clockOf(held.until)}`;
+  return now !== undefined && now >= held.until ? `Waiting: allowance, due back at ${at}` : `Waiting: allowance until ${at}`;
 }
 
 /** What the card says when the pane had lost the run's environment (A11-279): the board started the run again with it, or could not. */
@@ -69,6 +94,9 @@ function askedReason(entry: ViewEntry, now?: number): string | null {
   const note = workingNote(entry, now);
   const resumed = resumeLine(entry);
   if (entry.handedBack) return entry.handedBack;
+  // A worker out of allowance waits for the reset, whatever its last note said (A11-434).
+  const allowance = allowanceLine(entry, now);
+  if (allowance !== null) return allowance;
   // An idle run is never shown as only running: the board's resume comes first, then what its worker last said (A11-279).
   if (note !== null && !note.stalled) return resumed === null ? note.text : `${resumed}; ${note.text}`;
   if (resumed !== null) return resumed;
@@ -180,7 +208,7 @@ export function reasonOf(entry: ViewEntry, now?: number): Readonly<{ line: strin
   const cleared = blockerClearedLine(entry);
   if (cleared !== null) return { line: ticketChangeLine(entry) ?? [cleared, stepNote(entry)].filter((part) => part !== null).join("; "), question: asking ?? asked };
   // That a ticket's text changed under the run comes first: it is what the run is doing about it (A11-167). A pull request approved and green that nothing merges says so, with the reason (A11-291). A reviewed run that is not ready says what it waits on (A11-179).
-  return { line: ticketChangeLine(entry) ?? asked ?? notMergingLine(entry) ?? stepNote(entry) ?? mergeWait(entry), question: asking };
+  return { line: ticketChangeLine(entry) ?? asked ?? cancelledStopNote(entry) ?? notMergingLine(entry) ?? stepNote(entry) ?? mergeWait(entry), question: asking };
 }
 
 

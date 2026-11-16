@@ -54,8 +54,7 @@ test("A11-370: retargeting a reviewed stacked pull request to main keeps its rev
   assert.equal(reviewer.started.length, 1);
   // The board moves the base when the one below merges (A11-106, A11-248's restack): the base changes, the head does not.
   pull.base = "main";
-  // The retarget is an `edited` event, which now starts ci.yml on the same head: its checks run again while the review stands.
-  pull.settled = false;
+  // The retarget is an `edited` event, which starts no ci run (A11-403): `gate` is a check on the head, so the checks the head had stay settled while the review stands.
   assert.equal(host.pullAt(url)?.head, HEAD);
   await pool.reviewNewHeads();
   await pool.reviewNewHeads();

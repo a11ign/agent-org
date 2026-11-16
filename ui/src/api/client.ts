@@ -2,7 +2,7 @@ import type { Answer } from "./answer.ts";
 import { mutate } from "./mutate.ts";
 import { send, type Fetch, type Target } from "./request.ts";
 import type {
-  Change, CheckAnswer, ChoiceView, CloseRequest, ConfigView, ConnectionsView, EditFile, FlakesView, InterventionsView, People, PickView, ProjectView, PluginActionDone, PluginActionRequest, PluginsAnswer, QueueChildrenView, QueueEntryView, QueueView, RunAction, RunChoice,
+  Change, CheckAnswer, ChoiceView, CloseRequest, ConfigView, OutcomesView, ConnectionsView, EditFile, FlakesView, InterventionsView, People, PickView, ProjectView, PluginActionDone, PluginActionRequest, PluginsAnswer, SecretDone, QueueChildrenView, QueueEntryView, QueueView, RunAction, RunChoice,
   SavedChoice, SettingsPreview, SettingsRestored, SettingsSaved, SettingsView, Ticket, TicketsPageView, TicketView, ViewConnection, WritersView,
 } from "./types.ts";
 
@@ -11,6 +11,9 @@ export type QueueRequest = RunChoice & Readonly<{ plan?: boolean }>;
 
 /** The body of a new-ticket request, as `writerBody` in `board-view.ts` builds it from the form. */
 export type WriterRequest = Readonly<Record<string, string>>;
+
+/** A secret typed on the Plugins page (A11-445): the plugin, its setting, the value, and the hash of the plugin's file as the page read it. The answer never carries the value. */
+export type SecretRequest = Readonly<{ name: string; setting: string; value: string; base: string }>;
 
 /** A Settings save: the edit, the file's hash as the page read it, and the warnings the person confirmed. */
 export type SettingsSave = Readonly<{ file: EditFile; changes: readonly Change[]; base: string; confirmed?: readonly string[] }>;
@@ -59,6 +62,8 @@ export function createClient(connection: ViewConnection | null, { fetch: fetchWi
     interventions: read<InterventionsView>("/api/interventions"),
     /** The tests that flaked three times in seven days (A11-300): the board lists them as needing a fix. */
     flakes: read<FlakesView>("/api/flakes"),
+    /** The outcome rollups of a time window (A11-430): `query` is the page's own `?from=&to=`, passed on as it is, or empty for the last seven days. */
+    outcomes: (query: string) => read<OutcomesView>(`/api/outcomes${query}`),
     settings: read<SettingsView>("/api/settings"),
     plugins: read<PluginsAnswer>("/api/plugins"),
     /** The plugins, with the instance asked to run their checks again (A11-270): what a person's Retry and "Read the plugins again" send. */
@@ -90,6 +95,7 @@ export function createClient(connection: ViewConnection | null, { fetch: fetchWi
     saveSettings: (save: SettingsSave) => post<SettingsSaved>("/api/settings/save", save),
     restoreSettings: (file: EditFile) => post<SettingsRestored>("/api/settings/restore", { file }),
     pluginAction: (request: PluginRequest) => post<PluginActionDone>("/api/plugins/action", request),
+    pluginSecret: (request: SecretRequest) => post<SecretDone>("/api/plugins/secret", request),
   };
 }
 

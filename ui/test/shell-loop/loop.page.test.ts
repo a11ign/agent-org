@@ -46,7 +46,8 @@ async function openOn(board: LoopReading | null, width: number): Promise<Readonl
   });
   const page = await context.newPage();
   await page.goto(`${site.origin}/tickets`);
-  await page.locator(".nav-count").filter({ hasText: "37" }).waitFor();
+  // The sidebar's count is in the page at every width; the top bar leaves it out at 1024px and below (A11-427).
+  await page.locator(".nav-count").filter({ hasText: "37" }).waitFor({ state: "attached" });
   return { page, context, healthReads: () => healthReads };
 }
 
@@ -59,7 +60,8 @@ describe("the loop line under the connection pill, in Chromium", () => {
       const { page, context } = await openOn(board, screen.width);
       try {
         const line = page.locator(".sidebar-head .loop-line");
-        await line.waitFor();
+        // At 1024px and below the top bar leaves the line out (A11-427): it is read, not drawn.
+        await line.waitFor({ state: screen.width > 1024 ? "visible" : "attached" });
         expect(await line.textContent()).toBe(text);
         expect(await line.getAttribute("title")).toBe(title);
         expect(await line.evaluate((element) => element.classList.contains("loop-line-warn"))).toBe(warn);

@@ -47,8 +47,8 @@ export type InstanceAnswers = Readonly<{
   parents?: readonly Ticket[]; people?: People; pagesFail?: Failure; pick?: PickView; writer?: WritersView; pages?: Readonly<Record<string, readonly TicketsPageView[]>>;
   /** The tracker's projects (A11-378); a project's pages are `pages` under `project:<name>`. */
   projects?: readonly ProjectView[];
-  /** What the whole-workspace search answers for the words asked (A11-378). */
-  search?: (text: string) => readonly TicketView[];
+  /** What the whole-workspace search answers for the words asked (A11-378), or the failure it answers with (A11-387). */
+  search?: (text: string) => readonly TicketView[] | Failure;
   post?: (path: string, body: unknown) => unknown | Failure;
   /** The After-merge checks of each ticket, as its own read (`GET /api/queue/<key>`) sends them (A11-302). */
   ticketChecks?: Readonly<Record<string, readonly TicketCheck[]>>;
@@ -109,6 +109,9 @@ function pageAnswer(answers: InstanceAnswers, query: URLSearchParams): { status:
   return json({ ...pages[index], next: index + 1 < pages.length ? String(index + 1) : null });
 }
 
+/** What the search answers: its matches, or the tracker's refusal (A11-387). */
+const searchAnswer = (found: readonly TicketView[] | Failure): { status: number; body: string } => (isFailure(found) ? failed(found) : json(found));
+
 /** The answer to one request (a path `/api/...` or `/c/<name>/api/...`, and its method and body), as a status and a JSON body, or null for a path no instance has. */
 export function answerFor(stand: Stand, path: string, request: Readonly<{ method: string; body?: unknown }> = { method: "GET" }): { status: number; body: string } | null {
   if (path === "/api/connections") {
@@ -134,7 +137,7 @@ export function answerFor(stand: Stand, path: string, request: Readonly<{ method
     case "/api/projects":
       return answers.projects === undefined ? null : json(answers.projects);
     case "/api/search":
-      return answers.search === undefined ? null : json(answers.search(new URLSearchParams(path.split("?")[1] ?? "").get("q") ?? ""));
+      return answers.search === undefined ? null : searchAnswer(answers.search(new URLSearchParams(path.split("?")[1] ?? "").get("q") ?? ""));
     case "/api/pick":
       return answers.pick === undefined ? null : json(answers.pick);
     case "/api/writer":

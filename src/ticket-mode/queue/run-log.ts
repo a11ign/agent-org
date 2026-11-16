@@ -31,9 +31,9 @@ export type RoundCause = "feedback" | "checks" | "conflict" | "asked" | "decisio
 /**
  * Why a ticket was queued again: a person's retry, the next plan step after a merge, a stop for an update, a plan written again, a stop behind a ticket its worker waits on (A11-272), a hold for its ticket's CI spend (A11-261), or the step
  * it waited with while a conflict round on one of its earlier pull requests ran (`conflict-round`, A11-286),
- * or a restart that caught it still starting, before its agent opened (`restart`, A11-294), or the board's own retry of a run that crashed on a transient network error (`crash-retry`, A11-345), or a run that ended `wrong-repo` naming a repository of the organisation, which the board moved there and started again (`rerouted`, A11-355).
+ * or a restart that caught it still starting, before its agent opened (`restart`, A11-294), or the board's own retry of a run that crashed on a transient network error (`crash-retry`, A11-345), or the board's start of a run again, after its retries were used, once its network calls succeed (`network-recovered`, A11-399), or a run that ended `wrong-repo` naming a repository of the organisation, which the board moved there and started again (`rerouted`, A11-355).
  */
-export type RequeueWhy = "retry" | "next-step" | "update" | "replan" | "blocker" | "ci-budget" | "conflict-round" | "restart" | "crash-retry" | "rerouted";
+export type RequeueWhy = "retry" | "next-step" | "update" | "replan" | "blocker" | "ci-budget" | "conflict-round" | "restart" | "crash-retry" | "network-recovered" | "rerouted";
 
 /**
  * What the board did about a pull request that conflicts with its base or is behind it (A11-286, {@link BaseMergeStep}): it asked the host to merge the base in (`merging`, for a conflict; `behind`, for a branch that is only behind), it started a conflict round
@@ -78,14 +78,16 @@ type EventBody =
   /** `base` is the branch the pull request merges into, or null when the host did not say. */
   | Readonly<{ kind: "base-merge"; url: string; base: string | null; step: BaseMergeStep }>
   /**
-   * The board reran the cancelled runs of the required `checks` that blocked an approved, armed pull request at `head` (A11-342): once for a head, and this event is what says so. `refused` is why the code host would not rerun them, in its own first line: the board
-   * asks again at the next watch, up to three refusals for a head.
+   * The board reran a cancelled run of the required `checks` that blocked an approved, armed pull request at `head` (A11-342): each accepted rerun of a head is one of these, up to two (A11-403), and they are what bound it. `refused` is why the code host would not rerun it, in
+   * its own first line: the board asks again at the next watch, up to three refusals for a head. `stopped` marks the one event a head gets when its third cancelled run was read and the board stopped rerunning (A11-403): it is no try, and it is written once.
    */
-  | Readonly<{ kind: "cancelled-rerun"; url: string; head: string; checks: readonly string[]; refused?: string }>
+  | Readonly<{ kind: "cancelled-rerun"; url: string; head: string; checks: readonly string[]; refused?: string; stopped?: true }>
   /** `outcome` is the kind of outcome the run ended on, and `reason` the one it gave, where it has one. */
   | Readonly<{ kind: "finished"; outcome: string; reason?: string }>
   /** A failed write of the run's result to the tracker (A11-304): the `failures`th, and the first line of the error the tracker or the network gave. */
   | Readonly<{ kind: "tracker-write"; step: TrackerWriteStep; failures: number; error: string }>
+  /** The round's transcript could not be read, so no outcome record was written for it (A11-430): `reason` says why. Its tokens are unknown, never 0. */
+  | Readonly<{ kind: "outcome-unread"; reason: string }>
   | Readonly<{ kind: "dismissed" }>
   | Readonly<{ kind: "removed" }>
   | Readonly<{ kind: "requeued"; why: RequeueWhy }>;

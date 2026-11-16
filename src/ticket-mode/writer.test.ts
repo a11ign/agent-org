@@ -80,7 +80,7 @@ test("A11-134: a decided outcome names the ticket it answered, and one that name
 });
 
 test("A11-199: the limits are defined once, in a module free of Node, and the writer re-exports the run's", () => {
-  assert.deepEqual([limits.WRITER_REQUEST_CHARS, limits.MAX_CREATED], [8000, 10]);
+  assert.deepEqual([limits.WRITER_REQUEST_CHARS, limits.MAX_CREATED], [8000, 25]);
   assert.equal(MAX_CREATED, limits.MAX_CREATED);
 });
 

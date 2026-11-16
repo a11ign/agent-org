@@ -60,7 +60,10 @@ export function sendJsonFor(request: Pick<IncomingMessage, "headers">, response:
   response.end(packed ? gzipSync(body, { level: 3 }) : body);
 }
 
-/** A request's JSON object, or `{}` when it has no body. REFUSES a body over `limit` bytes, and one that is not a JSON object. */
+/**
+ * A request's JSON object, or `{}` when it has no body. REFUSES a body over `limit` bytes, and one that is not a JSON object. A body that does not parse is refused in words of its own:
+ * `JSON.parse`'s message quotes the text around the fault, which may be a secret the page sent (A11-445), and the refusal is answered and logged.
+ */
 export async function readJson(request: IncomingMessage, limit: number): Promise<Json> {
   const chunks: Buffer[] = [];
   let size = 0;
@@ -70,7 +73,12 @@ export async function readJson(request: IncomingMessage, limit: number): Promise
     chunks.push(chunk as Buffer);
   }
   if (chunks.length === 0) return {};
-  const value: unknown = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+  let value: unknown;
+  try {
+    value = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+  } catch {
+    throw new Error("a request body must be valid JSON");
+  }
   if (value === null || typeof value !== "object" || Array.isArray(value)) throw new Error("a request body must be a JSON object");
   return value as Json;
 }

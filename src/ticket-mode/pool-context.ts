@@ -12,11 +12,12 @@ import type { CodeHost, MergeFlow } from "../plugins/contracts/code-host.ts";
 import { type ReviewerState, reviewerStateOf, startsReviewers } from "./concern-states.ts";
 import type { Publisher } from "../plugins/contracts/publisher.ts";
 import type { Reviewer } from "../plugins/contracts/reviewer.ts";
-import { defaultHerdr, defaultHerdrAsync, defaultHerdrCall, defaultWait, type Herdr, type HerdrAsync, type HerdrService } from "./pool-herdr.ts";
+import { defaultHerdr, defaultHerdrAsync, defaultHerdrCall, defaultHerdrProbe, defaultWait, type Herdr, type HerdrAsync, type HerdrService } from "./pool-herdr.ts";
 import { log } from "./pool-state.ts";
 import { newHostAlertState, type HostAlertReads, type HostAlertState } from "./host-alerts.ts";
 import { newLegacySweepState, type LegacySweepState, type LegacyTmp } from "./legacy-tmp.ts";
 import { defaultGit, type Git } from "./worktree.ts";
+import { codexSessionsDir } from "./outcomes/reviewer-tokens.ts";
 import { noReviewerMemory, reviewerMemoryPath, readReviewerMemory, type ReviewerMemory, type ReviewerPort, type ReviewerRef, REVIEWER_LOGIN } from "./reviewer-port.ts";
 import { type DrainStore } from "./pool-drain.ts";
 import { type PullRead } from "./board-view/pull-review-state.ts";
@@ -35,9 +36,16 @@ import type { WriteRetry } from "./result-write-retry.ts";
 import { type FillState, newFillState } from "./health-figures.ts";
 import type { HealthFigures } from "./health-figures.ts";
 import type { RunChoice } from "./queue/queue-entries-and-outcomes.ts";
+import type { QueueAfter } from "./queue/queue-after-writing.ts";
 import { type FlakeLog, flakesPath, flakesViewOf, recordFlakes } from "./flakes.ts";
 import type { StartReadsState } from "./pool-start-reads.ts";
 import { READ_TIMEOUT_MS } from "./queue/start-reads.ts";
+import { callOutcomes, type CallLedger } from "./call-outcomes.ts";
+import { DEPENDENCY_TICKETS_FILE } from "./dependency-updates/board.ts";
+import { fixReadsOf, type FixReads } from "./main-red/fix-owners.ts";
+
+/** What {@link PoolDeps.queueWritten} answers (A11-420): how many tickets it queued, or the sentence its refusal gave. */
+export type QueuedWritten = Readonly<{ queued: number } | { refused: string }>;
 
 /** Where a planning run's plan attach stands after a failure worth trying again: the tries that failed, and the time (the pool's clock) the next may start. */
 export type AttachRetry = Readonly<{ failures: number; nextAt: number }>;
@@ -58,6 +66,8 @@ export type PoolDeps = Readonly<{
   load?: () => Readonly<{ load: number; cores: number }>;
   /** Where Claude Code keeps each project's transcripts. */
   transcriptsRoot?: string;
+  /** Where Codex keeps the reviewer's session rollouts (A11-430); `$CODEX_HOME/sessions`, else `~/.codex/sessions`, when absent. */
+  codexSessionsRoot?: string;
   /** Claude Code's plugin install record, read to check each worker's plugins are installed where its session will find them. */
   pluginRecord?: string;
   /** Start the session's headless herdr server; called only when its listing does not answer, and the machine has no herdr service (a hand-run `ticket:serve`). */
@@ -118,6 +128,14 @@ export type PoolDeps = Readonly<{
   runChoice?: () => RunChoice;
   /** The longest one read of the tracker, a remote or a plan, or the host's preflight, is waited for (A11-359, A11-364); `READ_TIMEOUT_MS` (20 s) when absent. A test gives a short one. */
   readMs?: number;
+  /**
+   * Queues the tickets a new-ticket run filed, on the choice its request was stamped with (A11-420): the server's own `refuseTaken` and `queueTickets`, as `POST /api/queue` runs them.
+   * Answers how many were queued, or the sentence a refusal gave; it may throw. `stillWanted` is asked just before the add, after the tracker's reads: when it answers false (the run was
+   * stopped meanwhile), nothing is queued. Absent: a run that asked for its tickets to be queued queues none, and says so.
+   */
+  queueWritten?: (keys: readonly string[], after: QueueAfter, stillWanted: () => boolean) => Promise<QueuedWritten>;
+  /** The ledger of the board's calls to Linear and GitHub, which a crashed run's recovery reads to tell the network is back (A11-399): this thread's `callOutcomes` when absent. A test gives its own. */
+  calls?: CallLedger;
 }>;
 
 /** A run the board will start again where it is, because its pane lacks the environment the board set at start (A11-279): by ticket key, with the resume note its card will carry. */
@@ -140,11 +158,17 @@ export type PoolContext = Readonly<{
   herdrAsync: HerdrAsync;
   /** The async herdr calls whose refusal is read or said (a start's pane and listings, a workspace close): herdr's own reason on the error (A11-282). */
   herdrCall: HerdrAsync;
+  /** The listing that says whether the session's server is up (`ensureSession`): asked directly, outside the board's client and its breaker (A11-436). */
+  herdrProbe: HerdrAsync;
   wait: (ms: number) => Promise<void>;
   now: () => number;
+  /** The board's calls to Linear and GitHub, as they went (A11-399). */
+  calls: CallLedger;
   /** The `tickets.preflight` commands, asked before a run starts: a failure holds every start, and says why. */
   gate: ReturnType<typeof createGate>;
   transcripts: string;
+  /** Where Codex keeps the reviewer's session rollouts, read for a review's tokens (A11-430). */
+  codexSessions: string;
   git: Git;
   /** The accounts whose feedback a worker does not answer besides its own: the reviewer's, so its verdict never moves `feedbackAt`. None on a machine with no reviewer. */
   feedbackIgnores: readonly string[];
@@ -258,6 +282,11 @@ export type PoolContext = Readonly<{
   workspaceCloses: WorkspaceCloses;
   /** Asks for a pass now (A11-364): `createPool` sets it to its tick, and work that queues a run after the pass decided calls it (a plan attached, a run moved to the repository its worker named). Nothing until then, as in a context no pool made. */
   wake: { run: () => void };
+  /**
+   * Reads the board's fix tickets for checks red on main (A11-428): which fix owns a held check, and whether it merged. Undefined when the machine's `tickets.fixRedMain` is off, and in a context no pool made: a held pull
+   * request then names only the owner its `Blocked-by:` line or the check's refusal names, as before A11-428.
+   */
+  fixes?: () => FixReads;
 }>;
 
 /** Build a pool's context from its store and deps: the seams it is given, the state it keeps, and what it remembers of its reviewers. */
@@ -268,10 +297,12 @@ export function newPoolContext(store: QueueStore, deps: PoolDeps): PoolContext {
   const injected = deps.herdr;
   const herdrAsync: HerdrAsync = deps.herdrAsync ?? (injected ? async (args, timeoutMs) => injected(args, timeoutMs) : defaultHerdrAsync);
   const herdrCall: HerdrAsync = deps.herdrAsync ?? (injected ? async (args, timeoutMs) => injected(args, timeoutMs) : defaultHerdrCall);
+  const herdrProbe: HerdrAsync = deps.herdrAsync ?? (injected ? async (args, timeoutMs) => injected(args, timeoutMs) : defaultHerdrProbe);
   const wait = deps.wait ?? defaultWait;
   const now = deps.now ?? Date.now;
   const gate = createGate(settings.preflight, deps.preflight ?? shellPreflight, now);
   const transcripts = deps.transcriptsRoot ?? join(homedir(), ".claude", "projects");
+  const codexSessions = deps.codexSessionsRoot ?? codexSessionsDir();
   const git = deps.git ?? defaultGit;
   /** How long a run with a working note may sit idle with no newer outcome before the board marks it stalled. */
   const stallMs = settings.stallMinutes * 60_000;
@@ -333,12 +364,13 @@ export function newPoolContext(store: QueueStore, deps: PoolDeps): PoolContext {
   /** The new-ticket runs whose drafts are being read, by id, so a tick that sees the same outcome meanwhile reads them once. */
   const finishing = new Set<string>();
   return {
-    store, settings, source, codeHost, hook, deps, herdr, herdrAsync, herdrCall, wait, now, gate, transcripts, git, feedbackIgnores, hostFile, stallMs, session, misses, answered, rebasing: new Set<string>(),
+    store, settings, source, codeHost, hook, deps, herdr, herdrAsync, herdrCall, herdrProbe, wait, now, calls: deps.calls ?? callOutcomes, gate, transcripts, codexSessions, git, feedbackIgnores, hostFile, stallMs, session, misses, answered, rebasing: new Set<string>(),
     startedHere, attaching, cloning: new Map<string, Promise<string>>(), cloneSweep: { busy: false }, attachRetries, writeRetries, telling: new Set<string>(), answering: new Set<string>(), pendingMoves, removing, batches, reviewerOn, reviewerFile, reviewerMemory, reviewer, reviewerState, offPulls: new Set<string>(), publisher: deps.publisher, reviewerStarted, reviewerResumed,
     reviewerReposts, reviewerRereviewed, closing, pullReads, refusedHeads, greenSeen, reviewerDropped, claudeSessions, finishing, tickState: { busy: false, again: false }, fillState: newFillState(), ownLogin: { value: null }, flakes: flakeLog(settings.stateDir, now), repliesRead: new Set<string>(), baseMerges: new Map<string, BaseMerge>(), mergeFlows: new Map(), settledPulls: new Set<string>(), listingMs: deps.listingMs ?? 60_000, readMs: deps.readMs ?? READ_TIMEOUT_MS, idleSaid: { reason: null }, keptSweep: { busy: false, done: Promise.resolve() }, stackMergeAsked: new Map<string, StackMergeAsk>(), restacked: new Map<string, RestackDone>(), restackSaid: new Set<string>(), waitPolls: new Map(), pullReadAt: new Map<string, number>(), recordSaid: new Set<string>(), waitReading: new Set<string>(), restart: { read: false },
     reseating: new Map<string, Reseat>(), envLost: new Map<string, readonly string[]>(), paneEnv: deps.paneEnv ?? livePaneEnv(herdrCall, settings.herdrSession),
     exposure: { at: null, checks: [], said: new Map<string, string>() }, hostAlerts: newHostAlertState(), runTmpBase: deps.privateTmpBase === undefined ? undefined : resolve(deps.privateTmpBase), legacySweep: newLegacySweepState(),
     startReads: { pending: new Set<Promise<void>>(), reading: new Set<string>() }, workspaceCloses: new Set<Promise<void>>(), wake: { run: () => {} },
+    fixes: settings.fixRedMain === true ? fixReadsOf(join(settings.stateDir, "tickets", DEPENDENCY_TICKETS_FILE), store.get, log) : undefined,
   };
 }
 

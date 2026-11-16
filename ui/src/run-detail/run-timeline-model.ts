@@ -30,7 +30,7 @@ const CAP_WORDS: Readonly<Record<"planner" | "decided" | "waiting" | "resumed", 
 
 const ANSWER_WORDS: Readonly<Record<AnsweredBy, string>> = { respond: "Respond", approve: "approval", talk: "Talk to it", answer: "the board's answer", terminal: "the run's own terminal" };
 
-const REQUEUE_WORDS: Readonly<Record<RequeueWhy, string>> = { retry: "a retry", "next-step": "the next plan step", update: "an update", replan: "the plan written again", blocker: "a wait on another ticket", "ci-budget": "its CI budget", "conflict-round": "after its conflict round", restart: "a restart before its agent opened", "crash-retry": "an automatic retry after a network error", rerouted: "a move to the repository the worker named" };
+const REQUEUE_WORDS: Readonly<Record<RequeueWhy, string>> = { retry: "a retry", "next-step": "the next plan step", update: "an update", replan: "the plan written again", blocker: "a wait on another ticket", "ci-budget": "its CI budget", "conflict-round": "after its conflict round", restart: "a restart before its agent opened", "crash-retry": "an automatic retry after a network error", "network-recovered": "an automatic restart once the network was back", rerouted: "a move to the repository the worker named" };
 
 /** The colour of a base-merge row: violet while the board merges the base in, as a pull request opened, and amber for a round, a wait or the cap, as a round is. */
 const BASE_MERGE_TONES: Readonly<Record<BaseMergeStep, DotTone>> = { merging: "violet", behind: "violet", round: "amber", waiting: "amber", capped: "amber", held: "amber" };
@@ -80,7 +80,7 @@ function rowOf(event: TimelineEvent, { now, startedAt, newest, going, canceled, 
     case "answered": return { text: "Answered", when: joined(ago, ANSWER_WORDS[event.by]), tone: "grey" };
     case "published": return { text: "Published", when: joined(ago, note), tone: "violet" };
     case "base-merge": return { text: baseMergeWords(event.url, event.base, event.step), when: joined(ago, note), tone: BASE_MERGE_TONES[event.step] };
-    case "cancelled-rerun": return { text: cancelledRerunWords(event), when: joined(ago, note), tone: event.refused === undefined ? "violet" : "amber" };
+    case "cancelled-rerun": return { text: cancelledRerunWords(event), when: joined(ago, note), tone: event.refused === undefined && event.stopped === undefined ? "violet" : "amber" };
     case "merged": return { text: "Pull request merged", when: joined(pullLabel(event.url), ago, note), tone: "violet" };
     case "finished": return newest && canceled ? { text: "Ticket canceled in the tracker", when: joined(ago, note), tone: "grey" } : event.outcome === "needs-human" ? { text: "Handed back to a person", when: joined(ago, note), tone: "amber" } : {
       text: FAILED_OUTCOMES.has(event.outcome) ? "Run failed" : "Run finished",
@@ -88,6 +88,7 @@ function rowOf(event: TimelineEvent, { now, startedAt, newest, going, canceled, 
       tone: FAILED_OUTCOMES.has(event.outcome) ? "red" : "grey",
     };
     case "tracker-write": return { text: TRACKER_WRITE_WORDS[event.step], when: joined(ago, event.error, note), tone: TRACKER_WRITE_TONES[event.step] };
+    case "outcome-unread": return { text: "Its tokens could not be read: no outcome record for this round", when: joined(ago, event.reason, note), tone: "red" };
     case "dismissed": return { text: "Dismissed", when: ago, tone: "grey" };
     case "removed": return { text: "Removed", when: ago, tone: "grey" };
     case "requeued": return { text: "Queued again", when: joined(ago, REQUEUE_WORDS[event.why]), tone: "grey" };

@@ -2,13 +2,19 @@ import { useRef, useState } from "react";
 import type { Answer } from "../api/answer.ts";
 import type { Client } from "../api/client.ts";
 import type { PollState } from "../api/use-poll.ts";
-import type { Change, EditFile, PluginActionDone, PluginsAnswer, SettingsPreview } from "../api/types.ts";
+import type { Change, EditFile, PluginActionDone, PluginsAnswer, SecretDone, SettingsPreview } from "../api/types.ts";
 import { dangerousIn, inForceOfSaved, isConflict, nameOf } from "../settings/settings-model.ts";
 import { switchHeading, uninstallHeading, type Concern, type Plugin } from "./plugins-model.ts";
 
-/** What the last change came to, which the page says in a banner above its tabs until the next one. `applied` carries the words the backend gave and the file it kept. */
+/** What a stored secret's own check found (A11-445): the plugin and its rows, or null rows when the plugin is not enabled, so none ran. */
+export type SecretChecks = Readonly<{ plugin: string; rows: SecretDone["checks"] }>;
+
+/**
+ * What the last change came to, which the page says in a banner above its tabs until the next one. `applied` carries the words the backend gave and the file it kept, and, for a stored
+ * secret, what the plugin's check found.
+ */
 export type Notice =
-  | Readonly<{ kind: "applied"; said: string; inForce: readonly string[]; backup: string | null; file: EditFile }>
+  | Readonly<{ kind: "applied"; said: string; inForce: readonly string[]; backup: string | null; file: EditFile; checks?: SecretChecks }>
   | Readonly<{ kind: "refused"; sentence: string }>
   | Readonly<{ kind: "conflict" }>
   | Readonly<{ kind: "failed"; sentence: string }>;
@@ -28,6 +34,13 @@ function noticeOf(answer: Answer<PluginActionDone>, file: EditFile): Notice {
   return { kind: "applied", said, inForce, backup: backup === null ? null : nameOf(backup), file };
 }
 
+/** What a stored secret comes to: where it went and what the plugin's check found, or the refusal. */
+function storedNotice(answer: Answer<SecretDone>, plugin: string, file: EditFile): Notice {
+  if (!answer.ok) return failure(answer);
+  const { said, inForce, backup, checks } = answer.data;
+  return { kind: "applied", said, inForce, backup: backup === null ? null : nameOf(backup), file, checks: { plugin, rows: checks } };
+}
+
 export type Changes = Readonly<{
   notice: Notice | null;
   /** The plugin the last switch made active, with the concern it is for: the card says what that switch ran and that it needs a restart. */
@@ -37,6 +50,8 @@ export type Changes = Readonly<{
   busy: boolean;
   /** Does what the plugin's plan says, asking first where the backend's controls name a sentence to confirm. */
   act: (action: PluginAction, plugin: Plugin, concern: Concern, answer: PluginsAnswer) => void;
+  /** Stores a secret typed on the page (A11-445). The value goes in this one request and is kept nowhere on the page. */
+  storeSecret: (plugin: Plugin, concern: Concern, setting: string, value: string, answer: PluginsAnswer) => void;
   /** Previews a change to the host file, asks first when it names a dangerous key, and saves it. `base` is the file as the page last read it: a file that has changed since is the conflict. */
   change: (changes: readonly Change[], said: string, base: string | undefined) => void;
   confirm: () => void;
@@ -108,6 +123,10 @@ export function useChanges({ client, read, held, started }: Inputs): Changes {
     setPending({ heading, sentence, confirm: action === "uninstall" ? "Uninstall" : "Switch", file: concern.file, go: request(action, plugin, concern, answer, CONFIRMED) });
   }
 
+  function storeSecret(plugin: Plugin, concern: Concern, setting: string, value: string, answer: PluginsAnswer) {
+    void run(async () => storedNotice(await client.pluginSecret({ name: plugin.name, setting, value, base: answer.bases[concern.file] ?? "" }), plugin.name, concern.file));
+  }
+
   /** Saves a previewed change with the dangerous keys the person confirmed, which the preview names. */
   async function save(file: EditFile, changes: readonly Change[], said: string, preview: SettingsPreview): Promise<Notice> {
     const saved = await client.saveSettings({ file, changes, base: preview.base, confirmed: dangerousIn(preview) });
@@ -131,7 +150,7 @@ export function useChanges({ client, read, held, started }: Inputs): Changes {
   }
 
   return {
-    notice, switched, pending, busy: busy || (after !== null && after === held.answer && held.state === "ready"), act, change, clear: () => setNotice(null),
+    notice, switched, pending, busy: busy || (after !== null && after === held.answer && held.state === "ready"), act, storeSecret, change, clear: () => setNotice(null),
     confirm: () => {
       if (pending === null) return;
       setPending(null);

@@ -41,7 +41,7 @@ import { parsePaths } from "./overlap.ts";
 import { stepPathsOf } from "./plan-step-sections.ts";
 import { availableParallelism, loadavg } from "node:os";
 import { talk, talkFailed } from "./queue/talk.ts";
-import { markWriterRunning, markWriterStarting, nextStarts, recordWriterPin, writerFailed, writerOf, writerToStart } from "./queue.ts";
+import { allowanceHolds, markWriterRunning, markWriterStarting, nextStarts, recordWriterPin, writerFailed, writerOf, writerToStart } from "./queue.ts";
 // eslint-disable-next-line clean-code/no-duplication -- import list: the rule matches statement shape, and imports are not duplicated logic
 import { toolPinOf } from "./pool-pin.ts";
 import { recordPublishPin, recordToolPin } from "./queue/queue-pins.ts";
@@ -136,14 +136,15 @@ async function startAgent(ctx: PoolContext, place: RunPlace, env: Record<string,
   if (closesOut(ctx)) await closesSettled(ctx);
   const run = readRunner(ctx);
   const opened = await openPaneAsync(run, place.name, env, place.folder, { ...session, tmpBase: ctx.runTmpBase });
-  if ("refusal" in opened) throw new Error(opened.refusal);
+  if ("refusal" in opened) throw new Error(opened.refusal, { cause: opened.cause });
   try {
     await startOnceShellReady(ctx, agentStartArgs(place.name, "claude", opened.pane, [...tail], session));
   } catch (err) {
     // A start can outlast its timeout and still succeed: ask the listing before calling it a failure.
     const listed = (await readAgentsAsync(run, session))?.find((agent) => agent.label === place.name);
     if (listed === undefined || listed.status === "unknown") {
-      throw new Error(`herdr could not start Claude for ${what} (${herdrRefusal(err)})${await closedNoteAsync(run, opened.workspace, session)}`);
+      // herdr's failure is the cause, so the one rule classes the crash by it (A11-436): a herdr that never answered is transient, and the board starts the run again by itself.
+      throw new Error(`herdr could not start Claude for ${what} (${herdrRefusal(err)})${await closedNoteAsync(run, opened.workspace, session)}`, { cause: err });
     }
   }
   startedHere.add(place.name);
@@ -474,7 +475,7 @@ const WHY_LISTED = 8;
 
 /**
  * Why no queued run starts now, or null when there is nothing the pass can explain: no run is queued, or every slot is held (a full board starts nothing and says nothing). The queue is paused, the host is loaded past its
- * cores, or each queued run is held, with the reason the board shows on its card (`now` is the pool's clock, which the age of what was read is judged by, A11-364). The reasons leave out the time a retry is at, so a read that
+ * cores, the Claude allowance is spent until its reset (A11-434), or each queued run is held, with the reason the board shows on its card (`now` is the pool's clock, which the age of what was read is judged by, A11-364). The reasons leave out the time a retry is at, so a read that
  * keeps failing is said once. PURE.
  */
 export function whyNothingStarts(queue: Queue, load: number, cores: number, now: number): string | null {
@@ -482,6 +483,7 @@ export function whyNothingStarts(queue: Queue, load: number, cores: number, now:
   if (queued.length === 0 || queue.max - slotsHeld(queue) <= 0) return null;
   if (queue.paused) return `${queued.length} queued, and the queue is paused`;
   if (load > cores) return `${queued.length} queued, and the host's load is past its ${cores} cores`;
+  if (allowanceHolds(queue, now)) return `${queued.length} queued, and the Claude allowance is spent until ${new Date(queue.allowance?.until ?? now).toISOString()}`;
   const held = queued.map((entry) => `${entry.ticket.key} (${heldNote(entry, queue.entries, now)})`);
   return `${queued.length} queued with free slots, and none starts: ${held.slice(0, WHY_LISTED).join("; ")}${held.length > WHY_LISTED ? `; and ${held.length - WHY_LISTED} more` : ""}`;
 }
@@ -497,7 +499,7 @@ function heldNote(entry: Entry, entries: readonly Entry[], now: number): string 
  * recorded before it begins, so a second tick cannot start it again. A pass that starts nothing says why, once for each reason (A11-359), and keeps the runs it held and why for `/api/health` (A11-363's fill figures).
  */
 export async function fill(ctx: PoolContext): Promise<void> {
-  const { batches, deps, removing, rebasing, store } = ctx;
+  const { batches, deps, store } = ctx;
   // A stopping instance starts nothing: it is waiting for the runs that are starting to finish (A11-363).
   if (ctx.fillState.stopping) {
     noteFillHolding(ctx, STOPPING);
@@ -529,32 +531,65 @@ export async function fill(ctx: PoolContext): Promise<void> {
   }
   noteFillHolding(ctx, null);
   const starts = nextStarts(store.get(), load, cores, at);
-  const begun = new Set<string>();
   // A host's own condition for starting work (`tickets.preflight`): while one fails, no ticket run starts and every queued one stays Queued, with the reason on the board.
   // Publishing and the new-ticket writer need none of it, so they go on.
   const held = starts.length === 0 || ctx.settings.preflight.length === 0 ? null : await preflightHold(ctx);
   if (held !== null) noteFillHolding(ctx, PREFLIGHT_FAILING);
   saidWhyIdle(ctx, starts.length === 0 ? whyNothingStarts(store.get(), load, cores, at) : held === null ? null : `${held}, so no ticket run starts`);
-  if (held === null) recordStacks(ctx, starts);
-  for (const entry of held === null ? starts : []) {
+  if (held === null) {
+    recordStacks(ctx, starts);
+    await openChosen(ctx, starts);
+  }
+  if (publishStarts(store.get())) await startPublish(ctx);
+  if (writerToStart(store.get(), at) !== undefined) await startWriter(ctx);
+  noteFillCompleted(ctx);
+}
+
+/**
+ * Open every run a pass chose ({@link nextStarts}), side by side (A11-442), and wait until each has opened or failed. A batch's tickets open as its one run, and a batch's talk sessions as their one session. Stacked review
+ * rounds open one after another ({@link mergesBaseFirst}), beside the rest.
+ */
+async function openChosen(ctx: PoolContext, starts: readonly Entry[]): Promise<void> {
+  const { removing, rebasing, store } = ctx;
+  const begun = new Set<string>();
+  const opening: Promise<void>[] = [];
+  // Stacked review rounds fetch and merge their base in clones they may share before they open, so they keep starting one after another, beside the rest.
+  let rounds: Promise<void> = Promise.resolve();
+  for (const entry of starts) {
     // A talk session resumes a finished run's own session where it ran: no brief is written, and no plan or worktree is touched. A batch's tickets share that session: one pane (A11-171).
     if (entry.talk) {
       if (begun.has(entry.ticket.key)) continue;
       // Every queued talk session of the batch starts with the one that is let start: the run is one, in one slot, and a member left behind would open a second pane.
       const together = entry.batch === undefined ? [entry] : store.get().entries.filter((e) => e.batch === entry.batch && e.talk === true && e.phase === "queued");
       for (const member of together) begun.add(member.ticket.key);
-      await startTalk(ctx, together);
+      opening.push(startTalk(ctx, together));
       continue;
     }
     if (begun.has(entry.ticket.key) || removing.has(entry.ticket.key) || rebasing.has(entry.ticket.key)) continue;
     const batch = entry.batch === undefined ? [entry] : starts.filter((e) => e.batch === entry.batch && !e.talk);
     for (const member of batch) begun.add(member.ticket.key);
-    await (batch.length > 1 ? startBatch(ctx, batch) : startOne(ctx, entry));
+    if (mergesBaseFirst(entry)) rounds = rounds.then(() => startOne(ctx, entry));
+    else opening.push(batch.length > 1 ? startBatch(ctx, batch) : startOne(ctx, entry));
   }
-  if (publishStarts(store.get())) await startPublish(ctx);
-  if (writerToStart(store.get()) !== undefined) await startWriter(ctx);
-  noteFillCompleted(ctx);
+  await allStarted([...opening, rounds]);
 }
+
+/**
+ * Wait for every start a pass chose, opened side by side (A11-442): a planned epic's independent tickets start at once, and the third does not wait for the first two to read the tracker, open their panes and settle.
+ * Who starts was decided before any opened ({@link nextStarts}, overlap and slots included), so opening them together changes no choice. Each start records its own failure on its run; one that throws anyway is
+ * thrown on once every other start has ended, so the pass never ends with a start still under way.
+ */
+async function allStarted(opening: readonly Promise<void>[]): Promise<void> {
+  const thrown = (await Promise.allSettled(opening)).flatMap((result) => (result.status === "rejected" ? [result.reason as unknown] : []));
+  for (const later of thrown.slice(1)) log(`a start of this pass failed beside another (${messageOf(later)})`);
+  if (thrown.length > 0) throw thrown[0];
+}
+
+/**
+ * Whether a queued run merges its stacked base into its branch before it opens ({@link mergeBeforeRound}): a review round on a stack. Its `git fetch` and merge run in a clone another such round may share, where two at
+ * once can fail on the remote branch's lock, so these start one after another as before A11-442. PURE.
+ */
+const mergesBaseFirst = (entry: Entry): boolean => entry.review !== undefined && entry.stackBase !== undefined;
 
 /**
  * Whether the run `key` is in was stopped while it was starting. The stop is the person's last word, so the workspace its start raced is closed
@@ -823,7 +858,7 @@ async function planReached(ctx: PoolContext, queued: Ticket): Promise<boolean> {
  */
 async function startWriter(ctx: PoolContext): Promise<void> {
   const { now, settings, source, store } = ctx;
-  const queued = writerToStart(store.get());
+  const queued = writerToStart(store.get(), now());
   const writer = settings.writer;
   if (queued === undefined) return;
   update(ctx, (queue) => recordWriterPin(markWriterStarting(queue, queued.id, now()), queued.id, toolPinOf(ctx)));
@@ -896,9 +931,10 @@ async function startPublish(ctx: PoolContext): Promise<void> {
  * and survives every restart of it. Only a machine with no herdr service (a hand-run `ticket:serve`) spawns the server itself.
  */
 export async function ensureSession(ctx: PoolContext): Promise<void> {
-  const { deps, herdrCall, session, settings, wait } = ctx;
+  const { deps, herdrProbe, session, settings, wait } = ctx;
   // The listing is asked without holding the loop (A11-282): an instance checks the session at every start, and a herdr that is slow to answer held the board thread for each of up to twenty tries.
-  const run = (args: string[]): Promise<string> => herdrCall(args, START_READ_MS);
+  // It is asked directly, not through the board's client (A11-436): twenty tries while a server starts would open herdr's breaker, which would then refuse the try that finds it up.
+  const run = (args: string[]): Promise<string> => herdrProbe(args, START_READ_MS);
   if (await readAgentsAsync(run, session) !== null) return;
   const service = deps.herdrService ?? (deps.startServer === undefined ? herdrServiceOf(defaultServiceDeps()) : undefined);
   if (service?.registered()) service.start();

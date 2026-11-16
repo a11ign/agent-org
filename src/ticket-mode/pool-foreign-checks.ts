@@ -100,6 +100,9 @@ export function foreignRedsOf(ctx: PoolContext, pass: readonly PassRead[]): Fore
     if (repository === null) return NOTHING;
     if (!main.has(repository)) main.set(repository, await readMain(ctx, repository));
     const { failing, passing, pending, branch } = main.get(repository)!;
-    return { names: new Set([...failing, ...failingElsewhere(pass, entry, url)]), onMain: failing, mainPassing: passing, mainPending: pending, mainBranch: branch };
+    // A check main reports passing is not someone else's because other runs' pull requests fail it too: main says the code that fails it is in the pull requests. Held for that, a batch of runs whose pull
+    // requests all failed one check held one another, and main going green released none of them, since none was waiting on main (A11-429).
+    const elsewhere = [...failingElsewhere(pass, entry, url)].filter((name) => passing === null || !passing.has(name));
+    return { names: new Set([...failing, ...elsewhere]), onMain: failing, mainPassing: passing, mainPending: pending, mainBranch: branch };
   };
 }

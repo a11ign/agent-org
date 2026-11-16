@@ -260,7 +260,7 @@ function isReviewComment(login: string, body: string, matchers: readonly ReviewC
 type Comment = { createdAt?: string; lastEditedAt?: string | null; body?: string; url?: string; author: Login };
 
 /**
- * The review comment at the head (contract 4.1): the newest conversation comment by an account a matcher names whose body, trimmed, starts with that matcher's text, posted or LAST EDITED after the head arrived. A CI review
+ * The review comment at the head (contract 4.2): the newest conversation comment by an account a matcher names whose body, trimmed, starts with that matcher's text, posted or LAST EDITED after the head arrived. A CI review
  * often posts a placeholder and edits it in place when it finishes, so the later of the two times is the comment's. Left out when no matcher is given, or when the answer does not say when the head arrived; null when none is there.
  */
 export function commentReviewFeedback(pr: Record<string, any>, matchers: readonly ReviewCommentMatcher[]): { commentReviewAtHead?: CommentReview | null } {
@@ -269,14 +269,19 @@ export function commentReviewFeedback(pr: Record<string, any>, matchers: readonl
   const arrived = headArrivedAt(pr, head);
   if (arrived === null) return {};
   const reviews = (pr.comments?.nodes ?? []).flatMap((comment: Comment): CommentReview[] => {
-    const login = comment.author?.login;
-    const body = comment.body;
-    const at = latestOf([time(comment.createdAt), time(comment.lastEditedAt)]);
-    if (typeof login !== "string" || typeof body !== "string" || at === null || at <= arrived || !isReviewComment(login, body, matchers)) return [];
-    const url = typeof comment.url === "string" ? comment.url : "";
-    return [{ author: login, at, url }];
+    const review = reviewAfter(comment, arrived);
+    return review !== null && isReviewComment(review.author, comment.body as string, matchers) ? [review] : [];
   });
   return { commentReviewAtHead: reviews.length === 0 ? null : reviews.reduce((newest: CommentReview, review: CommentReview) => (review.at > newest.at ? review : newest)) };
+}
+
+/** A conversation comment as a review, when it has an author and a body and was posted or last edited after `arrived`; null otherwise. PURE. */
+function reviewAfter(comment: Comment, arrived: number): CommentReview | null {
+  const login = comment.author?.login;
+  const at = latestOf([time(comment.createdAt), time(comment.lastEditedAt)]);
+  const readable = typeof login === "string" && typeof comment.body === "string";
+  if (!readable || at === null || at <= arrived) return null;
+  return { author: login, at, url: typeof comment.url === "string" ? comment.url : "" };
 }
 
 /** The queue's part of the feedback: left out when the host did not say. */

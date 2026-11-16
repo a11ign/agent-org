@@ -45,6 +45,8 @@ export type Watch = Readonly<{
   queued?: boolean;
   /** The release this host ran when the board first saw a fix merged after the reopen (null when it could not read one). The new fix is installed only once a release other than this one is (A11-366 review): the files of the first fix's pull request are still in the tool folder, so they say nothing of the second. */
   releaseAtFix?: string | null;
+  /** Set when {@link releaseAtFix} was noted because the ticket stayed completed with no fix merged on its run log (a fix made by hand): a merge recorded after all notes the release again, as the first sweep that saw it. */
+  closeTakenForFix?: boolean;
 }>;
 
 /** What one sweep knows of a watch: the clock, whether the tracker has the ticket completed (null when it could not say), whether its fix is installed, and the figure's reading with every figure then (null when the board served none). */
@@ -57,8 +59,14 @@ export function newWatch(ticket: Pick<Watch, "key" | "title" | "url" | "origin">
 
 /** The watch with its window thrown away: the ticket is at work again, and the watch begins at its next close. */
 function restarted(watch: Watch): Watch {
-  const { closedAt: _closed, began: _began, last: _last, peak: _peak, breach: _breach, ...rest } = watch;
+  const { closedAt: _closed, began: _began, last: _last, peak: _peak, breach: _breach, closeTakenForFix: _byHand, ...rest } = watch;
   return { ...rest, state: "open", reads: 0 };
+}
+
+/** The watch with the release noted for its last fix forgotten: a ticket put back to work after it was completed has a new fix to come, and the release noted for the old one says nothing of it. */
+function withoutFixRelease(watch: Watch): Watch {
+  const { releaseAtFix: _fix, ...rest } = watch;
+  return rest;
 }
 
 /** The watch with `reading` counted. */
@@ -88,7 +96,7 @@ function watched(watch: Watch, spec: FigureSpec, { now, installed, read }: Facts
 export function advance(watch: Watch, facts: Facts): Watch {
   const { completed, now } = facts;
   if (completed === null || owesReopen(watch)) return watch;
-  if (!completed) return watch.state === "open" ? watch : restarted(watch);
+  if (!completed) return watch.state === "open" ? watch : watch.state === "watching" ? withoutFixRelease(restarted(watch)) : restarted(watch);
   if (watch.state === "held") return watch;
   const closed: Watch = watch.state === "open" || watch.state === "reopened" ? { ...restarted(watch), state: "watching", closedAt: now } : watch;
   return watch.spec === null ? closed : watched(closed, watch.spec, facts);
@@ -96,7 +104,7 @@ export function advance(watch: Watch, facts: Facts): Watch {
 
 /** The watch with the ticket moved out of its completed state at `now`: reopened, with its comment and its place on the queue still to do. PURE. */
 export function reopened(watch: Watch, now: number): Watch {
-  const { releaseAtFix: _fix, ...rest } = watch;
+  const { releaseAtFix: _fix, closeTakenForFix: _byHand, ...rest } = watch;
   return { ...rest, state: "reopened", reopens: watch.reopens + 1, reopenedAt: now, commented: false, queued: false };
 }
 

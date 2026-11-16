@@ -7,11 +7,11 @@
 // Usage: agent-org ticket:stack-live-check [--repo <owner/repo>]   (default a11ign/agent-org)
 //
 // THE COMMAND LIVES IN THE PLUGIN (A11-160): it is all GitHub, and the command table (`src/commands.ts`) names it by its path. It runs `gh` through the plugin's own runner, with a
-// real `spawnSync` for `deps.exec` (`command-exec.ts`), since a plugin imports core's types only (ADR 0001).
+// real async `spawn` for `deps.execAsync` (`command-exec.ts`), since a plugin imports core's types only (ADR 0001).
 import { realpathSync } from "node:fs";
 import { pathToFileURL } from "node:url";
-import { commandExec } from "./command-exec.ts";
-import { ghRunner } from "./gh.ts";
+import { commandExecAsync } from "./command-exec.ts";
+import { asyncGhRunner } from "./gh.ts";
 import { runLiveCheck } from "./stack-live-check.ts";
 
 const DEFAULT_REPO = "a11ign/agent-org";
@@ -28,7 +28,7 @@ if (import.meta.url === pathToFileURL(process.argv[1] ? realpathSync(process.arg
     const at = args.indexOf("--repo");
     const repo = at === -1 ? DEFAULT_REPO : args[at + 1] ?? "";
     if (/^[^/\s]+\/[^/\s]+$/.test(repo)) {
-      const passed = runLiveCheck({ repo, runId: Date.now().toString(36), gh: ghRunner({ exec: commandExec }), log: (line) => console.log(line) });
+      const passed = await runLiveCheck({ repo, runId: Date.now().toString(36), gh: asyncGhRunner({ execAsync: commandExecAsync }), log: (line) => console.log(line) });
       process.exitCode = passed ? 0 : 1;
     } else {
       console.error(`agent-org ticket:stack-live-check: --repo ${repo} is not owner/repo`);

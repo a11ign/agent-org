@@ -109,6 +109,16 @@ test("the key moves with the config, the lockfile and an ESLint package's versio
   assert.notEqual(lintCacheKey(root), afterPlugin);
 });
 
+test("A11-433: the key moves with blocking-calls.baseline.json, which eslint.config.ts reads, so a file dropped from the baseline is linted again", () => {
+  const root = lintProject(configWith("off"));
+  const key = lintCacheKey(root);
+  write(root, { "blocking-calls.baseline.json": JSON.stringify({ files: ["src/a.ts"], commands: {} }) });
+  const listed = lintCacheKey(root);
+  assert.notEqual(listed, key, "the baseline appearing is a new input");
+  write(root, { "blocking-calls.baseline.json": JSON.stringify({ files: [], commands: {} }) });
+  assert.notEqual(lintCacheKey(root), listed, "a file dropped from the baseline changes the key, so its cached pass is not served");
+});
+
 test("a change to the lockfile removes the cache of the old key and lints the file again", { timeout: ESLINT_TIMEOUT_MS }, () => {
   const root = lintProject(configWith("error"));
   assert.equal(lint(root).status, 1);

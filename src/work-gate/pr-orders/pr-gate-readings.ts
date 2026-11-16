@@ -1158,7 +1158,7 @@ export function failingChecksOrder(pr: any, required: string[] | null = null, ba
  * `tick.ts`) and passes the reading in, so this file stays pure of the state directory. OFF is the key every red head has had.
  */
 export const SAME_HEAD_REFAIL_FLAG = "checks.sameHeadRefail";
-/** A run that REPORTED a failure. `CANCELLED` is not one: `pull_request: edited` cancels the run in flight on the same head, and that is not the check failing. */
+/** A run that REPORTED a failure. `CANCELLED` is not one: a run superseded in its group (a push, or a rerun of a sibling run of the same head) is cancelled, and that is not the check failing. */
 const REPORTED_FAILURES = ["FAILURE", "TIMED_OUT"];
 
 /**

@@ -10,14 +10,15 @@ import type { HealthFigures } from "../health-figures.ts";
 import { emptyQueue } from "../queue.ts";
 import { enqueue, find, type Queue } from "../queue/queue-entries-and-outcomes.ts";
 import { loadWatches, reliabilityWatchesPath } from "./store.ts";
-import { syncReliabilityWatches } from "./sweep.ts";
+import { HAND_FIX_AFTER_MS, syncReliabilityWatches } from "./sweep.ts";
 
 const DESCRIPTION = "## Done-when\n\n### After merge (who runs it)\n\n* Figure: synchronous holds under 10 an hour, for 7d\n";
 const LABELLED = { description: DESCRIPTION, labels: [{ name: "board-reliability", group: null }] };
 
 const figures = (holds: number, linear = { calls: 100, failures: 0, failuresPer100: 0 }): HealthFigures => ({
   at: 0, uptimeMs: 0, loop: { lastMinute: { p50Ms: 1, p99Ms: 9 }, lastHour: { p50Ms: 1, p99Ms: 40 } }, syncHolds: { lastHour: holds, holdMs: 100 },
-  calls: { linear, github: { calls: 0, failures: 0, failuresPer100: 0 } },
+  calls: { linear, github: { calls: 0, failures: 0, failuresPer100: 0 }, herdr: { calls: 0, failures: 0, failuresPer100: 0 } },
+  outsideCalls: linear,
   runs: { sinceLastStartMs: null, startable: 0, freeSlots: 3, starting: 0, oldestStartingMs: null, holding: null }, fill: { sinceLastCompletedMs: null, lastEarlyReturn: null, held: [] },
 });
 
@@ -37,10 +38,10 @@ function world(keys: readonly string[] = ["A11-900"], over: Parameters<typeof fa
   return { tracker, clock, served, ctx, path, finishRun, store, sweep: () => syncReliabilityWatches(ctx), queue: () => queue, watch: (key = keys[0]) => loadWatches(path).watches[key] };
 }
 
-/** Finish A11-900's run, close it as a person would, and sweep a minute later: the first reading of its window. */
-async function closeAndRead(w: ReturnType<typeof world>): Promise<void> {
-  w.finishRun("A11-900");
-  w.tracker.completeAs("A11-900", "person");
+/** Finish `key`'s run, close it as a person would, and sweep a minute later: the first reading of its window. */
+async function closeAndRead(w: ReturnType<typeof world>, key = "A11-900"): Promise<void> {
+  w.finishRun(key);
+  w.tracker.completeAs(key, "person");
   w.clock.at += 60_000;
   await w.sweep();
 }
@@ -93,21 +94,25 @@ test("a tracker that cannot comment leaves the readings owed: the ticket is reop
   assert.equal(find(w.queue(), "A11-900")?.phase, "queued");
 });
 
-/** A tool folder installed from agent-org at `version`, holding the acceptance file of A11-900's branch, as a release that carries its first fix does. */
-function toolFolder(version: string): { root: string; release: (next: string) => void } {
+/** A tool folder installed from agent-org at `version`, holding the acceptance file of `key`'s branch, as a release that carries its first fix does. */
+function toolFolder(version: string, key = "A11-900"): { root: string; release: (next: string) => void } {
   const root = tmpDir("reliability-tool-");
   const release = (next: string) => writeFileSync(join(root, "package.json"), JSON.stringify({ version: next, repository: "https://github.com/a11ign/agent-org" }));
   release(version);
   mkdirSync(join(root, ".acceptance"));
-  writeFileSync(join(root, ".acceptance", "a11-900-the-fix.md"), "");
+  writeFileSync(join(root, ".acceptance", `${key.toLowerCase()}-the-fix.md`), "");
   return { root, release };
 }
+
+/** Records, in `key`'s run log, a pull request of the repository merged at `at`: what `merge(at)` does for each fix. */
+const mergeRecorder = (w: ReturnType<typeof world>, key: string) => (at: number): void =>
+  w.store.set({ ...w.queue(), runLog: { ...w.queue().runLog, [key]: [...(w.queue().runLog?.[key] ?? []), { kind: "merged", url: "https://github.com/a11ign/agent-org/pull/1", at }] } });
 
 test("a ticket the board reopened is watched again only from a release installed after its second fix merged, not from the first fix's files", async () => {
   const w = world();
   const tool = toolFolder("1.0.0");
   (w.ctx as { hook: { bin: string } }).hook = { bin: join(tool.root, "src", "bin.ts") };
-  const merge = (at: number) => w.store.set({ ...w.queue(), runLog: { ...w.queue().runLog, "A11-900": [...(w.queue().runLog?.["A11-900"] ?? []), { kind: "merged", url: "https://github.com/a11ign/agent-org/pull/1", at }] } });
+  const merge = mergeRecorder(w, "A11-900");
   merge(1);
   await breachAfterClose(w);
   await w.sweep();
@@ -123,6 +128,113 @@ test("a ticket the board reopened is watched again only from a release installed
   w.clock.at += 60_000;
   await w.sweep();
   assert.equal(w.watch().began, w.clock.at, "the window begins once a later release is installed");
+});
+
+test("a backfilled ticket the board reopened is watched again only from a release installed after its second fix merged (A11-345)", async () => {
+  const w = world(["A11-345"], {});
+  const tool = toolFolder("1.0.0", "A11-345");
+  (w.ctx as { hook: { bin: string } }).hook = { bin: join(tool.root, "src", "bin.ts") };
+  const merge = mergeRecorder(w, "A11-345");
+  const outage = figures(0, { calls: 133, failures: 11, failuresPer100: 8.3 });
+  const closeFix = () => closeAndRead(w, "A11-345");
+  const watch = () => w.watch("A11-345");
+  await w.sweep();
+  w.served.figures = outage;
+  await closeFix();
+  assert.deepEqual([watch().reopens, watch().queued], [1, true], "the first window began at its close, as the board's table of closed tickets does, and breached");
+
+  merge(w.clock.at + 1);
+  await closeFix();
+  assert.deepEqual([watch().state, watch().began, watch().releaseAtFix], ["watching", undefined, "1.0.0"], "closed again, but the release that ran when the second fix merged does not carry it, and its hour of failures is no reading of it");
+
+  tool.release("1.0.1");
+  w.served.figures = figures(0);
+  w.clock.at += 60_000;
+  await w.sweep();
+  assert.equal(watch().began, w.clock.at, "the window begins once a later release is installed");
+});
+
+test("a reopened ticket closed with no fix merged on its run log is watched from the next release after the close, not left unwatched for ever (A11-345)", async () => {
+  const w = world(["A11-345"], {});
+  const tool = toolFolder("1.0.0", "A11-345");
+  (w.ctx as { hook: { bin: string } }).hook = { bin: join(tool.root, "src", "bin.ts") };
+  const watch = () => w.watch("A11-345");
+  await w.sweep();
+  w.served.figures = figures(0, { calls: 133, failures: 11, failuresPer100: 8.3 });
+  await closeAndRead(w, "A11-345");
+  assert.equal(watch().reopens, 1, "reopened by the board once, as the first window's breach");
+
+  w.clock.at += 2 * 60 * 60_000;
+  await w.sweep();
+  assert.equal(watch().releaseAtFix, undefined, "still at work: no release is noted while the ticket is open");
+
+  w.served.figures = figures(0);
+  await closeAndRead(w, "A11-345");
+  w.clock.at += HAND_FIX_AFTER_MS - 2 * 60_000;
+  await w.sweep();
+  assert.deepEqual([watch().began, watch().releaseAtFix], [undefined, undefined], "a merge may yet be recorded: the close is not taken for a fix by hand before the board has had time to see one");
+
+  w.clock.at += 2 * 60_000;
+  await w.sweep();
+  tool.release("1.0.1");
+  w.clock.at += 60_000;
+  await w.sweep();
+  assert.deepEqual([watch().state, watch().releaseAtFix, watch().began], ["watching", "1.0.0", w.clock.at], "the close is taken for the fix, and the window begins once a release after it is installed");
+});
+
+/** A backfilled A11-345 the board reopened, closed again with no merge on its run log, and swept {@link HAND_FIX_AFTER_MS} after the close: its close is taken for the fix at release 1.0.0. */
+async function closedAgainWithNoMerge() {
+  const w = world(["A11-345"], {});
+  const tool = toolFolder("1.0.0", "A11-345");
+  (w.ctx as { hook: { bin: string } }).hook = { bin: join(tool.root, "src", "bin.ts") };
+  await w.sweep();
+  w.served.figures = figures(0, { calls: 133, failures: 11, failuresPer100: 8.3 });
+  await closeAndRead(w, "A11-345");
+  w.served.figures = figures(0);
+  await closeAndRead(w, "A11-345");
+  return { w, tool, watch: () => w.watch("A11-345") };
+}
+
+/** Move the clock on by `ms` and sweep. */
+async function sweepAfter(w: ReturnType<typeof world>, ms: number): Promise<void> {
+  w.clock.at += ms;
+  await w.sweep();
+}
+
+async function takenForFix() {
+  const closed = await closedAgainWithNoMerge();
+  await sweepAfter(closed.w, HAND_FIX_AFTER_MS);
+  return closed;
+}
+
+test("a merge recorded after the close was taken for the fix is the fix: a release installed between the two does not begin the window (A11-345)", async () => {
+  const { w, tool, watch } = await takenForFix();
+  assert.equal(watch().releaseAtFix, "1.0.0");
+  tool.release("1.0.1");
+  mergeRecorder(w, "A11-345")(w.clock.at - 1);
+  await sweepAfter(w, 60_000);
+  assert.deepEqual([watch().releaseAtFix, watch().began], ["1.0.1", undefined], "the release that ran when the merge was seen does not carry it");
+  tool.release("1.0.2");
+  await sweepAfter(w, 60_000);
+  assert.equal(watch().began, w.clock.at);
+});
+
+test("a ticket put back to work after its close was taken for the fix forgets that release, and is not watched from the next close with no fix (A11-345)", async () => {
+  const { w, tool, watch } = await takenForFix();
+  await w.tracker.restoreState!("A11-345", { from: "In Progress", to: "Done" });
+  await sweepAfter(w, 60_000);
+  assert.deepEqual([watch().state, watch().releaseAtFix], ["open", undefined], "at work again");
+  tool.release("1.0.1");
+  w.tracker.completeAs("A11-345", "person");
+  await sweepAfter(w, 60_000);
+  assert.deepEqual([watch().began, watch().releaseAtFix], [undefined, undefined], "closed again: the 1.0.1 release says nothing of this fix");
+});
+
+test("a tracker that cannot say whether the ticket is completed does not have its close taken for a fix (A11-345)", async () => {
+  const { w } = await closedAgainWithNoMerge();
+  (w.ctx as { source: unknown }).source = { ...w.tracker, stateTypes: undefined };
+  await sweepAfter(w, HAND_FIX_AFTER_MS);
+  assert.equal(w.watch("A11-345").releaseAtFix, undefined);
 });
 
 test("a figure that holds is never reopened, and the window closes held", async () => {

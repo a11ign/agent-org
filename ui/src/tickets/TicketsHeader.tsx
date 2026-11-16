@@ -18,16 +18,16 @@ type HeaderProps = Readonly<{
   lastKnown?: boolean;
 }>;
 
-/** The page's header: the h1, the count, Expand all, and New ticket, which opens the dialog. */
+/** The page's header: the h1, the count, Expand all, and New ticket, which opens the dialog. On a phone it is one row, the count under the h1, and Expand all reads Expand (A11-427). */
 export function TicketsHeader({ count, allOpen, foldable, onFold, writer, onNewTicket, pausedFor = null, lastKnown = false }: HeaderProps) {
   return (
-    <div className="page-header">
+    <div className="page-header tickets-header">
       <div className="page-header-title">
         <h1 className="page-heading">Tickets</h1>
         {count === null ? <SkeletonBlock shape="count" /> : <span className="page-count">{count}</span>}
         {lastKnown ? <span className="pill-tag pill-tag-warn">Last known</span> : null}
       </div>
-      <button type="button" className="ghost" disabled={!foldable} onClick={onFold}>{allOpen ? "Collapse all" : "Expand all"}</button>
+      <button type="button" className="ghost" disabled={!foldable} onClick={onFold}><span>{allOpen ? "Collapse" : "Expand"}<span className="header-long"> all</span></span></button>
       {writer ? (
         <button type="button" className="primary primary-small" disabled={onNewTicket === undefined} onClick={onNewTicket} {...(pausedFor === null ? {} : { title: `Paused until ${pausedFor} is reachable` })}>
           <PlusIcon />

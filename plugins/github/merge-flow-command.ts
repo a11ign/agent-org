@@ -6,8 +6,8 @@
 // (`merge-flow-checks.ts`), as whichever account `gh` acts as here: on an agents host the `gh` wrapper is the workers'. A file of its own, so loading the plugin never runs it.
 import { realpathSync } from "node:fs";
 import { pathToFileURL } from "node:url";
-import { commandExec } from "./command-exec.ts";
-import { ghRunner } from "./gh.ts";
+import { commandExecAsync } from "./command-exec.ts";
+import { asyncGhRunner } from "./gh.ts";
 import { mergeFlowRow, readingsOf } from "./merge-flow-checks.ts";
 
 const REFUSED = 2;
@@ -18,8 +18,7 @@ if (import.meta.url === pathToFileURL(process.argv[1] ? realpathSync(process.arg
     console.error("usage: node plugins/github/merge-flow-command.ts --owner <organisation>");
     process.exitCode = REFUSED;
   } else {
-    const gh = ghRunner({ exec: commandExec });
-    const readings = await readingsOf([owner], [], async (args) => gh(args));
+    const readings = await readingsOf([owner], [], asyncGhRunner({ execAsync: commandExecAsync }));
     if (readings.repositories.length === 0 && readings.unlisted.length === 0) {
       console.error(`${owner} is not an organisation the account gh acts as here can list, or it has no repository`);
       process.exitCode = REFUSED;

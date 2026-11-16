@@ -62,6 +62,9 @@
   --color-warn-border: #5a4a1a;
   --color-warn-border-strong: #6b5a22;
   --color-warn-link: #f6e3a3;
+  /* The note of a request's tickets that were written and not queued (A11-420). */
+  --color-warn-queue-bg: #1f1a0e;
+  --color-warn-queue-text: #f0d98c;
 
   --color-planning: #a78bfa;
 
@@ -121,7 +124,8 @@
   --radius-12: 12px;
   --radius-pill: 999px;
 
-  /* Layout: the sidebar and the page beside it. A media query cannot read a custom property, so the 820px collapse is written once in `shell/shell.css`, beside the sidebar. */
+  /* Layout: the sidebar and the page beside it. A media query cannot read a custom property, so the two breakpoints are written as lengths in the media rules themselves: 1024px (tablet, the
+     sidebar gives way to the top bar) and 640px (phone, the bottom tab bar is added). Those two rules are the only lengths a stylesheet other than this one writes (`ui/test/tokens.test.ts`). */
   --sidebar-width: 248px;
   --sidebar-padding: var(--space-14) var(--space-12) var(--space-16);
   --sidebar-gap: var(--space-16);
@@ -130,6 +134,8 @@
   --main-padding-tall: var(--space-20) var(--space-24) var(--space-40);
   --measure-alert-text: 320px;
   --measure-header-basis: 240px;
+  --measure-pills-basis: 260px;
+  --measure-queue-note: 220px;
   --measure-banner-basis: 360px;
   --measure-search-basis: 240px;
   --measure-search-max: 360px;
@@ -302,6 +308,64 @@
   --color-fresh: rgba(91, 99, 217, 0.07);
   --z-notifications: 30;
   --line-clamp-request: 2;
+
+  /* The "Search tickets" palette and the banner over a ticket opened from it (A11-387): the values the six Global search boards use that the tokens above do not hold. */
+  --search-width: 680px;
+  --search-max-height: calc(100vh - 100px);
+  --search-row-basis: 300px;
+  --search-note-measure: 380px;
+  --search-refusal-basis: 280px;
+  --color-search-hit: rgba(154, 161, 245, 0.24);
+  --color-search-overlay: rgba(5, 6, 8, 0.62);
+  --shadow-search: 0 24px 64px rgba(0, 0, 0, 0.7);
+  --color-from-search-text: #c9cdfa;
+  --color-from-search-strong: #e7e8ff;
+  --color-from-search-border-strong: #3a4090;
+  --skeleton-search-meta-width: 40%;
+  --skeleton-search-status-width: 70px;
+  --z-search: 40;
+
+  /* Tablet and phone (A11-427): the top bar that replaces the sidebar at 1024px and below, the bottom tab bar at 640px and below, sheets, and the touch targets. */
+  --topbar-height: 57px;
+  --topbar-padding: var(--space-6) calc(var(--space-12) + var(--safe-right)) var(--space-6) calc(var(--space-16) + var(--safe-left));
+  --tabbar-height: 64px;
+  --tabbar-item-height: 56px;
+  --safe-bottom: env(safe-area-inset-bottom, 0px);
+  --safe-left: env(safe-area-inset-left, 0px);
+  --safe-right: env(safe-area-inset-right, 0px);
+  --page-padding-tablet: var(--space-20);
+  --page-padding-phone: var(--space-16);
+  /* What the page leaves under its content on a phone so the tab bar covers none of it. */
+  --page-bottom-phone: calc(88px + var(--safe-bottom));
+  /* Where a bar that sits over the tab bar (the selection, publish and unsaved-changes bars) stands on a phone. */
+  --bar-bottom-phone: calc(76px + var(--safe-bottom));
+  --pill-height: 36px;
+  /* The strip of pills under the top bar: its pills, its padding above and below them, and its bottom border. */
+  --strip-padding-block: var(--space-6);
+  --strip-height: calc(var(--pill-height) + 2 * var(--strip-padding-block) + 1px);
+  --input-height-phone: 40px;
+  --segment-height-phone: 32px;
+  --chip-max-width: 180px;
+  --chip-select-max-width: 120px;
+  --chip-select-height: 42px;
+  --chip-dot-size: 8px;
+  --check-box-phone: 40px;
+  --notifications-top-tablet: 64px;
+  --sheet-max-width: 520px;
+  --sheet-max-height: 82%;
+  --sheet-grab-width: 36px;
+  --sheet-grab-height: 4px;
+  --radius-sheet: 16px;
+  --scope-dialog-width: 420px;
+  --run-gutter-phone: 44px;
+  --font-size-h1-phone: 18px;
+  --line-height-title-phone: 19px;
+  --line-clamp-title-phone: 2;
+  /* What the page leaves under its list on a phone while the selection bar stands over the tab bar. */
+  --page-bottom-phone-with-bar: calc(var(--page-bottom-phone) + 72px);
+  --z-topbar: 30;
+  --z-tabbar: 35;
+  --z-sheet: 70;
 }
 
 /* Keyframes cannot read a custom property for their length of time, so the two animations are named here and timed by the tokens above where they are used. */

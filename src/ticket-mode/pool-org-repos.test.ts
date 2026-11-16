@@ -24,6 +24,9 @@ import { BRIEF_FILE } from "./worker-files.ts";
 const KEY = "NBF-1";
 const OTHER = "NBF-2";
 const settled = async () => { for (let i = 0; i < 40; i += 1) await new Promise((resolve) => setImmediate(resolve)); };
+/** A start is real file and process work, so on a loaded runner it outlasts any fixed count of event-loop turns: wait for the run to leave `starting`, for as long as it takes up to this. */
+const START_BUDGET_MS = 5000;
+const POLL_MS = 5;
 
 /** A checkout of `fullName` at `path`: a folder whose `.git/config` names its origin, which is all the board reads of a clone. */
 function checkout(path: string, fullName: string): string {
@@ -45,15 +48,18 @@ function machine() {
   writeFileSync(hostFile, `${JSON.stringify({ clones }, null, 2)}\n`);
   const calls: string[][] = [];
   const refuses = new Set<string>();
+  const cloneState = { delayMs: 0, inFlight: 0 };
   const git: Git = async (cwd, args) => {
     if (args[0] !== "clone") return "";
+    cloneState.inFlight += 1;
+    try { if (cloneState.delayMs > 0) await new Promise((resolve) => setTimeout(resolve, cloneState.delayMs)); } finally { cloneState.inFlight -= 1; }
     const fullName = /github\.com\/(.+?)\.git$/.exec(args[args.length - 2])![1];
     calls.push([cwd, ...args]);
     if (refuses.has(fullName)) throw new Error(`fatal: repository 'https://github.com/${fullName}.git/' not found`);
     checkout(args[args.length - 1], fullName);
     return "";
   };
-  return { root, clones, codeHost, hostFile, git, calls, refuses, recorded: () => (JSON.parse(readFileSync(hostFile, "utf8")) as { clones: Record<string, string> }).clones };
+  return { root, clones, codeHost, hostFile, git, calls, refuses, cloneState, recorded: () => (JSON.parse(readFileSync(hostFile, "utf8")) as { clones: Record<string, string> }).clones };
 }
 
 /** A pool over the machine, with NBF-1 queued and started, and `write(outcome)` to have its worker end on `outcome`. */
@@ -79,6 +85,13 @@ async function working(max = 1) {
     await pool.tick();
     // The move lists the organisation and clones beside the pass (A11-282 made the listing asynchronous too), and a clone is real file work: give it turns of the event loop, not one wait.
     for (let turn = 0; turn < SETTLE_TURNS; turn += 1) await settled();
+    await moveFinished();
+    await settled();
+  };
+  /** Turns are not time: a clone that waits on the machine finishes when it finishes, and a run the move queued again is `starting` until its worker is up. Wait both out, bounded. */
+  const moveFinished = async () => {
+    const busy = () => m.cloneState.inFlight > 0 || made.entry(KEY).phase === "starting";
+    for (const deadline = Date.now() + START_BUDGET_MS; busy() && Date.now() < deadline;) await new Promise((resolve) => setTimeout(resolve, POLL_MS));
   };
   /** The queued run starts again, and its worker is up. */
   const starts = async () => {
@@ -110,6 +123,13 @@ test("a worker's wrong-repo naming an organisation repository the host has not c
   const brief = readFileSync(join(run.dir, BRIEF_FILE), "utf8");
   assert.ok(brief.includes("names `corpus`, so its work lands there"), "the new worker is told the repository");
   assert.ok(brief.includes(`\`corpus\` at \`${join(run.root, "repos", "corpus")}\``), "and finds the clone among the repositories on the machine");
+});
+
+test("a wrong-repo whose clone takes longer than the test's turns of the event loop still ends with the run moved and started, as a loaded runner makes it (A11-401)", async () => {
+  const run = await working();
+  run.cloneState.delayMs = 150;
+  await run.ends(wrongRepo("acme/corpus: the backups code lives there, not in this repository"));
+  assert.deepEqual([run.entry(KEY).phase, run.entry(KEY).plannedRepo, run.calls.length], ["running", "corpus", 1]);
 });
 
 test("a wrong-repo naming an organisation repository the host already has is moved there with no clone, whichever key holds it", async () => {

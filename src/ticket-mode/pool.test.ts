@@ -5,7 +5,8 @@ import type { PreflightExec } from "./preflight.ts";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
-import { basename, join } from "node:path";
+import { basename, dirname, join } from "node:path";
+import { latestOutcomes, outcomesPath, readOutcomes } from "./outcomes/outcome-record.ts";
 import { execFileSync } from "node:child_process";
 import { sandboxGitEnv } from "../lib/git-env.ts";
 import { tmpDir } from "../lib/tmp-fixture.ts";
@@ -20,7 +21,7 @@ import { stackBaseFile, writeStackBase } from "./stack-rebase.ts";
 import { worktreePath } from "./worktree.ts";
 import { TICKET_ENV, main as worktreeMain } from "./worktree-command.ts";
 import {
-  batchDir, batchFolder, countTokens, createPool, feedbackSince, findFolderSession, findTranscript, herdrName, herdrServerCommand, isStartDialog, parseOutcome, publishDir, publishResult,
+  batchDir, batchFolder, createPool, feedbackSince, findFolderSession, findTranscript, herdrName, herdrServerCommand, isStartDialog, parseOutcome, publishDir, publishResult,
   ticketDir, ticketFolder, worktreesIn,
 } from "./pool.ts";
 import { approve, completableRuns, finish, markResumed, park, queuePublish, recordPullStates, recordStackBase, respond, pauseQueue, resumeQueue } from "./queue/queue-transitions.ts";
@@ -28,6 +29,8 @@ import { talk } from "./queue/talk.ts";
 import { recordPullHeads } from "./queue/queue-pull-heads.ts";
 import { READ_RETRY_MS } from "./queue/start-reads.ts";
 import { BACKGROUND_GONE_MS, enqueue, liveRunCount, replace, retry, talkRound, writerStatus, type Outcome, type Queue, type WriterForm } from "./queue/queue-entries-and-outcomes.ts";
+import type { PoolDeps, QueuedWritten } from "./pool-context.ts";
+import type { QueueAfter } from "./queue/queue-after-writing.ts";
 // eslint-disable-next-line clean-code/no-duplication -- import list: the rule matches statement shape, and imports are not duplicated logic
 import { emptyQueue, queueWriter, writerOf } from "./queue.ts";
 import { writerDir, writerFolder } from "./ticket-paths.ts";
@@ -101,9 +104,9 @@ function herdr(status: Map<string, string>, screen: { text: string } = { text: "
 
 /** `parents` gives a ticket its parent's key. A ticket without one is shaped as a run queued before tickets carried a parent. */
 function setup(max = 2, keys = ["NBF-1", "NBF-2", "NBF-3"], tickets: Record<string, unknown> = {},
-  { source: tracker = source, parents = {}, planFirst = [], batch = false, pluginRecord, gh, codeHost, reviewerPort, preflight, now = () => 100, clones, wait }:
+  { source: tracker = source, parents = {}, planFirst = [], batch = false, pluginRecord, gh, codeHost, reviewerPort, preflight, now = () => 100, clones, wait, queueWritten }:
     { source?: TicketSource; parents?: Record<string, string>; planFirst?: string[]; batch?: boolean; pluginRecord?: string; gh?: World; codeHost?: ReturnType<typeof createFakeCodeHost>;
-      reviewerPort?: ReviewerPort; preflight?: PreflightExec; now?: () => number; clones?: Record<string, string>; wait?: (ms: number) => Promise<void> } = {}) {
+      reviewerPort?: ReviewerPort; preflight?: PreflightExec; now?: () => number; clones?: Record<string, string>; wait?: (ms: number) => Promise<void>; queueWritten?: PoolDeps["queueWritten"] } = {}) {
   const root = tmpDir("ticket-pool-");
   const settings = parseTicketSettings({ clones: clones ?? { "nbl-ui-netbox": "/repos/nbl-ui-netbox", "nbl-ui-platform-libs": "/repos/libs" }, stateDir: join(root, "state"), tickets });
   const queued = keys.map((key) => (key in parents ? { ...ticket(key), parent: parents[key] } : ticket(key)));
@@ -116,7 +119,7 @@ function setup(max = 2, keys = ["NBF-1", "NBF-2", "NBF-3"], tickets: Record<stri
   const deps = { settings, source: tracker, hook: { node: "/node", bin: "/tool/src/bin.ts" }, herdr: h.run, hostFile: "/work/.agent-org/host.json", now, load: () => ({ load: 1, cores: 14 }), transcriptsRoot: join(root, "transcripts"), wait: async () => {},
     pluginRecord: pluginRecord ?? join(root, "no-plugin-record.json"), codeHost: gh?.codeHost ?? codeHost ?? createFakeCodeHost(), ...(reviewerPort ? { reviewer: reviewerOver(reviewerPort) } : {}),
     // The publisher plugin, as the fake: what the host file names as its connectors, model and effort (A11-161).
-    ...(settings.publish === null ? {} : { publisher: createFakePublisher(settings.publish.connectors, { model: settings.publish.model, effort: settings.publish.effort }) }), ...(preflight ? { preflight } : {}), ...(wait ? { wait } : {}) };
+    ...(settings.publish === null ? {} : { publisher: createFakePublisher(settings.publish.connectors, { model: settings.publish.model, effort: settings.publish.effort }) }), ...(preflight ? { preflight } : {}), ...(wait ? { wait } : {}), ...(queueWritten ? { queueWritten } : {}) };
   const pool = createSettledPool(store, deps);
   const entry = (key: string) => queue.entries.find((e) => e.ticket.key === key)!;
   /** A pool started over the same queue and state directory, as the board's pool is after a restart. */
@@ -160,7 +163,8 @@ test("a tick starts as many as `max` allows, each in ticket mode's own herdr ses
   assert.deepEqual(["NBF-1", "NBF-2", "NBF-3"].map((k) => entry(k).phase), ["running", "running", "queued"]);
   assert.ok(h.calls.every((args) => args[0] === "--session" && args[1] === "tickets"), "never the org's session");
   assert.ok(h.calls.some((args) => args.includes("start") && args.includes("t-nbf-1")), "herdr's agent name is the key in lower case, which herdr requires");
-  const start = h.calls.find((args) => args.includes("start"))!;
+  // The two runs open side by side (A11-442), so NBF-1's calls are found by its name, not by coming first.
+  const start = h.calls.find((args) => args.includes("start") && args.includes("t-nbf-1"))!;
   const tail = start.slice(start.indexOf("--") + 1);
   assert.equal(tail[0], `Read ${ticketDir(settings, "NBF-1")}/brief.md and follow it.`);
   assert.deepEqual(tail.slice(-2), ["--disallowedTools", "AskUserQuestion"]);
@@ -170,7 +174,7 @@ test("a tick starts as many as `max` allows, each in ticket mode's own herdr ses
   assert.equal(written.permissions.defaultMode, "bypassPermissions", "the settings sit in the ticket's folder, where the worker starts");
   assert.deepEqual(worktreesIn(folder), [], "no worktree is made for it: the worker chooses the repository");
   assert.ok(existsSync(join(ticketDir(settings, "NBF-1"), "brief.md")));
-  const create = h.calls.find((args) => args.includes("create"))!;
+  const create = h.calls.find((args) => args.includes("create") && args.includes("t-nbf-1"))!;
   assert.ok(create.includes("--cwd") && create.includes(folder), "the worker starts in the ticket's folder");
   for (const pair of ["AGENT_ORG_TICKET=NBF-1", "AGENT_ORG_TICKET_BRANCH=nbf-1", "AGENT_ORG_TICKET_HOST=/work/.agent-org/host.json"]) {
     assert.ok(create.includes(pair), `its shell carries ${pair}, which ticket:worktree reads`);
@@ -265,12 +269,71 @@ test("a run ends on its outcome file once the agent is idle; idle before it ever
   writeFileSync(join(ticketDir(settings, "NBF-1"), "outcome.json"), JSON.stringify({ kind: "draft-pr", prs: [{ repo: "nbl-ui-netbox", url: "https://github.com/x/pull/1" }] }));
   // The session's transcript, filed under a project that is not the worktree's, found by the id herdr reports for the run's workspace.
   mkdirSync(join(root, "transcripts", "-Users-me-work"), { recursive: true });
-  writeFileSync(join(root, "transcripts", "-Users-me-work", "session-t-nbf-1.jsonl"), JSON.stringify({ message: { usage: { input_tokens: 3, output_tokens: 4 } } }));
+  writeFileSync(join(root, "transcripts", "-Users-me-work", "session-t-nbf-1.jsonl"), turnLine("m1", 50, { input_tokens: 3, output_tokens: 4 }));
   await pool.tick();
   assert.deepEqual(entry("NBF-1").tokens, { input: 3, output: 4 });
   assert.deepEqual(entry("NBF-1").outcome, { kind: "draft-pr", prs: [{ repo: "nbl-ui-netbox", url: "https://github.com/x/pull/1" }] });
   assert.deepEqual([entry("NBF-1").workspace, entry("NBF-1").pane], [undefined, undefined], "its workspace was closed");
   assert.equal(entry("NBF-1").session, "session-t-nbf-1", "the session it ran in is kept, for a review run to resume");
+});
+
+/** One assistant record of a Claude transcript: message `id`, written at `at` ms, with `usage`. Claude Code writes one per content block, each repeating the usage. */
+const turnLine = (id: string, at: number, usage: Record<string, number>): string =>
+  JSON.stringify({ type: "assistant", timestamp: new Date(at).toISOString(), message: { id, model: "claude-sonnet-5-5", usage } });
+
+/** The transcript of session `id`, under a project that is not the worktree's, with `lines`. */
+function writeTranscript(root: string, id: string, lines: readonly string[]): string {
+  const file = join(root, "transcripts", "-Users-me-work", `${id}.jsonl`);
+  mkdirSync(dirname(file), { recursive: true });
+  writeFileSync(file, `${lines.join("\n")}\n`);
+  return file;
+}
+
+test("a run resumed for round 2 in the same session records each round's own tokens, and no turn in both (A11-430)", async () => {
+  const clock = { at: 100 };
+  const { pool, status, entry, settings, root, store, h } = setup(1, ["NBF-1"], {}, { now: () => clock.at });
+  await pool.tick();
+  status.set(herdrName("NBF-1"), "idle");
+  const dir = ticketDir(settings, "NBF-1");
+  // Round 1's message is written twice, once per content block, as Claude Code writes it: it counts once.
+  const file = writeTranscript(root, "session-t-nbf-1", [turnLine("m1", 150, { input_tokens: 10, output_tokens: 1 }), turnLine("m1", 160, { input_tokens: 10, cache_read_input_tokens: 5, output_tokens: 7 })]);
+  writeFileSync(join(dir, "outcome.json"), JSON.stringify({ kind: "draft-pr", prs: [{ repo: "nbl-ui-netbox", url: "https://github.com/x/pull/1" }] }));
+  clock.at = 1_000;
+  await pool.tick();
+  assert.deepEqual(entry("NBF-1").outcomeRun?.rounds.map(({ tokens }) => tokens?.["claude-sonnet-5-5"]), [{ input: 10, output: 7, cacheRead: 5, cacheWrite5m: 0, cacheWrite1h: 0 }]);
+  store.set(respond(store.get(), "NBF-1", 1_100));
+  clock.at = 1_200;
+  await pool.tick();
+  assert.equal(entry("NBF-1").phase, "running", "round 2 resumed the same session");
+  // herdr lists the resumed agent in the round's own workspace, with the session it resumed.
+  h.extra.push({ workspace_id: entry("NBF-1").workspace ?? "", label: "round-2", name: null, session: "session-t-nbf-1", status: "idle" });
+  // The resumed session's transcript holds round 1's turn again, and round 2's own.
+  writeFileSync(file, `${[turnLine("m1", 160, { input_tokens: 10, cache_read_input_tokens: 5, output_tokens: 7 }), turnLine("m2", 1_500, { input_tokens: 2, output_tokens: 3 })].join("\n")}\n`);
+  writeFileSync(join(dir, "outcome.json"), JSON.stringify({ kind: "reviewed" }));
+  clock.at = 2_000;
+  await pool.tick();
+  const records = readOutcomes(outcomesPath(settings.stateDir));
+  assert.equal(records.length, 2, "one line per round's end");
+  const [record] = latestOutcomes(records);
+  assert.deepEqual(record?.rounds.map(({ outcome, tokens }) => [outcome, tokens?.["claude-sonnet-5-5"]?.input, tokens?.["claude-sonnet-5-5"]?.output]), [["draft-pr", 10, 7], ["reviewed", 2, 3]]);
+  assert.deepEqual(record?.tokens["claude-sonnet-5-5"], { input: 12, output: 10, cacheRead: 5, cacheWrite5m: 0, cacheWrite1h: 0 }, "the run's tokens are its rounds' own, m1 once");
+  assert.deepEqual([record?.run, record?.model, record?.effort, record?.final], ["NBF-1@100", "sonnet", "high", "reviewed"]);
+  assert.deepEqual(entry("NBF-1").tokens, { input: 17, output: 10 }, "Properties show the run's tokens, each turn once");
+});
+
+test("a run whose transcript cannot be read reports it on the run and writes no outcome record (A11-430)", async () => {
+  const { pool, status, entry, settings, store } = setup(1, ["NBF-1"]);
+  await pool.tick();
+  status.set(herdrName("NBF-1"), "idle");
+  writeFileSync(join(ticketDir(settings, "NBF-1"), "outcome.json"), JSON.stringify({ kind: "needs-human", reason: "which design?", escalation: "reserved" }));
+  await pool.tick();
+  assert.equal(entry("NBF-1").phase, "finished");
+  const unread = (store.get().runLog?.["NBF-1"] ?? []).filter((event) => event.kind === "outcome-unread");
+  assert.equal(unread.length, 1, "the board reports the error on the run");
+  assert.match(unread[0]?.kind === "outcome-unread" ? unread[0].reason : "", /transcript/);
+  assert.deepEqual(readOutcomes(outcomesPath(settings.stateDir)), [], "no record with zero tokens");
+  assert.equal(entry("NBF-1").tokens, undefined, "its tokens are unknown, not 0");
+  assert.ok(entry("NBF-1").outcomeRun?.rounds[0]?.unread !== undefined, "the round is kept, marked unread, so a later round counts only its own turns");
 });
 
 const approvedPr = { repo: "nbl-ui-netbox", url: "https://github.com/x/nbl-ui-netbox/pull/1" };
@@ -455,19 +518,13 @@ test("an outcome file that cannot be read is `needs-human`, saying so", () => {
   assert.equal(parseOutcome("{\"kind\":\"merged\"}").kind, "needs-human");
 });
 
-test("tokens are read from the session's own transcript, found by its id in whichever project Claude Code filed it", () => {
+test("a session's own transcript is found by its id in whichever project Claude Code filed it", () => {
   const root = tmpDir("ticket-tokens-");
   mkdirSync(join(root, "-Users-me-work"), { recursive: true });
   const file = join(root, "-Users-me-work", "u-123.jsonl");
-  writeFileSync(file, [
-    JSON.stringify({ message: { usage: { input_tokens: 10, cache_read_input_tokens: 100, cache_creation_input_tokens: 5, output_tokens: 7 } } }),
-    JSON.stringify({ type: "user", message: { content: "no usage here" } }),
-    "{\"message\":{\"usage\":", // a live transcript's partial last line
-  ].join("\n"));
+  writeFileSync(file, "");
   assert.equal(findTranscript(root, "u-123"), file);
   assert.equal(findTranscript(root, "u-404"), null);
-  assert.deepEqual(countTokens(file), { input: 115, output: 7 });
-  assert.deepEqual(countTokens(null), { input: 0, output: 0 });
 });
 
 test("a session whose herdr server does not answer is started once, and waited for", async () => {
@@ -1672,26 +1729,30 @@ test("the tickets queued together are planned by one run in one slot: each shows
   const { tracker } = batchTracker({ ...source, download: async (t, dir) => [join(dir, `attachment-1-${t.key}.png`)] });
   const { pool, h, entry, settings, store } = setup(2, ["NBF-1", "NBF-2", "NBF-3", "NBF-4"], BATCH_PLANNER, { source: tracker, planFirst: ["NBF-1", "NBF-2", "NBF-3"], batch: true });
   await pool.tick();
+  // The batch's run and NBF-4's open side by side (A11-442), so which workspace herdr numbers first is not asserted: that the batch shares one, and NBF-4 has another, is.
+  const shared = entry("NBF-1").workspace;
   for (const key of ["NBF-1", "NBF-2", "NBF-3"]) {
-    assert.deepEqual([entry(key).phase, entry(key).workspace, entry(key).pane, runStatus(entry(key), store.get().entries)], ["running", "w1", "w1:p1", "planning"], key);
+    assert.deepEqual([entry(key).phase, entry(key).workspace, entry(key).pane, runStatus(entry(key), store.get().entries)], ["running", shared, `${shared}:p1`, "planning"], key);
   }
-  assert.deepEqual([entry("NBF-4").phase, entry("NBF-4").workspace], ["running", "w2"], "the batch held one of the two slots, so NBF-4 took the other");
+  assert.equal(entry("NBF-4").phase, "running", "the batch held one of the two slots, so NBF-4 took the other");
+  assert.ok(entry("NBF-4").workspace !== undefined && entry("NBF-4").workspace !== shared, "in a workspace of its own");
   const starts = h.calls.filter((args) => args.includes("start"));
   assert.equal(starts.length, 2);
-  assert.ok(starts[0].includes(herdrName(BATCH)), "the batch's run is named after the batch, not one of its tickets");
+  const batchStart = starts.find((args) => args.includes(herdrName(BATCH)));
+  assert.ok(batchStart !== undefined, "the batch's run is named after the batch, not one of its tickets");
   const dir = batchDir(settings, BATCH);
   const brief = readFileSync(join(dir, "brief.md"), "utf8");
   assert.match(brief, /^# Plan 3 tickets together: NBF-1, NBF-2, NBF-3\n/);
   assert.ok(brief.includes(`Run the planner with: unattended: plan NBF-1, NBF-2, NBF-3 into ${join(dir, "plan")}`));
   assert.ok(brief.includes(join(ticketDir(settings, "NBF-2"), "attachment-1-NBF-2.png")), "each ticket's files are downloaded into its own folder, as a run of its own has them");
-  const tail = starts[0].slice(starts[0].indexOf("--") + 1);
+  const tail = batchStart.slice(batchStart.indexOf("--") + 1);
   assert.equal(tail[0], `Read ${dir}/brief.md and follow it.`);
   assert.deepEqual([tail[tail.indexOf("--model") + 1], tail[tail.indexOf("--effort") + 1]], ["opus", "max"], "the planning model and effort");
   const written = JSON.parse(readFileSync(join(batchFolder(settings, BATCH), ".claude", "settings.local.json"), "utf8"));
   assert.ok(written.hooks.Stop[0].hooks[0].args.includes(dir), "the stop hook reads the run's outcome file, in the batch's folder");
   const deny = JSON.parse(readFileSync(join(dir, "deny.json"), "utf8")) as { pattern: string }[];
   assert.ok(deny.some(({ pattern }) => new RegExp(pattern).test("git commit -m plan")), "the planning refusals hold for a batch too");
-  const create = h.calls.find((args) => args.includes("create"))!;
+  const create = h.calls.find((args) => args.includes("create") && args.includes(herdrName(BATCH)))!;
   assert.equal(create.some((arg) => arg.startsWith("AGENT_ORG_TICKET=")), false, "a batch's run has no one ticket to make a worktree for");
 });
 
@@ -1729,6 +1790,22 @@ test("a batch's planned outcome attaches each ticket's plan, hands back the one 
     [["running", undefined, true, "nbl-ui-platform-libs", undefined], ["queued", undefined, true, "nbl-ui-netbox", undefined]]);
   assert.equal(entry("NBF-1").phase, "running", "the attach asked for a pass, which read the blockers again and started NBF-1 at once");
   assert.deepEqual([entry("NBF-2").blockers?.map((b) => b.key), runStatus(entry("NBF-2"), store.get().entries)], [["NBF-1"], "blocked"], "NBF-2 waits on NBF-1, as Linear now says");
+});
+
+test("a batch planning run's outcome records carry each ticket a share of its tokens, and the shares add up to the run's (A11-430)", async () => {
+  const { tracker } = batchTracker();
+  const keys = ["NBF-1", "NBF-2", "NBF-3"];
+  const { settings } = await plannedBatch(tracker, (plan, { entry, h, root }) => {
+    for (const key of keys) put(join(plan, key, `${key}-0001-plan-x.md`), "# X\n");
+    // herdr lists the planner's agent in the run's workspace, with its session.
+    h.extra.push({ workspace_id: entry("NBF-1").workspace ?? "", label: "planner", name: null, session: "session-planner", status: "idle" });
+    writeTranscript(root, "session-planner", [turnLine("m1", 50, { input_tokens: 10, cache_read_input_tokens: 101, output_tokens: 7 })]);
+  }, keys);
+  const records = latestOutcomes(readOutcomes(outcomesPath(settings.stateDir)));
+  assert.deepEqual(records.map(({ ticket, batch, final }) => [ticket, batch?.share, batch?.of, final]), [["NBF-1", 1, 3, "planned"], ["NBF-2", 2, 3, "planned"], ["NBF-3", 3, 3, "planned"]]);
+  const shares = records.map(({ tokens }) => tokens["claude-sonnet-5-5"]);
+  assert.deepEqual(shares.map((share) => [share?.input, share?.cacheRead, share?.output]), [[4, 34, 3], [3, 34, 2], [3, 33, 2]], "even shares, the remainder one each to the first tickets");
+  assert.deepEqual([10, 101, 7], ["input", "cacheRead", "output"].map((field) => shares.reduce((sum, share) => sum + (share?.[field as "input"] ?? 0), 0)), "the shares add up to the run's total");
 });
 
 test("an order.json that fails its checks records no blockers and is logged, and the plans are still attached", async () => {
@@ -1865,7 +1942,7 @@ test("only a batch's run is watched: its tickets without an agent are never cras
   assert.deepEqual(["NBF-1", "NBF-2"].map((key) => entry(key).phase), ["running", "running"], "one listing without it is one miss, counted once for the run");
   await pool.tick();
   assert.deepEqual(["NBF-1", "NBF-2"].map((key) => entry(key).outcome), Array(2).fill({ kind: "crashed", reason: "its herdr workspace is gone" }));
-  assert.deepEqual([entry("NBF-1").tokens, entry("NBF-2").tokens], [{ input: 0, output: 0 }, undefined], "the run's tokens are counted once, on the ticket it was watched through");
+  assert.deepEqual([entry("NBF-1").tokens, entry("NBF-2").tokens], [undefined, undefined], "the run's transcript was never written, so its tokens are unknown on every ticket, not 0");
 });
 
 test("stopping any ticket of a batch stops its whole run, and a retried ticket is planned again on its own", async () => {
@@ -1989,12 +2066,12 @@ test("a batch whose start fails crashes every ticket of it, and a stop while it 
 });
 
 /** Run a batch of NBF-1 and NBF-2 to a planned outcome, after `write` has filled its plan folder. Returns the setup and the board's log. */
-async function plannedBatch(tracker: TicketSource, write: (plan: string) => void) {
+async function plannedBatch(tracker: TicketSource, write: (plan: string, ran: ReturnType<typeof setup>) => void, keys: readonly string[] = ["NBF-1", "NBF-2"]) {
   let ran: ReturnType<typeof setup> | undefined;
   const written = await captureStderr(async () => {
-    ran = setup(1, ["NBF-1", "NBF-2"], BATCH_PLANNER, { source: tracker, planFirst: ["NBF-1", "NBF-2"], batch: true });
+    ran = setup(1, [...keys], BATCH_PLANNER, { source: tracker, planFirst: [...keys], batch: true });
     await ran.pool.tick();
-    write(join(batchDir(ran.settings, BATCH), "plan"));
+    write(join(batchDir(ran.settings, BATCH), "plan"), ran);
     writeFileSync(join(batchDir(ran.settings, BATCH), "outcome.json"), JSON.stringify({ kind: "planned" }));
     ran.status.set(herdrName(BATCH), "idle");
     await ran.pool.tick();
@@ -4455,11 +4532,12 @@ test("a review the reviewer posted at its head and a person dismissed is posted,
  */
 
 const WRITER = { writer: { run: "Run the a11ign:create-ticket skill for this request: {request}, in {dir}." } };
-const WRITER_REQUEST: { id: string; request: string; mode: "quick" | "grill"; placement: "auto" | "manual"; form: WriterForm; team?: string; model?: string; effort?: string; ticket?: string; startedFrom?: string } = { id: "w1", request: "Show the requests a person made", mode: "quick", placement: "manual", form: { repo: "nbl-ui-netbox" } };
+const WRITER_REQUEST: { id: string; request: string; mode: "quick" | "grill"; placement: "auto" | "manual"; form: WriterForm; team?: string; model?: string; effort?: string; ticket?: string; startedFrom?: string;
+  queueAfter?: QueueAfter } = { id: "w1", request: "Show the requests a person made", mode: "quick", placement: "manual", form: { repo: "nbl-ui-netbox" } };
 
 /** A pool with `request` queued as a new-ticket run, and the queue unpaused: its run's folder and herdr name are the test's to read. */
-function writing(request: Partial<typeof WRITER_REQUEST> = {}, tickets: Record<string, unknown> = WRITER, tracker: TicketSource = source, now?: () => number) {
-  const ctx = setup(2, [], tickets, { source: tracker, now });
+function writing(request: Partial<typeof WRITER_REQUEST> = {}, tickets: Record<string, unknown> = WRITER, tracker: TicketSource = source, now?: () => number, queueWritten?: PoolDeps["queueWritten"]) {
+  const ctx = setup(2, [], tickets, { source: tracker, now, queueWritten });
   ctx.store.set(queueWriter(ctx.store.get(), { ...WRITER_REQUEST, ...request }, 0));
   const name = herdrName(`writer-${request.id ?? WRITER_REQUEST.id}`);
   return { ...ctx, name, dir: writerDir(ctx.settings, request.id ?? WRITER_REQUEST.id), run: () => writerOf(ctx.store.get(), request.id ?? WRITER_REQUEST.id)! };
@@ -4549,6 +4627,98 @@ test("a run whose record cannot be read shows no ticket and fails, and a run who
   await agentIs(none, none.name, "idle");
   await writerSettled();
   assert.match(none.run().failure ?? "", /its created outcome names no ticket/);
+});
+
+/*
+ * Queue after writing (A11-420): a run whose request asked for it queues its tickets as it ends cleanly, through the board's callback, all or nothing, and records how it went.
+ */
+
+const QUEUE_AFTER: QueueAfter = { model: "sonnet", effort: "high", plan: true };
+
+/** The board's `queueWritten`, as the pool calls it: each call kept, answering `answer` (or throwing it, when it is an Error). */
+function queueingBoard(answer: QueuedWritten | Error = { queued: 2 }) {
+  const calls: [readonly string[], QueueAfter][] = [];
+  const queueWritten = async (keys: readonly string[], after: QueueAfter, _stillWanted: () => boolean): Promise<QueuedWritten> => {
+    calls.push([keys, after]);
+    if (answer instanceof Error) throw answer;
+    return answer;
+  };
+  return { calls, queueWritten };
+}
+
+test("A11-420: a run stamped queueAfter that ends created, with every ticket read back, queues them all in the order it made them, and records how many", async () => {
+  const board = queueingBoard();
+  const fixture = writing({ id: "q1", queueAfter: QUEUE_AFTER }, WRITER, trackerOf({ "NBF-2": {}, "NBF-1": {} }), undefined, board.queueWritten);
+  await filesThenEnds(fixture, recordOf(["NBF-2", "NBF-1"]), { kind: "created", created: ["NBF-1", "NBF-2"] }, "done");
+  assert.deepEqual(board.calls, [[["NBF-2", "NBF-1"], QUEUE_AFTER]], "the order the record holds, on the stamped choice");
+  assert.deepEqual([writerStatus(fixture.run()), fixture.run().failure, fixture.run().afterWriting], ["done", undefined, { queued: 2 }]);
+});
+
+test("A11-420: a run with no queueAfter, as every run queued before this change, queues nothing and records nothing", async () => {
+  const board = queueingBoard();
+  const fixture = writing({ id: "q2" }, WRITER, trackerOf({ "NBF-1": {} }), undefined, board.queueWritten);
+  await filesThenEnds(fixture, recordOf(["NBF-1"]), { kind: "created", created: ["NBF-1"] }, "done");
+  assert.deepEqual([board.calls, writerStatus(fixture.run()), fixture.run().afterWriting], [[], "done", undefined]);
+});
+
+test("A11-420: a run stamped queueAfter that ends needs-human, names a ticket it did not make, or files one that cannot be read back queues none, and records why", async () => {
+  const board = queueingBoard();
+  const stopped = writing({ id: "q3", queueAfter: QUEUE_AFTER }, WRITER, trackerOf({ "NBF-3": {} }), undefined, board.queueWritten);
+  await filesThenEnds(stopped, recordOf(["NBF-3"]), { kind: "needs-human", reason: "the attachment was refused", created: ["NBF-3"] }, "idle");
+  assert.deepEqual(stopped.run().afterWriting, { notQueued: "Written, but not queued: the run ended with a problem (the attachment was refused). They are in the backlog." });
+
+  const unnamed = writing({ id: "q4", queueAfter: QUEUE_AFTER }, WRITER, trackerOf({ "NBF-1": {} }), undefined, board.queueWritten);
+  await filesThenEnds(unnamed, recordOf(["NBF-1"]), { kind: "created", created: ["NBF-1", "NBF-9"] }, "done");
+  assert.deepEqual(unnamed.run().afterWriting, { notQueued: "Written, but not queued: the run ended with a problem (it names NBF-9, a ticket it did not create). They are in the backlog." });
+
+  const unreadable: TicketSource = { ...source, read: async (key) => { if (key === "NBF-2") throw new Error("fetch failed"); return ticketOf(key); } };
+  const unread = writing({ id: "q5", queueAfter: QUEUE_AFTER }, WRITER, unreadable, undefined, board.queueWritten);
+  await filesThenEnds(unread, recordOf(["NBF-1", "NBF-2"]), { kind: "created", created: ["NBF-1", "NBF-2"] }, "done");
+  assert.deepEqual([writerStatus(unread.run()), unread.run().afterWriting], ["done", { notQueued: "Written, but not queued: NBF-2 could not be read back from the tracker. They are in the backlog." }],
+    "the run is done, since the ticket is filed, and none of its tickets is queued");
+  assert.deepEqual(board.calls, [], "the board is never asked to queue any of them");
+});
+
+test("A11-420: a run whose queueing is refused, or throws, still ends done with its tickets filed, and records the queue's own sentence", async () => {
+  const sentence = "NBF-1 is In Progress in the tracker and desk.99999999 claimed it, so another instance holds it";
+  const refused = writing({ id: "q6", queueAfter: QUEUE_AFTER }, WRITER, trackerOf({ "NBF-1": {} }), undefined, queueingBoard({ refused: sentence }).queueWritten);
+  await filesThenEnds(refused, recordOf(["NBF-1"]), { kind: "created", created: ["NBF-1"] }, "done");
+  assert.deepEqual([writerStatus(refused.run()), refused.run().tickets.map(({ key }) => key), refused.run().afterWriting],
+    ["done", ["NBF-1"], { notQueued: `Written, but not queued: ${sentence}. They are in the backlog.` }]);
+
+  const threw = writing({ id: "q7", queueAfter: QUEUE_AFTER }, WRITER, trackerOf({ "NBF-1": {} }), undefined, queueingBoard(new Error("fetch failed\nat line 2")).queueWritten);
+  await filesThenEnds(threw, recordOf(["NBF-1"]), { kind: "created", created: ["NBF-1"] }, "done");
+  assert.deepEqual([writerStatus(threw.run()), threw.run().afterWriting],
+    ["done", { notQueued: "Written, but not queued: could not add them to the queue: fetch failed. They are in the backlog." }]);
+});
+
+test("A11-420: a run stopped while its tickets are being read for the queue queues none: the board is told it is no longer wanted, and the stop's record stands", async () => {
+  let release = () => undefined as void;
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  const wanted: boolean[] = [];
+  // The board's callback as the server's is: the tracker is read (held here by `gate`), then the run is asked whether it is still wanted, just before the add.
+  const queueWritten = async (_keys: readonly string[], _after: QueueAfter, stillWanted: () => boolean): Promise<QueuedWritten> => {
+    await gate;
+    wanted.push(stillWanted());
+    return stillWanted() ? { queued: 1 } : { refused: "stopped" };
+  };
+  const fixture = writing({ id: "q9", queueAfter: QUEUE_AFTER }, WRITER, trackerOf({ "NBF-1": {} }), undefined, queueWritten);
+  await filesThenEnds(fixture, recordOf(["NBF-1"]), { kind: "created", created: ["NBF-1"] }, "done");
+  assert.equal(fixture.run().phase, "running", "the run waits on its queueing");
+  fixture.pool.stopWriterRun("q9");
+  release();
+  await writerSettled();
+  assert.deepEqual(wanted, [false], "asked after the stop, it is no longer wanted");
+  assert.deepEqual([fixture.run().failure, fixture.run().afterWriting], ["stopped on the board", { notQueued: "Written, but not queued: the request was stopped on the board. They are in the backlog." }]);
+});
+
+test("A11-420: a run stamped queueAfter whose outcome cannot be read fails, keeps what it filed unqueued, and records why", async () => {
+  const board = queueingBoard();
+  const fixture = writing({ id: "q8", queueAfter: QUEUE_AFTER }, WRITER, trackerOf({ "NBF-1": {} }), undefined, board.queueWritten);
+  await filesThenEnds(fixture, recordOf(["NBF-1"]), { kind: "made-up" }, "done");
+  assert.equal(writerStatus(fixture.run()), "failed");
+  assert.match("notQueued" in (fixture.run().afterWriting ?? {}) ? (fixture.run().afterWriting as { notQueued: string }).notQueued : "", /^Written, but not queued: the run failed \(.+\)\. They are in the backlog\.$/);
+  assert.deepEqual(board.calls, []);
 });
 
 test("a quick run that stops on a needs-human outcome fails with its reason, and keeps the ticket it filed before it stopped", async () => {
@@ -5721,7 +5891,7 @@ async function twoRunsHeldOnMain() {
   ctx.store.set(finish(finish(ctx.store.get(), "NBF-1", { kind: "reviewed", prs: [approvedPr] }, 100), "NBF-2", { kind: "reviewed", prs: [PR_2] }, 100));
   await watchRound(ctx.pool);
   for (const [key, pr, head] of [["NBF-1", approvedPr, HEAD_1], ["NBF-2", PR_2, HEAD_2]] as const) {
-    assert.deepEqual(ctx.entry(key).checkHeads, { [pr.url]: { head, step: "not-ours", note: HELD_NOTE, notOurs: { ui: null }, waitingOnMain: ["ui"] } }, `${key} is held as red on main, and records which check it waits on`);
+    assert.deepEqual(ctx.entry(key).checkHeads, { [pr.url]: { head, step: "not-ours", note: HELD_NOTE, notOurs: { ui: null }, waitingOnMain: ["ui"], unowned: { ui: ["not ok 3 - git spawn classification", "AssertionError: expected 1 to equal 2"] } } }, `${key} is held as red on main, and records which check it waits on, and, with no owner named, its error lines for a fix ticket (A11-428)`);
     assert.deepEqual([ctx.entry(key).phase, ctx.entry(key).rounds], ["finished", undefined], `${key} has no round`);
   }
   return { ...ctx, ci, pulls };

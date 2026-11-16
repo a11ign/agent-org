@@ -1,4 +1,4 @@
-// no-token: none -- the wake prompt's words; its sending is `sendToAgent`'s, tested in pool-resume.test.ts
+// no-token: none -- the wake prompt's words; its sending is `sendToAgentAsync`'s, tested in pool-resume.test.ts
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { wakePrompt } from "./wait-prompt.ts";

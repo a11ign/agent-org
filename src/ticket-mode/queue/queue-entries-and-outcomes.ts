@@ -1,5 +1,6 @@
 import type { FedTrouble, Wait, Woke } from "../wait-on/wait-types.ts";
 import type { QueueHead } from "../board-view/queue-head.ts";
+import type { CancelledStop } from "../board-view/cancelled-rerun-words.ts";
 import { openPulls, type AfterMergeLine, type CheckHead, type PullHead, type StackBaseRecord } from "../board-view/view-types-and-filters.ts";
 import type { OverlapStackRecord } from "../board-view/overlap-stack.ts";
 import { isBeingPublished, isParked } from "../board-view/pull-status-and-notes.ts";
@@ -21,6 +22,8 @@ import type { Standoff } from "./standoff-types.ts";
 import type { CapRound, TicketWait } from "./queue-cap.ts";
 import type { CiHold, TicketCi } from "../ci-spend/store.ts";
 import type { Interventions } from "./interventions.ts";
+import type { AfterWriting, QueueAfter } from "./queue-after-writing.ts";
+import type { OutcomeRun } from "../outcomes/outcome-record.ts";
 
 
 
@@ -208,12 +211,22 @@ export type Entry = Readonly<{
   /** The first line of the dialog a waiting agent sits on, when the pool could read one from its pane. Cleared when the run stops waiting (A11-174). */
   prompt?: string;
   /**
+   * Set while the run's worker is out of Claude allowance (A11-434): the message it was refused with, when the allowance returns, and when the board first held it. The run reads
+   * Waiting: allowance, and is never ended for it, as crashed, failed or for having no outcome. Dropped when its agent works again.
+   */
+  allowance?: Readonly<{ text: string; until: number; since: number }>;
+  /**
    * The Claude Code safety prompt the pool last answered No to on this run (A11-174): the command it asked about, its warning, the subagent that raised it (absent for the main agent, A11-209), when, how many the run has had
    * answered (bounded), and whether the agent has been told yet (herdr refuses a message to an agent that still reads blocked). Dropped when the run ends.
    */
   declined?: Declined;
   outcome?: Outcome;
   tokens?: Readonly<{ input: number; output: number }>;
+  /**
+   * The run's outcome record so far (A11-430, `outcomes/outcome-record.ts`): when it first started and how each of its rounds ended, with the tokens each spent. Each round's end adds one and appends
+   * the run's record to the outcome log. A review round, a talk session and a retried review round carry it, as the same run in the same session; any other retry starts a fresh worker, and so a fresh run without it.
+   */
+  outcomeRun?: OutcomeRun;
   /**
    * The state the board moved the ticket out of when a run started it, and the one it moved it to: the record the board puts the ticket back by
    * when the run ends without a pull request. Kept until it is put back, so it survives a restart and a retry. See {@link recordMove}.
@@ -372,6 +385,11 @@ export type Entry = Readonly<{
    */
   queueHeads?: Readonly<Record<string, QueueHead>>;
   /**
+   * The open pull requests of the run the board has stopped rerunning the cancelled runs of, by URL (A11-403): the head their third cancelled run blocked them at, and the line the card shows. Written by the watch that reads the stop in the run's log, and dropped
+   * when the head moves or the watch no longer reads cancelled runs blocking it. Not carried through a round: the next watch reads it again.
+   */
+  cancelledRerunStopped?: Readonly<Record<string, CancelledStop>>;
+  /**
    * Set on a queued review round or talk session that a working agent in another workspace holds back, because that agent holds the run's Claude session or its herdr
    * name (A11-154): what the board says it waits for. Cleared when the agent ends, and when the run starts.
    */
@@ -512,7 +530,12 @@ export type Queue = Readonly<{ entries: readonly Entry[]; max: number; paused: b
   /** What each ticket's pushes have cost in CI, by ticket key, as the board last read it (A11-261, `ci-spend/store.ts`). Kept beside the entries for the reason the run log is: a run that is dropped or retried keeps its ticket's total. Unset until something is read. */
   ciSpend?: Readonly<Record<string, TicketCi>>;
   /** How often a person had to step in, by UTC day: the runs that went to Needs you and the fixes a chairman session recorded, for the last 30 days (A11-257, `queue/interventions.ts`). Unset until one is counted. */
-  interventions?: Interventions }>;
+  interventions?: Interventions;
+  /**
+   * The Claude allowance as the board last saw it spent (A11-434): the message a run was refused with, and the reset it names. Until then no run starts, since it would be refused as well; it
+   * lapses at its reset by itself, and a later reset read from another run replaces it. Unset until a run is first refused.
+   */
+  allowance?: Readonly<{ text: string; until: number }> }>;
 
 /**
  * A ticket a new-ticket run created, as the board shows it (A11-135): its key, its address when the tracker has the ticket, and whether Pick's list
@@ -572,6 +595,10 @@ export type WriterRun = Readonly<{
   toolVersion?: string;
   /** The After-merge checks a `verify` run (one) or a `migrate` pass (up to ten) is for, by id (A11-302). */
   checks?: readonly string[];
+  /** The request asked for its tickets to be queued once the run ends cleanly (A11-420), on the queue defaults stamped when it was made. Absent: they stay in the backlog. */
+  queueAfter?: QueueAfter;
+  /** How the queueing went once a run with `queueAfter` ended (A11-420). Absent on a run without it, and on one still under way. */
+  afterWriting?: AfterWriting;
 }>;
 
 /** The most new-ticket requests that are not finished at once: a fourth is refused until one ends. */
@@ -758,12 +785,12 @@ export function dismiss(queue: Queue, key: string, now?: number): Queue {
 export function retry(queue: Queue, key: string, now: number, why: RequeueWhy = "retry"): Queue {
   const entry = find(queue, key);
   if (entry === undefined || retryRefusal(entry) !== null) return queue;
-  const { ticket, repos, model, effort, plan, planned, session, review, published, feedback, asked, decisions, conflict, rounds, movedFrom, paths, stepPaths, plannedRepo, projectRepo, pullFiles, partial, declared, partialOverruled, steps, planSteps, afterMerge, afterMergePosted, stackBase, overlapOverride, checkHeads, queueHeads, briefedAgainst, plannedWith, afterRound, standoff, capPlans, freeRounds, opened, regionPaths, overlapStack, pushed, conflictRounds, conflictBase } = entry;
+  const { ticket, repos, model, effort, plan, planned, session, review, published, feedback, asked, decisions, conflict, rounds, movedFrom, paths, stepPaths, plannedRepo, projectRepo, pullFiles, partial, declared, partialOverruled, steps, planSteps, afterMerge, afterMergePosted, stackBase, overlapOverride, checkHeads, queueHeads, briefedAgainst, plannedWith, afterRound, standoff, capPlans, freeRounds, opened, regionPaths, overlapStack, pushed, conflictRounds, conflictBase, outcomeRun } = entry;
   // A review run that failed is retried as the same review round, resuming the same worker, so it does not start the ticket over, and a round
-  // the board started still counts towards its cap. Any other run starts a fresh worker, whose session replaces this one. A ticket of a batch
-  // is planned again on its own.
+  // the board started still counts towards its cap, and its outcome record goes on (A11-430: the resumed transcript holds the earlier rounds, which must not be counted again). Any other
+  // run starts a fresh worker, whose session replaces this one. A ticket of a batch is planned again on its own.
   const round = { ...(session ? { session } : {}), ...(published ? { published } : {}), ...(feedback !== undefined ? { feedback } : {}), ...(asked ? { asked } : {}), ...(decisions ? { decisions } : {}),
-    ...(conflict !== undefined ? { conflict } : {}), ...(overlapOverride ? { overlapOverride } : {}), ...(rounds !== undefined ? { rounds } : {}), ...carriedFields({ paths, stepPaths, plannedRepo, projectRepo, pullFiles, partial, declared, partialOverruled, steps, planSteps, afterMerge, afterMergePosted, stackBase, checkHeads, queueHeads, briefedAgainst, afterRound, standoff, capPlans, freeRounds, opened, regionPaths, overlapStack, pushed, conflictRounds, conflictBase }) };
+    ...(conflict !== undefined ? { conflict } : {}), ...(overlapOverride ? { overlapOverride } : {}), ...(rounds !== undefined ? { rounds } : {}), ...carriedFields({ outcomeRun, paths, stepPaths, plannedRepo, projectRepo, pullFiles, partial, declared, partialOverruled, steps, planSteps, afterMerge, afterMergePosted, stackBase, checkHeads, queueHeads, briefedAgainst, afterRound, standoff, capPlans, freeRounds, opened, regionPaths, overlapStack, pushed, conflictRounds, conflictBase }) };
   // The record of the board's move is carried over too: a retried run finds its ticket already started, and would move nothing to record again. So are the plan
   // steps already merged: a fresh worker for a step that crashed is still on that step (A11-168).
   const retried: Entry = { ticket, repos, model, effort, ...(plan ? { plan } : {}), ...(plannedWith ? { plannedWith } : {}), ...(planned ? { planned } : {}), ...(movedFrom ? { movedFrom } : {}), ...(steps ? { steps } : {}),
@@ -804,12 +831,12 @@ export function talkRound(entry: Entry, now: number): Entry {
 /**
  * The fields a review round carries from the run it continues, the ticket text it was briefed with, its paths, pull request files, partial declaration and what its pull requests declared, merged plan steps, the plan's step count, the After-merge lines listed and posted, the heads its red checks and the merge queue's removals were answered at, when its CI count began and what its next round is told of the ticket's CI spend (A11-261), and the next step a conflict round holds back (A11-286): only those the run has set. PURE.
  */
-const carriedFields = ({ blockAsked, opened, paths, stepPaths, plannedRepo, projectRepo, pullFiles, partial, declared, partialOverruled, steps, planSteps, afterMerge, afterMergePosted, stackBase, checkHeads, queueHeads, briefedAgainst, ciSince, ciTold, afterRound, standoff, plannedWith, capPlans, freeRounds, regionPaths, overlapStack, pushed, conflictRounds, conflictBase }: Pick<Entry, "regionPaths" | "overlapStack" | "pushed" | "conflictRounds" | "conflictBase" | "blockAsked" | "opened" | "capPlans" | "freeRounds" | "standoff" | "plannedWith" | "paths" | "stepPaths" | "plannedRepo" | "projectRepo" | "pullFiles" | "partial" | "declared" | "partialOverruled" | "steps" | "planSteps" | "afterMerge" | "afterMergePosted" | "stackBase" | "checkHeads" | "queueHeads" | "briefedAgainst" | "ciSince" | "ciTold" | "afterRound">) => ({
+const carriedFields = ({ outcomeRun, blockAsked, opened, paths, stepPaths, plannedRepo, projectRepo, pullFiles, partial, declared, partialOverruled, steps, planSteps, afterMerge, afterMergePosted, stackBase, checkHeads, queueHeads, briefedAgainst, ciSince, ciTold, afterRound, standoff, plannedWith, capPlans, freeRounds, regionPaths, overlapStack, pushed, conflictRounds, conflictBase }: Pick<Entry, "outcomeRun" | "regionPaths" | "overlapStack" | "pushed" | "conflictRounds" | "conflictBase" | "blockAsked" | "opened" | "capPlans" | "freeRounds" | "standoff" | "plannedWith" | "paths" | "stepPaths" | "plannedRepo" | "projectRepo" | "pullFiles" | "partial" | "declared" | "partialOverruled" | "steps" | "planSteps" | "afterMerge" | "afterMergePosted" | "stackBase" | "checkHeads" | "queueHeads" | "briefedAgainst" | "ciSince" | "ciTold" | "afterRound">) => ({
   ...(briefedAgainst ? { briefedAgainst } : {}), ...(paths ? { paths } : {}), ...(stepPaths ? { stepPaths } : {}), ...(plannedRepo !== undefined ? { plannedRepo } : {}), ...(projectRepo !== undefined ? { projectRepo } : {}), ...(pullFiles ? { pullFiles } : {}),
   ...(partial !== undefined ? { partial } : {}), ...(declared ? { declared } : {}), ...(partialOverruled ? { partialOverruled } : {}), ...(steps ? { steps } : {}), ...(planSteps !== undefined ? { planSteps } : {}), ...(afterMerge ? { afterMerge } : {}), ...(afterMergePosted ? { afterMergePosted } : {}), ...(stackBase ? { stackBase } : {}), ...(checkHeads ? { checkHeads } : {}), ...(queueHeads ? { queueHeads } : {}),
   ...(ciSince !== undefined ? { ciSince } : {}), ...(ciTold ? { ciTold } : {}), ...(afterRound ? { afterRound } : {}), ...(standoff ? { standoff } : {}), ...(plannedWith ? { plannedWith } : {}),
   ...(capPlans !== undefined ? { capPlans } : {}), ...(freeRounds !== undefined ? { freeRounds } : {}), ...(blockAsked ? { blockAsked } : {}), ...(opened ? { opened } : {}),
-  ...(regionPaths ? { regionPaths } : {}), ...(overlapStack ? { overlapStack } : {}), ...(pushed ? { pushed } : {}), ...(conflictRounds ? { conflictRounds } : {}), ...(conflictBase ? { conflictBase } : {}),
+  ...(outcomeRun ? { outcomeRun } : {}), ...(regionPaths ? { regionPaths } : {}), ...(overlapStack ? { overlapStack } : {}), ...(pushed ? { pushed } : {}), ...(conflictRounds ? { conflictRounds } : {}), ...(conflictBase ? { conflictBase } : {}),
 });
 
 /** The tracker states a finished run can end in, after which its ticket is not read again. */

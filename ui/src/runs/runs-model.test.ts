@@ -271,3 +271,48 @@ describe("a row's conflict note", () => {
     expect(noteLines({ ...handed, phase: "running" } as RunEntry, context).some((line) => line.includes("conflicts"))).toBe(false);
   });
 });
+
+describe("a crashed run that other tickets wait on (A11-399)", () => {
+  const PULL = "https://github.com/a11ign/announcement-emulator/pull/19";
+  const notBefore = Date.parse("2026-10-30T12:30:00Z");
+  const crashed = (more: RunFields = {}): RunFields => ({
+    ...working({ key: "A11-231", title: "step 2", startedAgo: 40 * MINUTE }), phase: "finished", outcome: { kind: "crashed", reason: "fetch failed (ECONNRESET)" }, finishedAt: notBefore - 10 * MINUTE,
+    crashRetry: { count: 2, recovery: { notBefore, restarts: [] } }, ...more,
+  });
+  const behind = queuedRun("A11-232", "step 3", MINUTE, {
+    blockers: [{ key: "A11-231", state: "started", status: "In Progress", pulls: { [PULL]: "merged" } }], blockersDeclared: { [PULL]: [{ kind: "partial", remains: "step 2 of 2: the rest" }] },
+  });
+  const now = notBefore - 5 * MINUTE;
+
+  it("says on the blocked card that its blocker crashed, in the wait line and the top line, never as a plain queued wait", () => {
+    const queue = queueOf([crashed(), behind]);
+    const lines = noteLines(queue.entries.find(({ ticket }) => ticket.key === "A11-232")!, { queue, publisher: undefined, now });
+    expect(lines).toContain("Waits on A11-231 (crashed)");
+    expect(lines).toContain("Waits on A11-231, which crashed");
+    expect(lines.some((line) => line.startsWith("Waits for A11-231"))).toBe(false);
+  });
+
+  it("says on the crashed card which ticket waits on it and when the board starts it again", () => {
+    const queue = queueOf([crashed(), behind]);
+    const lines = noteLines(queue.entries.find(({ ticket }) => ticket.key === "A11-231")!, { queue, publisher: undefined, now });
+    expect(lines).toContain("A11-232 waits on A11-231, which crashed; the board starts it again once its network calls succeed, not before 12:30Z");
+  });
+
+  it("does not name a ticket whose card says its blocker was canceled, or that its worker stopped for, as waiting on the crash", () => {
+    const canceled = queuedRun("A11-240", "t", MINUTE, { blockers: [{ key: "A11-231", state: "canceled", status: "Canceled" }] });
+    const stopped = queuedRun("A11-241", "t", MINUTE, { blockers: [{ key: "A11-231", state: "started", status: "In Progress" }], stoppedForBlocker: { at: now, keys: ["A11-231"] } });
+    const queue = queueOf([crashed(), behind, canceled, stopped]);
+    const lines = noteLines(queue.entries.find(({ ticket }) => ticket.key === "A11-231")!, { queue, publisher: undefined, now });
+    expect(lines).toContain("A11-232 waits on A11-231, which crashed; the board starts it again once its network calls succeed, not before 12:30Z");
+    const none = queueOf([crashed(), canceled, stopped]);
+    expect(noteLines(none.entries[0], { queue: none, publisher: undefined, now }).some((line) => line.includes("which crashed"))).toBe(false);
+  });
+
+  it("gives the crashed card no line when nothing waits on it, or when the waiting ticket has a live run of the blocker to wait for instead", () => {
+    const alone = queueOf([crashed()]);
+    expect(noteLines(alone.entries[0], { queue: alone, publisher: undefined, now }).some((line) => line.includes("which crashed"))).toBe(false);
+    const queue = queueOf([crashed(), behind, queuedRun("A11-231", "step 2 again")]);
+    const lines = noteLines(queue.entries.find(({ ticket }) => ticket.key === "A11-232")!, { queue, publisher: undefined, now });
+    expect(lines.some((line) => line.includes("crashed"))).toBe(false);
+  });
+});

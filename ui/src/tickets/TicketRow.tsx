@@ -111,7 +111,9 @@ function LeafRow({ ticket, depth, context }: Readonly<{ ticket: TicketView; dept
   const reason = isParentTicket(ticket) ? "A parent is not queued: queue its children" : undefined;
   return (
     <div className={`row${onQueue ? " row-dim" : ""}${picked ? " row-picked" : ""}`} style={indent(depth)} data-key={ticket.key}>
-      <input type="checkbox" aria-label={`Select ${ticket.key}`} checked={picked} disabled={!free || context.paused} {...(reason === undefined ? {} : { title: reason })} onChange={(event) => (event.target.checked ? context.pick([ticket.key]) : context.unpick([ticket.key]))} />
+      <label className="row-check">
+        <input type="checkbox" aria-label={`Select ${ticket.key}`} checked={picked} disabled={!free || context.paused} {...(reason === undefined ? {} : { title: reason })} onChange={(event) => (event.target.checked ? context.pick([ticket.key]) : context.unpick([ticket.key]))} />
+      </label>
       <PriorityMark priority={ticket.priority} />
       <span className="row-key">{ticket.key}</span>
       {isParentTicket(ticket) ? null : <PlanMark ticket={ticket} context={context} />}
@@ -142,7 +144,9 @@ function ParentRow({ node, depth, context }: Readonly<{ node: TicketNode<TicketV
       <button type="button" className="fold-button" aria-label={`${open ? "Collapse" : "Expand"} ${ticket.key}`} aria-expanded={open} onClick={() => context.toggleParent(ticket.key)}>
         <FoldChevron open={open} />
       </button>
-      <input ref={box} type="checkbox" aria-label={`Select the tickets under ${ticket.key}`} checked={tick.checked} disabled={tick.keys.length === 0 || context.paused} onChange={(event) => (event.target.checked ? context.pick(tick.keys) : context.unpick(tick.keys))} />
+      <label className="row-check">
+        <input ref={box} type="checkbox" aria-label={`Select the tickets under ${ticket.key}`} checked={tick.checked} disabled={tick.keys.length === 0 || context.paused} onChange={(event) => (event.target.checked ? context.pick(tick.keys) : context.unpick(tick.keys))} />
+      </label>
       <span className="row-key">{ticket.key}</span>
       <Title ticket={ticket} />
       <LabelTags ticket={ticket} />
