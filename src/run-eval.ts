@@ -1,5 +1,5 @@
 // @ts-check
-// module: the worker eval (A11-431, step 1 of 2) -- replays merged tickets through a headless worker with the current brief, model and effort, and scores what it made
+// module: the worker eval (A11-431) -- replays merged tickets through a headless worker with the current brief, model and effort, and scores what it made
 //
 // FOR EACH TICKET OF A SET (`run-eval/set.ts`) it makes a throwaway clone at the ticket's base sha (`run-eval/sandbox.ts`), writes the brief the board would write today
 // (`run-eval/worker.ts`), runs the worker headlessly with nothing able to leave the machine, and scores the tree the worker left:
@@ -11,6 +11,9 @@
 //
 // A STEP THAT FAILS IS A SCORE, NEVER A SKIP: a ticket whose clone, worker, tests or review failed keeps a row, with what failed in its note, and counts against the totals.
 //
+// A RUN IS STORED by its set, the sha it ran from and the config key it set (`run-eval/store.ts`), and `compare` prints two stored runs side by side (`run-eval/compare.ts`). A
+// run may turn one switch of the host file on or off (`run-eval/key.ts`), and it stops before the next ticket once its tokens reach `tickets.evalTokenCap` (the epic's spend, Q4).
+//
 // NO `gh`, `git`, `claude` OR `codex` CALL IS MADE IN THIS FILE: they are `RunEvalDeps`, supplied by `scripts/run-eval.ts`, and the tests hand in fakes.
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -19,8 +22,13 @@ import { fileURLToPath } from "node:url";
 import { installSkill, REVIEWER_EFFORT, REVIEWER_MODEL, verdictOf, type Label } from "./review-eval.ts";
 import { filesOutside, readDiff, similarity } from "./run-eval/diff-score.ts";
 import { offlineEnv, PULL_BODY_FILE, writeStandIns, type Git, cloneAt } from "./run-eval/sandbox.ts";
+import { compareTable } from "./run-eval/compare.ts";
+import { parseKey, type KeySetting } from "./run-eval/key.ts";
 import { DEFAULT_TEST, parseSet, type EvalEntry } from "./run-eval/set.ts";
+import { COLUMNS, layOut } from "./run-eval/table.ts";
+import { loadRun, runPath, setNameOf, storeRun, type Revision, type Stopped } from "./run-eval/store.ts";
 import { evalBrief, evalSettings, tokensOfResult, workerArgs, type HostBrief, type Place } from "./run-eval/worker.ts";
+import { type SchemaEntry } from "./ticket-mode/config-schema.ts";
 import { type Ticket } from "./ticket-mode/source.ts";
 import { BRIEF_FILE, type ParentTicket } from "./ticket-mode/worker-files.ts";
 
@@ -109,7 +117,9 @@ async function runWorker(entry: EvalEntry, deps: RunEvalDeps, options: RunOption
     writeFileSync(join(place.record, "worker-result.json"), stdout);
     return { tokens: tokensOfResult(stdout), wallMs: deps.now() - started };
   } catch (error) {
-    return { tokens: null, wallMs: deps.now() - started, note: `worker failed: ${firstLine(error)}` };
+    // A worker that exits non-zero may still have printed its result: its tokens were spent, and the token cap must count them. One killed for its time printed none, and is unknown.
+    const printed = (error as { stdout?: unknown })?.stdout;
+    return { tokens: typeof printed === "string" ? tokensOfResult(printed) : null, wallMs: deps.now() - started, note: `worker failed: ${firstLine(error)}` };
   }
 }
 
@@ -167,8 +177,6 @@ async function scoreIn(entry: EvalEntry, deps: RunEvalDeps, options: RunOptions,
   return { entry, notes, dir: place.dir, scores: { tests, verdict: review?.verdict ?? null, similarity: worker === null ? null : similarity(worker, answer), outside: worker === null ? [] : filesOutside(worker, answer), tokens: run.tokens, wallMs: run.wallMs } };
 }
 
-const COLUMNS = ["ticket", "tests", "verdict", "similarity", "outside", "tokens", "wall"] as const;
-
 /** One score as the table prints it; `?` is unknown. PURE. */
 function cells({ entry, scores }: TicketResult): string[] {
   const { tests, verdict, similarity: close, outside, tokens, wallMs } = scores;
@@ -186,13 +194,16 @@ function totals(results: readonly TicketResult[]): string[] {
     `${tokens.reduce((a, b) => a + b, 0)}${unknownTokens > 0 ? ` (+${unknownTokens} unknown)` : ""}`, `${Math.round(all.reduce((n, { wallMs }) => n + wallMs, 0) / 1000)}s`];
 }
 
-/** The table, a row per ticket and a total, then each ticket's notes and folder. PURE. */
-export function report(results: readonly TicketResult[], { model, effort, set }: { model: string; effort: string; set: string }): string {
-  const rows = [[...COLUMNS], ...results.map(cells), totals(results)];
-  const widths = COLUMNS.map((_, at) => Math.max(...rows.map((row) => row[at].length)));
-  const line = (row: readonly string[]) => row.map((cell, at) => cell.padEnd(widths[at])).join("  ").trimEnd();
+/** The line that says a run stopped at the token cap, how far it got and which tickets it never started. PURE. */
+export const stoppedLine = ({ ran, of, tokens, cap, notStarted }: Stopped): string =>
+  `stopped by the token cap: ${ran} of ${of} tickets ran, ${tokens} tokens spent of a cap of ${cap} (tickets.evalTokenCap); not started: ${notStarted.join(", ")}`;
+
+/** The table, a row per ticket and a total, then each ticket's notes and folder, and, for a run the token cap stopped, how far it got. PURE. */
+export function report(results: readonly TicketResult[], { model, effort, set, key = null, stopped = null }: { model: string; effort: string; set: string; key?: KeySetting | null; stopped?: Stopped | null }): string {
+  const table = layOut([[...COLUMNS], ...results.map(cells), totals(results)]);
   const notes = results.flatMap(({ entry, notes: said, dir }) => [`${entry.ticket}: ${dir}`, ...said.map((note) => `  ${note}`)]);
-  return [`worker eval of ${set} (${model}, effort ${effort})`, line(rows[0]), ...rows.slice(1).map(line), "", ...notes].join("\n") + "\n";
+  const keyWords = key === null ? "" : `, ${key.name} ${key.on ? "on" : "off"}`;
+  return [`worker eval of ${set} (${model}, effort ${effort}${keyWords})`, ...table, ...(stopped === null ? [] : ["", stoppedLine(stopped)]), "", ...notes].join("\n") + "\n";
 }
 
 /** Where a set named without a path is read: `evals/sets/<name>.json` of this checkout. */
@@ -201,19 +212,35 @@ export const SETS_DIR = fileURLToPath(new URL("../evals/sets/", import.meta.url)
 /** The file a `--set` names: a path as given when it has a `/` or ends in `.json`, else the checked-in set of that name. PURE. */
 export const setFile = (name: string, dir: string = SETS_DIR): string => (name.includes("/") || name.endsWith(".json") ? name : join(dir, `${name}.json`));
 
-export const USAGE = "usage: run-eval --set <name|file.json> [--only A11-1,...] [--model M] [--effort E]  (each also as --flag=value)";
+export const USAGE = [
+  "usage: run-eval --set <name|file.json> [--only A11-1,...] [--model M] [--effort E] [--key <switch>=on|off] [--replace]  (each also as --flag=value)",
+  "       run-eval compare --set <name|file.json> <A> <B>  (a run is a sha or its start, with @<switch>=on|off when it set a key)",
+].join("\n");
 
-/** The arguments, or a refusal. PURE. */
-export function parseArgs(argv: readonly string[]): Map<string, string> | string {
+/** The options that take a value, and the one that takes none. */
+const VALUED = new Set(["set", "only", "model", "effort", "key"]);
+const FLAGS = new Set(["replace"]);
+
+/** The arguments: the options, and the words that are not options (a compare's two runs). Or a refusal. PURE. */
+export function parseArgs(argv: readonly string[]): { options: Map<string, string>; words: string[] } | string {
   const options = new Map<string, string>();
+  const words: string[] = [];
   for (let at = 0; at < argv.length; at++) {
     const arg = argv[at];
-    const found = /^--(set|only|model|effort)(?:=(.*))?$/.exec(arg);
-    const value = found === null ? undefined : found[2] ?? argv[++at];
-    if (found === null || value === undefined) return `unknown or incomplete argument: ${arg}`;
+    const found = /^--([a-z]+)(?:=(.*))?$/.exec(arg);
+    if (found === null) {
+      words.push(arg);
+      continue;
+    }
+    if (FLAGS.has(found[1]) && found[2] === undefined) {
+      options.set(found[1], "");
+      continue;
+    }
+    const value = VALUED.has(found[1]) ? found[2] ?? argv[++at] : undefined;
+    if (value === undefined) return `unknown or incomplete argument: ${arg}`;
     options.set(found[1], value);
   }
-  return options.has("set") ? options : "--set is required";
+  return options.has("set") ? { options, words } : "--set is required";
 }
 
 /** Say why the command refuses, and return its exit code, 2. */
@@ -222,25 +249,85 @@ function refuse(err: (text: string) => void, why: string): number {
   return 2;
 }
 
-/** The command. Returns the exit code: 0 when every ticket ran (whatever it scored), 2 a refusal. `defaults` are the board's saved model and effort. */
-export async function main(argv: readonly string[], deps: RunEvalDeps, { defaults, out = (text: string) => process.stdout.write(text), err = (text: string) => process.stderr.write(text), workDir, setsDir }: {
-  defaults: { model: string; effort: string }; out?: (text: string) => void; err?: (text: string) => void; workDir?: string; setsDir?: string;
-}): Promise<number> {
-  const options = parseArgs(argv);
-  if (typeof options === "string") return refuse(err, `REFUSED ${options}\n${USAGE}`);
-  const name = options.get("set") as string;
-  let set: readonly EvalEntry[];
-  try {
-    set = parseSet(readFileSync(setFile(name, setsDir), "utf8"));
-  } catch (error) {
-    return refuse(err, `REFUSED: the set ${name} cannot be read: ${firstLine(error)}`);
+/** Where results are stored, the commit the eval runs from and the token cap a run stops at (`tickets.evalTokenCap`). */
+export type StoreOptions = Readonly<{ resultsDir: string; revision: Revision; tokenCap: number }>;
+
+/** The tickets of `chosen` worked in order until the token cap is reached before the next would start. Unknown tokens count as none, and the report says how many were unknown. */
+async function runSet(chosen: readonly EvalEntry[], deps: RunEvalDeps, run: RunOptions, tokenCap: number): Promise<{ results: TicketResult[]; stopped: Stopped | null }> {
+  const results: TicketResult[] = [];
+  let spent = 0;
+  for (const [at, entry] of chosen.entries()) {
+    if (spent >= tokenCap) return { results, stopped: { ran: at, of: chosen.length, tokens: spent, cap: tokenCap, notStarted: chosen.slice(at).map(({ ticket }) => ticket) } };
+    const result = await evaluateTicket(entry, deps, run);
+    results.push(result);
+    spent += result.scores.tokens ?? 0;
   }
+  return { results, stopped: null };
+}
+
+/** The set `name` names, or why it cannot be read. */
+function readSet(name: string, setsDir: string | undefined): readonly EvalEntry[] | string {
+  try {
+    return parseSet(readFileSync(setFile(name, setsDir), "utf8"));
+  } catch (error) {
+    return `REFUSED: the set ${name} cannot be read: ${firstLine(error)}`;
+  }
+}
+
+/** The key `--key` names, null when it names none, or why it is refused. PURE. */
+function keyOf(options: ReadonlyMap<string, string>, schema: readonly SchemaEntry[]): KeySetting | null | string {
+  const text = options.get("key");
+  if (text === undefined) return null;
+  try {
+    return parseKey(text, schema);
+  } catch (error) {
+    return `REFUSED ${firstLine(error)}`;
+  }
+}
+
+type Io = Readonly<{ out?: (text: string) => void; err?: (text: string) => void }>;
+
+/**
+ * The command. Returns the exit code: 0 when every ticket ran (whatever it scored), 1 when the token cap stopped the run, 2 a refusal. `defaults` are the board's saved model and
+ * effort. A run of the whole set is stored by its set, sha and key; one with `--only` is not, since it would stand for the set. A run already stored is refused unless `--replace`,
+ * before any ticket starts, so a second run is never spent by accident.
+ */
+export async function main(argv: readonly string[], deps: RunEvalDeps, { defaults, out = (text: string) => process.stdout.write(text), err = (text: string) => process.stderr.write(text), workDir, setsDir, store, schema }: {
+  defaults: { model: string; effort: string }; workDir?: string; setsDir?: string; store: StoreOptions; schema: readonly SchemaEntry[];
+} & Io): Promise<number> {
+  const parsed = parseArgs(argv);
+  if (typeof parsed === "string") return refuse(err, `REFUSED ${parsed}\n${USAGE}`);
+  const { options, words } = parsed;
+  if (words.length > 0) return refuse(err, `REFUSED unknown argument: ${words[0]}\n${USAGE}`);
+  const name = options.get("set") as string;
+  const set = readSet(name, setsDir);
+  if (typeof set === "string") return refuse(err, set);
+  const key = keyOf(options, schema);
+  if (typeof key === "string") return refuse(err, key);
   const only = options.get("only")?.split(",").filter(Boolean);
   const chosen = only === undefined ? set : set.filter(({ ticket }) => only.includes(ticket));
   if (chosen.length === 0) return refuse(err, `REFUSED: --only names no ticket of ${name}`);
+  const storedAt = runPath(store.resultsDir, name, store.revision, key);
+  if (only === undefined && existsSync(storedAt) && !options.has("replace")) return refuse(err, `REFUSED: a run of ${name} at this sha is stored at ${storedAt}; pass --replace to run it again`);
   const run: RunOptions = { model: options.get("model") ?? defaults.model, effort: options.get("effort") ?? defaults.effort, workDir: workDir ?? mkdtempSync(join(tmpdir(), "run-eval-")) };
-  const results: TicketResult[] = [];
-  for (const entry of chosen) results.push(await evaluateTicket(entry, deps, run));
-  out(report(results, { ...run, set: name }));
-  return 0;
+  const { results, stopped } = await runSet(chosen, deps, run, store.tokenCap);
+  out(report(results, { ...run, set: name, key, stopped }));
+  if (only !== undefined) out("not stored: --only runs part of the set\n");
+  else out(`stored at ${storeRun(store.resultsDir, { v: 1, set: setNameOf(name), ...store.revision, key, model: run.model, effort: run.effort, at: deps.now(), stopped, results })}\n`);
+  return stopped === null ? 0 : 1;
+}
+
+/** `compare --set <name> <A> <B>`: the two stored runs side by side. Returns 0, or 2 when a run cannot be read. */
+export function compareMain(argv: readonly string[], { resultsDir, out = (text: string) => process.stdout.write(text), err = (text: string) => process.stderr.write(text) }: { resultsDir: string } & Io): number {
+  const parsed = parseArgs(argv);
+  if (typeof parsed === "string") return refuse(err, `REFUSED ${parsed}\n${USAGE}`);
+  const { options, words } = parsed;
+  if (words.length !== 2 || options.size !== 1) return refuse(err, `REFUSED: compare takes --set and two runs\n${USAGE}`);
+  const name = options.get("set") as string;
+  try {
+    out(compareTable(loadRun(resultsDir, name, words[0]), loadRun(resultsDir, name, words[1])));
+    return 0;
+  } catch (error) {
+    return refuse(err, `REFUSED: ${firstLine(error)}`);
+  }
 }
