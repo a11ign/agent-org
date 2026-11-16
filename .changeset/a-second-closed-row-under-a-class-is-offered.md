@@ -1,5 +1,0 @@
----
-"agent-org": patch
----
-
-A new org-health signal, `class-repeat` (a11ign#4126, child B of #4122): a SECOND closed row under one `class:<id>` label is a repeat, and a repeat means the guard failed. The gate reads the project's `.agent-org/failure-classes.json` (each class: `id`, `name`, `guard`) and the closed rows carrying a `class:` label (`readClassRepeat` in the new `class-repeat.mjs`: one REST call a tick, one more per class with an instance closed in the last 90 minutes), and offers `ceo` one order per class naming the class, its `guard` and the instances, with the instance counts of every class beside it. It is offered ONCE: the discriminator is the class and its newest row, the signal is tripped only while that row closed within 90 minutes (under the two-hour judgment TTL), and a third row is a new newest row and a new offer. A label naming no class in the index is `unknown class`, named and tripping nothing; a refused read of the labels or the file is `unknown`, never "no repeats"; an open row, and a pull request carrying the label, are not instances.
