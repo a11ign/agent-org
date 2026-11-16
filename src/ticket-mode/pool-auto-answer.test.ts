@@ -1,5 +1,7 @@
 // no-token: gh -- herdr, the tracker, the answerer's model and the clock are all injected; nothing is spawned
 import { test } from "node:test";
+import { mkdirSync } from "node:fs";
+import { join } from "node:path";
 import assert from "node:assert/strict";
 import { herdrName } from "./pool.ts";
 import { answerFixture } from "./pool-answer-fixture.ts";
@@ -33,10 +35,10 @@ async function settled(): Promise<void> {
 }
 
 /** A run of NBF-1, with `reply` as the model's, that ends on `outcome` and is let settle. */
-async function asking(reply: string | Error, { tickets = ON as Readonly<Record<string, unknown>>, outcome = ASKED as Record<string, unknown> } = {}) {
+async function asking(reply: string | Error, { tickets = ON as Readonly<Record<string, unknown>>, outcome = ASKED as Record<string, unknown>, beforeSettle = (_made: ReturnType<typeof answerFixture>) => {} } = {}) {
   const model = answering(reply);
   const made = answerFixture({ parent: PARENT, tickets, answerer: model.answerer });
-  await made.endsOn(outcome);
+  await made.endsOn(outcome, () => beforeSettle(made));
   await settled();
   return { ...made, ...model };
 }
@@ -157,4 +159,27 @@ test("A11-438: an overrule herdr will not take to the run is still recorded as t
   await assert.rejects(made.pool.answer("NBF-1", { answer: "a11y-witness.", who: "the chairman" }), /answer is in the ticket/);
   assert.ok(made.held.description.includes("* **Answer:** a11y-witness."));
   assert.notEqual(made.entry("NBF-1").autoAnswer?.overruledAt, undefined, "the card says it was overruled");
+});
+
+test("A11-438: a ticket or parent the tracker cannot give fresh, or has no longer, parks the question for a person without the model being asked, never answered from the run's older copy", async () => {
+  const cases: readonly [string, (made: ReturnType<typeof answerFixture>) => void][] = [
+    ["the ticket's read fails", (made) => { made.control.refuseRead = "NBF-1"; }],
+    ["the parent's read fails", (made) => { made.control.refuseRead = "NBF-0"; }],
+    ["the parent is gone", (made) => { made.control.missing = "NBF-0"; }],
+  ];
+  for (const [why, beforeSettle] of cases) {
+    const made = await asking(SURE, { beforeSettle });
+    assert.equal(made.asked.length, 0, `${why}: the model is not asked`);
+    assert.equal(made.entry("NBF-1").phase, "finished", why);
+    assert.deepEqual(made.entry("NBF-1").outcome, { kind: "needs-human", reason: HELD }, `${why}: parked on its own question`);
+    assert.equal(made.entry("NBF-1").autoAnswer, undefined, why);
+    assert.equal(made.prompts().length, 0, `${why}: the run is sent nothing`);
+  }
+});
+
+test("A11-438: an attached file that is there and cannot be read parks the question, without the model being asked", async () => {
+  const made = await asking(SURE, { beforeSettle: (fixture) => mkdirSync(join(fixture.dir, "attachment-2-plan.md")) });
+  assert.equal(made.asked.length, 0, "the model is not asked from part of the sources");
+  assert.equal(made.entry("NBF-1").phase, "finished");
+  assert.equal(made.entry("NBF-1").outcome?.kind, "needs-human");
 });

@@ -61,21 +61,31 @@ const isAnswerableItem = (escalation: string | undefined): boolean => escalation
 /** `text` cut to `max` characters, saying so when it was cut. PURE. */
 const cut = (text: string, max: number): string => (text.length <= max ? text : `${text.slice(0, max)}\n[... cut at ${max} characters]`);
 
-/** The markdown files of a folder, by name, or none when it has none or cannot be read. */
+/**
+ * A source the answerer was to read and could not (A11-438): the question is parked for a person rather than answered from what is left, since an answer from an incomplete set of sources can look as sure as one
+ * from all of them.
+ */
+export class UnreadableSource extends Error {}
+
+/** The first line of an error, for a message. PURE. */
+const firstLine = (err: unknown): string => String((err as Error)?.message ?? err).split("\n")[0];
+
+/** The markdown files of a folder, by name; none when the folder is not there. Throws {@link UnreadableSource} when it is there and cannot be listed. */
 function markdownIn(dir: string): readonly string[] {
+  if (!existsSync(dir)) return [];
   try {
     return readdirSync(dir).filter((name) => name.endsWith(".md")).sort().map((name) => join(dir, name));
-  } catch {
-    return [];
+  } catch (err) {
+    throw new UnreadableSource(`${dir} could not be listed (${firstLine(err)})`);
   }
 }
 
-/** The text of a file, or null when it cannot be read. */
-function textOf(path: string): string | null {
+/** The text of a file. Throws {@link UnreadableSource} when it cannot be read. */
+function textOf(path: string): string {
   try {
     return readFileSync(path, "utf8");
-  } catch {
-    return null;
+  } catch (err) {
+    throw new UnreadableSource(`${path} could not be read (${firstLine(err)})`);
   }
 }
 
@@ -99,16 +109,16 @@ function withinBudget(sources: readonly Source[]): readonly Source[] {
 
 /**
  * The sources the model is given, in the order it should trust them: the ticket, its parent, the files attached to each (the plan among them), the docs of each repository the run made a worktree in, and the Decisions
- * entries of the other tickets on the board, which are past answers a person gave. Each is cut to {@link SOURCE_CHARS}, and the list ends before {@link SOURCES_CHARS} in all. Reads files only; never throws.
+ * entries of the other tickets on the board, which are past answers a person gave. Each is cut to {@link SOURCE_CHARS}, and the list ends before {@link SOURCES_CHARS} in all. Reads files only. A folder or file that is
+ * not there is no source; one that is there and cannot be read throws {@link UnreadableSource}, never a silent skip.
  */
 export function sourcesFor({ entry, parent, ticketDir, folder, others }: SourceReads): readonly Source[] {
   const { ticket } = entry;
   const files = (dir: string, owner: string): Source[] =>
-    markdownIn(dir).flatMap((path) => { const text = textOf(path); return text === null || basename(path) === "brief.md" ? [] : [{ label: `${owner}'s file ${basename(path)}`, text }]; });
+    markdownIn(dir).filter((path) => basename(path) !== "brief.md").map((path) => ({ label: `${owner}'s file ${basename(path)}`, text: textOf(path) }));
   const docs = entry.repos.flatMap((repo) => REPO_DOCS.flatMap((name) => {
     const path = join(folder, repo, name);
-    const text = existsSync(path) ? textOf(path) : null;
-    return text === null ? [] : [{ label: `${repo}'s ${name}`, text }];
+    return existsSync(path) ? [{ label: `${repo}'s ${name}`, text: textOf(path) }] : [];
   }));
   const decided = others.flatMap((other) => {
     const decisions = other.ticket.key === ticket.key ? null : decisionsOf(other.ticket.description);

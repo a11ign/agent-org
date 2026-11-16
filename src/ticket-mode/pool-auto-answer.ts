@@ -7,7 +7,7 @@
 // the run for a person exactly as before, and the board's log says why. A run stopped or started again while the model was asked is left as the person left it.
 import { statSync } from "node:fs";
 import { join } from "node:path";
-import { answerPrompt, askClaude, decide, messageOf, sourcesFor, type Decided } from "./auto-answer.ts";
+import { answerPrompt, askClaude, decide, messageOf, sourcesFor, UnreadableSource, type Decided, type Source } from "./auto-answer.ts";
 import { HERDR_CALL_MS, herdrRefusal } from "./pool-herdr.ts";
 import { type PoolContext } from "./pool-context.ts";
 import { markOutcomeStale } from "./pool-outcome.ts";
@@ -18,30 +18,48 @@ import { recordAutoAnswer } from "./queue/queue-answer.ts";
 import type { Ticket } from "./source.ts";
 import { OUTCOME_FILE } from "./worker-files.ts";
 
-/** A ticket read fresh from the tracker, or null when it has none by that key or cannot be read. */
-async function readOrNull(ctx: PoolContext, key: string): Promise<Ticket | null> {
+/** A ticket read fresh from the tracker. Throws {@link UnreadableSource} when the tracker has no such ticket or cannot give it: the answerer never answers from the run's older copy. */
+async function readFresh(ctx: PoolContext, key: string, what: string): Promise<Ticket> {
+  let read: Ticket | null;
   try {
-    return await ctx.source.read(key);
-  } catch {
-    return null;
+    read = await ctx.source.read(key);
+  } catch (err) {
+    throw new UnreadableSource(`${what} ${key} could not be read fresh (${errorOf(err).split("\n")[0]})`);
+  }
+  if (read === null) throw new UnreadableSource(`the tracker has no ${what} ${key}`);
+  return read;
+}
+
+/** The run with its ticket read fresh (the text the question is asked against, and its parent's key), and that parent when it names one. Throws {@link UnreadableSource} when either cannot be read. */
+async function ticketsOf(ctx: PoolContext, entry: Entry): Promise<Readonly<{ run: Entry; parent: Readonly<{ key: string; description: string; url: string }> | null }>> {
+  const fresh = await readFresh(ctx, entry.ticket.key, "the ticket");
+  const run = { ...entry, ticket: { ...entry.ticket, description: fresh.description, ...(fresh.parent ? { parent: fresh.parent } : {}) } };
+  if (!run.ticket.parent) return { run, parent: null };
+  const parent = await readFresh(ctx, run.ticket.parent, "the parent ticket");
+  return { run, parent: { key: parent.key, description: parent.description, url: parent.url } };
+}
+
+/** The sources for `entry`'s run, or the question parked because one of them could not be read. Any other failure is thrown. */
+async function sourcesOf(ctx: PoolContext, entry: Entry): Promise<Readonly<{ sources: readonly Source[] }> | Extract<Decided, { parked: string }>> {
+  const { dir, folder } = runPlace(ctx, entry);
+  try {
+    const { run, parent } = await ticketsOf(ctx, entry);
+    return { sources: sourcesFor({ entry: run, parent, ticketDir: dir, folder, others: ctx.store.get().entries }) };
+  } catch (err) {
+    if (err instanceof UnreadableSource) return { parked: `a source could not be read, so the answer would rest on part of them: ${err.message}` };
+    throw err;
   }
 }
 
-/** The run with its ticket read fresh (the text the question is asked against, and its parent's key), and that parent, or null when it has none or the tracker cannot give either. */
-async function ticketsOf(ctx: PoolContext, entry: Entry): Promise<Readonly<{ run: Entry; parent: Readonly<{ key: string; description: string; url: string }> | null }>> {
-  const fresh = await readOrNull(ctx, entry.ticket.key);
-  const run = fresh === null ? entry : { ...entry, ticket: { ...entry.ticket, description: fresh.description, ...(fresh.parent ? { parent: fresh.parent } : {}) } };
-  const parent = run.ticket.parent ? await readOrNull(ctx, run.ticket.parent) : null;
-  return { run, parent: parent === null ? null : { key: parent.key, description: parent.description, url: parent.url } };
-}
-
-/** Ask the answerer `question` for `entry`'s run, from the sources it reads, and decide at the machine's threshold. A model that cannot be asked parks the question, saying why. */
+/**
+ * Ask the answerer `question` for `entry`'s run, from the sources it reads, and decide at the machine's threshold. A source that cannot be read, or a model that cannot be asked, parks the question, saying why (A11-438:
+ * an answer is never made from a part of the sources, nor from the run's older copy of its ticket).
+ */
 async function ask(ctx: PoolContext, entry: Entry, question: string): Promise<Decided> {
-  const { settings, store } = ctx;
-  const { threshold = 1, model = "haiku" } = settings.autoAnswer ?? {};
-  const { dir, folder } = runPlace(ctx, entry);
-  const { run, parent } = await ticketsOf(ctx, entry);
-  const sources = sourcesFor({ entry: run, parent, ticketDir: dir, folder, others: store.get().entries });
+  const { threshold = 1, model = "haiku" } = ctx.settings.autoAnswer ?? {};
+  const read = await sourcesOf(ctx, entry);
+  if ("parked" in read) return read;
+  const { sources } = read;
   try {
     return decide(await (ctx.deps.answerer ?? askClaude)(answerPrompt(question, sources), model), sources, threshold);
   } catch (err) {

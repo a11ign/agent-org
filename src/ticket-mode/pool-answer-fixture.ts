@@ -33,13 +33,14 @@ export type AnswerFixtureOptions = Readonly<{
 export function answerFixture({ description = "Fix the toast.", viewer = "Dana Beck", withoutUpdate = false, parent, tickets = {}, answerer }: AnswerFixtureOptions = {}) {
   const held: HeldTicket = { description, updatedAt: "2026-10-25T10:00:00.000Z" };
   const writes: { description: string; herdrCallsBefore: number }[] = [];
-  const control = { refuseWrite: null as string | null, refuseMessage: null as string | null, calls: () => 0 };
+  // `refuseRead` makes the tracker throw for that key, and `missing` answers no such ticket for it (A11-438), from when a test sets either.
+  const control = { refuseWrite: null as string | null, refuseMessage: null as string | null, refuseRead: null as string | null, missing: null as string | null, calls: () => 0 };
   const tracker: TicketSource = {
     assigned: base.assigned, download: base.download, keywords: base.keywords,
-    read: async (key) => ({
+    read: async (key) => (key === control.refuseRead ? Promise.reject(new Error("Linear timed out")) : key === control.missing ? null : {
       key, title: key, description: key === parent?.key ? parent.description : held.description, updatedAt: held.updatedAt, url: `https://linear.app/x/${key}`, branch: key.toLowerCase(), status: "Backlog", statusOrder: 0, team: "NBF",
       project: null, priority: 0, ...(parent === undefined || key === parent.key ? {} : { parent: parent.key }),
-    }) as Ticket,
+    } as Ticket),
     ...(viewer === null ? {} : { viewer: async () => viewer }),
     ...(withoutUpdate ? {} : {
       updateTicketText: async (_key, text) => {
@@ -58,11 +59,12 @@ export function answerFixture({ description = "Fix the toast.", viewer = "Dana B
   control.calls = () => made.herdr.calls.length;
   const dir = ticketDir(made.settings, "NBF-1");
 
-  /** The worker of NBF-1 writes `outcome` and goes idle, and the pool settles it. */
-  async function endsOn(outcome: Record<string, unknown>): Promise<void> {
+  /** The worker of NBF-1 writes `outcome` and goes idle, and the pool settles it. `beforeSettle` runs just before that pass, once the run has started (A11-438: a tracker that fails only then). */
+  async function endsOn(outcome: Record<string, unknown>, beforeSettle: () => void = () => {}): Promise<void> {
     await pool.tick();
     made.status.set(herdrName("NBF-1"), "working");
     await pool.tick();
+    beforeSettle();
     writeFileSync(join(dir, "outcome.json"), JSON.stringify(outcome));
     made.status.set(herdrName("NBF-1"), "idle");
     await pool.tick();

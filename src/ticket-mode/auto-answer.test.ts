@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpDir } from "../lib/tmp-fixture.ts";
-import { answerPrompt, decide, mayAnswer, messageOf, replyOf, resultOf, SOURCE_CHARS, sourcesFor, type Source } from "./auto-answer.ts";
+import { answerPrompt, decide, mayAnswer, messageOf, replyOf, resultOf, SOURCE_CHARS, sourcesFor, UnreadableSource, type Source } from "./auto-answer.ts";
 import type { Entry, Outcome } from "./queue/queue-entries-and-outcomes.ts";
 
 const ON = { on: true, threshold: 0.9, model: "haiku" };
@@ -89,4 +89,16 @@ test("A11-438: the run's message says the answer is automatic, quotes the questi
   assert.ok(message.includes("> Which repository?") && message.includes("> agent-org"));
   assert.ok(message.includes("- the parent ticket A11-1 (https://linear.app/x/A11-1)\n- agent-org's AGENTS.md"));
   assert.match(message, /It is not a person's decision: list it under "Decisions made without a person"/);
+});
+
+test("A11-438: a source that is there and cannot be read throws, naming it, rather than being left out; a folder or doc that is not there is no source", () => {
+  const dir = tmpDir("auto-answer-unreadable-");
+  const reads = (ticketDir: string, folder: string) => () => sourcesFor({ entry: run({ repos: ["agent-org"] }), parent: null, ticketDir, folder, others: [] });
+  mkdirSync(join(dir, "ticket", "attachment-1-plan.md"), { recursive: true });
+  assert.throws(reads(join(dir, "ticket"), join(dir, "none")), (err: unknown) => err instanceof UnreadableSource && err.message.includes("attachment-1-plan.md could not be read"), "an attached file");
+  writeFileSync(join(dir, "not-a-folder"), "x");
+  assert.throws(reads(join(dir, "not-a-folder"), join(dir, "none")), (err: unknown) => err instanceof UnreadableSource && err.message.includes("could not be listed"), "a ticket folder that cannot be listed");
+  mkdirSync(join(dir, "folder", "agent-org", "AGENTS.md"), { recursive: true });
+  assert.throws(reads(join(dir, "none"), join(dir, "folder")), (err: unknown) => err instanceof UnreadableSource && err.message.includes("AGENTS.md could not be read"), "a repository doc");
+  assert.deepEqual(reads(join(dir, "none"), join(dir, "none"))().map(({ label }) => label), ["the ticket A11-2"], "nothing there, nothing read, nothing thrown");
 });
