@@ -11,6 +11,7 @@
 import { open, stat } from "node:fs/promises";
 import { LIMIT_UNREADABLE_HOLD_MS, TRANSCRIPT_TAIL_BYTES, lastSaidInTail, spentIn, spentOnPane, type SpentAllowance } from "../account-limit-message.ts";
 import { replace, type Entry, type Queue } from "./queue/queue-entries-and-outcomes.ts";
+import { stillSpent } from "./queue.ts";
 import { findTranscript } from "./pool-transcripts.ts";
 import type { PoolContext } from "./pool-context.ts";
 import type { RunPlace } from "./pool-paths.ts";
@@ -204,11 +205,11 @@ export async function resumeAfterReset(ctx: PoolContext, entry: Entry, place: Ru
 }
 
 /**
- * Whether a held run is due to be told its allowance is back at `now`: its reset has passed, no person is at its terminal, its agent is not working, and the board did not tell it within
+ * Whether a held run is due to be told its allowance is back at `now`: its reset has passed by {@link ALLOWANCE_GRACE_MS}, no person is at its terminal, its agent is not working, and the board did not tell it within
  * {@link ALLOWANCE_RETRY_MS} (`last`). PURE.
  */
 function dueForResume(entry: Entry, hold: AllowanceHold, seen: string, now: number, last: number | undefined): boolean {
-  if (entry.talk === true || seen === "working" || now < hold.until) return false;
+  if (entry.talk === true || seen === "working" || stillSpent(hold.until, now)) return false;
   return last === undefined || now - last >= ALLOWANCE_RETRY_MS;
 }
 

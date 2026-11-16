@@ -27,23 +27,23 @@ export const recordClosedByBoard = (queue: Queue, key: string): Queue => replace
 
 /**
  * The queued entries to start now, in queue order: none while the queue is paused, the host is loaded past its cores (`wake.ts`'s `hostLoadRefusal` rule, where
- * exactly equal does not refuse), or the Claude allowance is spent until a reset still ahead of `now` ({@link allowanceHolds}, A11-434), and otherwise as many as the free slots allow. An entry still waiting on a blocker, or on a path another run holds
+ * exactly equal does not refuse), and otherwise as many as the free slots allow. An entry still waiting on a blocker, or on a path another run holds
  * ({@link overlapWait}), is passed over, and holds no slot. So is one whose plan could not be downloaded (`pathsFailure`): it takes no slot another
  * run could use (A11-125). And so is a review round or talk session that a working agent's session holds back (`sessionWait`, A11-154). A batch is one run, so its tickets take one slot between them, live or starting.
  * An entry this call starts holds its paths against the entries after it, as a live run would, so overlapping runs never start in the same pass: the later one waits for the first to push a branch, and is stacked on it in a later pass.
  * OVERLAP MEANS STACK, NOT WAIT (A11-374): a queued run that overlaps a run it can stack on is not passed over. It is returned with the run it stacks on as its `overlapStack`, and starts on that run's branch.
  * A run whose blockers or plan paths are not known holds back like the rest, and takes no slot (A11-364): `startReadHold` says which (never read; or read longer ago than `BLOCKERS_MAX_AGE_MS` before `now`), so a run left unread never
- * takes a slot from one that can start. The pool gives `now`; without it nothing about what was read is judged, and a run is held back for the other reasons alone.
+ * takes a slot from one that can start. So is every run but a talk session while the Claude allowance is spent until a reset still ahead of `now` ({@link allowanceHolds}, A11-434). The pool gives `now`; without it nothing about what was read is judged, and a run is held back for the other reasons alone.
  * A STACK IS A PRIORITY (A11-370): a queued run whose pull request has another stacked on it ({@link keysWithStackAbove}) starts before the other queued runs of its model, since that run is waiting for it. The queue order holds among the runs that are equal in this.
  */
 export function nextStarts(queue: Queue, load: number, cores: number, now?: number): Entry[] {
-  if (queue.paused || load > cores || allowanceHolds(queue, now)) return [];
+  if (queue.paused || load > cores) return [];
   const free = queue.max - slotsHeld(queue);
   const runs = new Set<string>();
   const started: Entry[] = [];
   const stacks = new Map<string, Entry["overlapStack"]>();
   for (const entry of stackedFirst(queue.entries)) {
-    if (entry.phase !== "queued" || isHeldBack(entry, queue.entries, now)) continue;
+    if (!startable(entry, queue, now)) continue;
     if (!runs.has(runOf(entry)) && runs.size >= free) continue;
     const holders = [...queue.entries, ...started.map(asStarting)];
     if (overlapWait(entry, holders) !== null) continue;
@@ -78,6 +78,13 @@ function stackedFirst(entries: readonly Entry[]): readonly Entry[] {
 /** Whether a queued entry is held back for a reason of its own: its blockers or plan are not known (A11-364), its plan could not be downloaded, a session holds it, a blocker has not let go, or the board holds it for its ticket's CI spend (A11-261). PURE. */
 const isHeldBack = (entry: Entry, entries: readonly Entry[], now?: number): boolean =>
   entry.pathsFailure !== undefined || (now !== undefined && startReadHold(entry, now) !== null) || entry.sessionWait !== undefined || isCiHeld(entry) || waitsOn(entry, entries).length > 0;
+
+/**
+ * Whether a queued entry may start on what holds it alone: nothing holds it back, and the spent Claude allowance does not hold it (A11-434). A talk session is a person at the run's terminal, who
+ * can see the limit and act on it, so the allowance holds every start but that one. PURE.
+ */
+const startable = (entry: Entry, queue: Queue, now: number | undefined): boolean =>
+  entry.phase === "queued" && !isHeldBack(entry, queue.entries, now) && (entry.talk === true || !allowanceHolds(queue, now));
 
 /** The entry as it is once a start is recorded: starting, so it holds what a live run holds. */
 const asStarting = (entry: Entry): Entry => ({ ...entry, phase: "starting" });
@@ -172,10 +179,26 @@ export function writerToStart(queue: Queue, now?: number): WriterRun | undefined
 }
 
 /**
- * Whether the spent Claude allowance holds every start at `now` (A11-434): the board saw a run refused with a reset still ahead. Without `now` it holds nothing, as a caller with no clock judges
+ * How long after the reset a message names the board still treats the allowance as spent: the reset is named to the minute, and a run started or told to carry on a moment early is refused
+ * again with the same words, which then name the next day's reset (A11-434).
+ */
+export const ALLOWANCE_GRACE_MS = 2 * 60_000;
+
+/** Whether the allowance is still spent at `now` on a hold that names the reset `until`: until {@link ALLOWANCE_GRACE_MS} after it. PURE. */
+export const stillSpent = (until: number, now: number): boolean => now < until + ALLOWANCE_GRACE_MS;
+
+/**
+ * Whether the spent Claude allowance holds starts at `now` (A11-434): the board saw a run refused with a reset still ahead. Without `now` it holds nothing, as a caller with no clock judges
  * nothing by time. PURE.
  */
-export const allowanceHolds = (queue: Queue, now?: number): boolean => now !== undefined && queue.allowance !== undefined && now < queue.allowance.until;
+export const allowanceHolds = (queue: Queue, now?: number): boolean => now !== undefined && queue.allowance !== undefined && stillSpent(queue.allowance.until, now);
+
+/** The queue with no hold on starts: a run held on the allowance answered again, so the allowance is back before its reset (credits, or an early reset). PURE. */
+export const releaseStarts = (queue: Queue): Queue => {
+  if (queue.allowance === undefined) return queue;
+  const { allowance: _spent, ...rest } = queue;
+  return rest;
+};
 
 /** The queue with the allowance seen spent until `spent.until`, unless it already holds starts as long or longer: one run's earlier reset never shortens another's. PURE. */
 export const holdStarts = (queue: Queue, spent: Readonly<{ text: string; until: number }>): Queue =>

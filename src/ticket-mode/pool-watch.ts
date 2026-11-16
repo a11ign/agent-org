@@ -40,7 +40,7 @@ import { moveOutcomeHeads, recordBlockAsked, recordOutcomeHeads, recordPullHeads
 import { blockRoundLine, blocksToAnswer, isStaleBlockNote, type StaleBlock, staleBlockNote, stampedBlocks } from "./board-view/stale-block.ts";
 import { isReviewerDialogNote, reviewerDialogNote } from "./board-view/reviewer-dialog-note.ts";
 import { recordReviewerDialog } from "./queue/queue-reviewer-dialog.ts";
-import { holdStarts, observeWriter, writerResumed, writerWaiting } from "./queue.ts";
+import { holdStarts, observeWriter, releaseStarts, writerResumed, writerWaiting } from "./queue.ts";
 import { openPulls, type PullHead } from "./board-view/view-types-and-filters.ts";
 import type { PullFeedback } from "../plugins/contracts/code-host.ts";
 import { reviewerLines } from "./pool-reviewers.ts";
@@ -233,7 +233,9 @@ async function watchAllowance(ctx: PoolContext, entry: Entry, seen: string): Pro
   if (read.state === "clear") {
     if (current.allowance === undefined) return false;
     updateEach(ctx, runMembers(ctx, current), releaseAllowance);
-    log(`${who} is no longer out of Claude allowance: its hold is dropped`);
+    // The allowance is the account's: a run that answered again says it is back for every run, so the hold on starts goes with it.
+    update(ctx, releaseStarts);
+    log(`${who} is no longer out of Claude allowance: its hold and the hold on starts are dropped`);
     return false;
   }
   const { spent } = read;
