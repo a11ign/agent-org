@@ -12,6 +12,7 @@ The step's named file, `plugins/github/gh.ts`, makes no synchronous call: it was
   - the prompt is asked over the async herdr (the synchronous one refuses every prompt);
   - three passes while herdr has not answered send no second prompt and count no send;
   - the send is counted once herdr answers, and the stale outcome is not sent back again.
+- Test "A11-433: a batch's send-back holds the run while herdr answers…" checks the same for a batch (`attachBatch`): passes while herdr has not answered send no second prompt and attach no member, and the send is counted once.
 - Test "A11-433: a run stopped while herdr answers the send-back is left as it is" checks that a run that stops being the queue's while the prompt is in flight has no send counted (`sameRun`).
 - The existing A11-288 send-back tests pass unchanged.
 
@@ -30,7 +31,8 @@ AGENT_ORG_HOST= npx rstest run --config scripts/rstest/rstest.config.ts src/pack
 Mutations:
 - Restore `origin/main`'s `pool-resume.ts`. `npx eslint src/ticket-mode/pool-resume.ts` then fails with the A11-433 ban at the `readAgents` import and the `ctx.herdr` calls.
 - Restore `origin/main`'s `pool-plan-send-back.ts` and `pool-settle.ts`. The new test then fails: "the prompt is asked over the async herdr" (0 !== 1).
-- Drop the `await` before `sendBack` in `pool-settle.ts`. The new test then fails: "the passes meanwhile send no second prompt" (4 !== 1), because `attaching` is let go before herdr answers.
+- Drop the `await` before `sendBack` in `attachPlan` (`pool-settle.ts`). The new single-ticket test then fails: "the passes meanwhile send no second prompt" (4 !== 1), because `attaching` is let go before herdr answers.
+- Drop the `await` before `sendBack` in `attachBatch`. The new batch test then fails: "the passes meanwhile send no second prompt" (4 !== 1).
 - Delete the `sameRun` line in `sendToPlanner`. The stop test then fails: "no send is counted for a run that is no longer the queue's".
 
 Consumer-declaration: none. `agentTarget` and `sendToAgent` were used only inside this repository, and no published surface changes.

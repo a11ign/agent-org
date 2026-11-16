@@ -149,21 +149,44 @@ test("A11-288: after two send-backs the third refusal goes to the person's sessi
   assert.equal(run.sent().count, 3);
 });
 
+type Planning = Awaited<ReturnType<typeof planning>>;
+
+/** Three passes while herdr has not answered the held prompt: none sends a second one. */
+async function passesWhileHeld(run: Planning): Promise<void> {
+  for (let i = 0; i < 3; i += 1) await run.tick();
+  assert.equal(run.heldPrompts.waiting.length, 1, "the passes meanwhile send no second prompt");
+}
+
+/** herdr answers the held prompt: the send is counted once, for the one prompt. */
+async function releaseAndCount(run: Planning): Promise<void> {
+  run.heldPrompts.release();
+  await run.tick();
+  assert.equal(run.sent().count, 1, "the send is counted once herdr answers");
+  assert.equal(run.prompts().length, 1);
+}
+
 test("A11-433: the send-back prompt goes over the async herdr, and a pass while herdr answers settles the same planned outcome no second time", async () => {
   const run = await planning({ asyncPrompts: true });
   run.heldPrompts.on = true;
   await run.writes({ [KEY]: TOO_LONG });
   assert.equal(run.heldPrompts.waiting.length, 1, "the prompt is asked over the async herdr, and waits for its answer");
   assert.equal(existsSync(join(run.dir, SENT_BACK_FILE)), false, "no send is counted before herdr answers");
-  for (let i = 0; i < 3; i += 1) await run.tick();
-  assert.equal(run.heldPrompts.waiting.length, 1, "the passes meanwhile send no second prompt");
-  run.heldPrompts.release();
-  await run.tick();
-  assert.equal(run.sent().count, 1, "the send is counted once herdr answers");
-  assert.equal(run.prompts().length, 1);
+  await passesWhileHeld(run);
+  await releaseAndCount(run);
   for (let i = 0; i < 3; i += 1) await run.tick();
   assert.equal(run.prompts().length, 1, "and the stale outcome is not sent back again");
   assert.equal(run.entry().outcome, undefined);
+});
+
+test("A11-433: a batch's send-back holds the run while herdr answers: passes meanwhile send no second prompt, and the send is counted once", async () => {
+  const run = await planning({ batch: true, asyncPrompts: true });
+  run.heldPrompts.on = true;
+  await run.writes({ [KEY]: GOOD, [OTHER]: TOO_LONG });
+  assert.equal(run.heldPrompts.waiting.length, 1, "the batch's prompt is asked over the async herdr, and waits for its answer");
+  await passesWhileHeld(run);
+  assert.deepEqual(run.attached, [], "and attach no member");
+  await releaseAndCount(run);
+  assert.match(run.prompts()[0], /NBF-2: .*gives evidence of 250 characters/);
 });
 
 test("A11-433: a run stopped while herdr answers the send-back is left as it is: the send is not counted", async () => {
