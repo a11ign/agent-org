@@ -31,7 +31,7 @@ const lessonItem = (text: string): HTMLElement => {
 };
 
 /** What the next brief of a run in agent-org carries of its lessons. */
-const nextBrief = (stateDir: string): string => lessonsText(briefLessons({ stateDir, on: true, repos: ["agent-org"], log: () => {} }), "worker");
+const nextBrief = (stateDir: string): string => lessonsText(briefLessons({ stateDir, repos: ["agent-org"], log: () => {} }), "worker");
 
 describe("the Lessons page", () => {
   it("lists each repository's lessons with the runs they cite, each a link to its run, and says briefs carry them", async () => {

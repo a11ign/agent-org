@@ -172,7 +172,8 @@ export async function prepare(ctx: PoolContext, entry: Entry): Promise<{ folder:
  * A file that cannot be read is said on the board's log and left out.
  */
 function lessonsFor({ settings }: PoolContext, repos: readonly (string | null)[]): RepoLessons[] {
-  return briefLessons({ stateDir: settings.stateDir, on: settings.lessons === true, repos, log: (line) => process.stderr.write(`ticket:serve: ${line}\n`) });
+  if (settings.lessons !== true) return [];
+  return briefLessons({ stateDir: settings.stateDir, repos, log: (line) => process.stderr.write(`ticket:serve: ${line}\n`) });
 }
 
 /** Whether the run being prepared recorded numbered plan steps as it started (A11-219): the entry the start was given is the queued one, so the queue's is read. PURE. */

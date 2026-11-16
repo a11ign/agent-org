@@ -67,7 +67,7 @@ test("A11-432: a lessons file that cannot be read is said and left out, and the 
   writeLessons(dir, "agent-org", [lesson("L1", CHANGESET)]);
   writeFileSync(lessonsPath(dir, "toolchain"), "{ not json");
   const said: string[] = [];
-  const found = briefLessons({ stateDir: dir, on: true, repos: ["toolchain", "agent-org", null, "agent-org"], log: (line) => { said.push(line); } });
+  const found = briefLessons({ stateDir: dir, repos: ["toolchain", "agent-org", null, "agent-org"], log: (line) => { said.push(line); } });
   assert.deepEqual(found.map(({ repo }) => repo), ["agent-org"], "named once, in order, and the unreadable one left out");
   assert.match(said.join("\n"), /the lessons of toolchain are left out of the brief: .*is not JSON/);
 });
@@ -88,11 +88,11 @@ test("A11-432: a lesson a person edits on the board is in the next brief as they
   const [kept] = readLessons(stateDir, "agent-org");
   assert.ok(kept !== undefined);
   assert.deepEqual([kept.runs, kept.since, kept.confirmedAt], [["A11-1@1", "A11-2@2"], 1, 2], "an edit keeps the lesson's runs and dates");
-  const again = briefLessons({ stateDir, on: true, repos: ["agent-org"], log: () => {} });
+  const again = briefLessons({ stateDir, repos: ["agent-org"], log: () => {} });
   assert.ok(lessonsText(again, "worker").includes("- Add a changeset for any change to a published package. (runs: A11-1@1, A11-2@2)"));
   assert.equal(lessonsText(again, "worker").includes(CHANGESET), false);
   assert.equal(route(stateDir, "POST", LESSON_DELETE_PATH, { repo: "agent-org", id: "L1" })[0], 200);
-  assert.equal(lessonsText(briefLessons({ stateDir, on: true, repos: ["agent-org"], log: () => {} }), "worker"), "", "the next brief carries no lesson");
+  assert.equal(lessonsText(briefLessons({ stateDir, repos: ["agent-org"], log: () => {} }), "worker"), "", "the next brief carries no lesson");
 });
 
 test("A11-432: GET /api/lessons lists every repository's lessons, says whether briefs carry them, and names a file it cannot read rather than showing it empty", () => {
