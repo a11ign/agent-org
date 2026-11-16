@@ -1,0 +1,108 @@
+{
+  "ranAt": "2026-11-16T14:58:48.634Z",
+  "sha": "7613bac6d",
+  "model": "haiku",
+  "capped": false,
+  "score": {
+    "checked": 10,
+    "scored": 10,
+    "low": {
+      "tickets": 1,
+      "roundsPerRun": 2,
+      "replans": 0,
+      "needsYou": 0
+    },
+    "rest": {
+      "tickets": 9,
+      "roundsPerRun": 1.9722222222222223,
+      "replans": 0,
+      "needsYou": 0
+    },
+    "linked": [],
+    "against": [],
+    "meetsBar": false
+  },
+  "verdict": "10 scored of 10 past tickets: 1 under 60, 9 at 60 or more. Low against the rest, per ticket: rounds per run 2 against 1.97, re-plans 0 against 0, Needs-you rounds 0 against 0. No clear link, so the key stays off: 1 scored under 60, short of the 3 the bar needs; no measure is 1.5 times as high for the low tickets.",
+  "tickets": [
+    {
+      "ticket": "A11-434",
+      "runs": 2,
+      "rounds": 3,
+      "needsYou": 0,
+      "replans": 0,
+      "score": 65
+    },
+    {
+      "ticket": "A11-441",
+      "runs": 2,
+      "rounds": 2,
+      "needsYou": 0,
+      "replans": 0,
+      "score": 62
+    },
+    {
+      "ticket": "A11-447",
+      "runs": 2,
+      "rounds": 6,
+      "needsYou": 0,
+      "replans": 0,
+      "score": 62
+    },
+    {
+      "ticket": "A11-442",
+      "runs": 2,
+      "rounds": 4,
+      "needsYou": 0,
+      "replans": 0,
+      "score": 70
+    },
+    {
+      "ticket": "A11-431",
+      "runs": 2,
+      "rounds": 4,
+      "needsYou": 0,
+      "replans": 0,
+      "score": 55
+    },
+    {
+      "ticket": "A11-437",
+      "runs": 3,
+      "rounds": 3,
+      "needsYou": 0,
+      "replans": 0,
+      "score": 72
+    },
+    {
+      "ticket": "A11-439",
+      "runs": 1,
+      "rounds": 1,
+      "needsYou": 0,
+      "replans": 0,
+      "score": 70
+    },
+    {
+      "ticket": "A11-433",
+      "runs": 4,
+      "rounds": 5,
+      "needsYou": 0,
+      "replans": 0,
+      "score": 65
+    },
+    {
+      "ticket": "A11-445",
+      "runs": 1,
+      "rounds": 3,
+      "needsYou": 0,
+      "replans": 0,
+      "score": 62
+    },
+    {
+      "ticket": "A11-435",
+      "runs": 1,
+      "rounds": 4,
+      "needsYou": 0,
+      "replans": 0,
+      "score": 70
+    }
+  ]
+}
