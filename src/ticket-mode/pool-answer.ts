@@ -10,8 +10,9 @@
 
 import { isParked } from "./board-view/pull-status-and-notes.ts";
 import { WHO_CHARS, withAnswer } from "./answer-decision.ts";
-import { SETTLED, find, type Entry } from "./queue/queue-entries-and-outcomes.ts";
-import { logAnswered, moveBriefing, recordAnswer } from "./queue/queue-answer.ts";
+import { SETTLED, find, type Entry, type Queue } from "./queue/queue-entries-and-outcomes.ts";
+import type { AutoAnswer } from "./queue/auto-answer-record.ts";
+import { logAnswered, moveBriefing, recordAnswer, recordPersonAfterAuto } from "./queue/queue-answer.ts";
 import { HERDR_CALL_MS, herdrRefusal } from "./pool-herdr.ts";
 import { type PoolContext } from "./pool-context.ts";
 import { runPlace, update } from "./pool-state.ts";
@@ -60,6 +61,26 @@ function waitingRefusal(key: string, entry: Entry | undefined): string | null {
   return null;
 }
 
+/**
+ * Whether a person's answer to `entry` overrules an automatic one (A11-438): the answerer answered the run's question, no person has answered the run since, the run is running or parked on something other than a new
+ * question, and its ticket is not settled in the tracker. PURE.
+ */
+function overrules(entry: Entry | undefined): entry is Entry & { autoAnswer: AutoAnswer } {
+  if (entry === undefined || entry.talk === true || !isOpen(entry.autoAnswer)) return false;
+  // Only a run whose agent is there to be told: running, or parked on something that is not a new question (which the ordinary answer settles, closing this one).
+  const live = entry.phase === "running" || (isParked(entry) && entry.outcome?.kind !== "needs-human");
+  return live && !SETTLED.has(entry.trackerState ?? "");
+}
+
+/** Whether an automatic answer is there and still open: no person has overruled it, or answered a later question of the run. PURE. */
+const isOpen = (answered: AutoAnswer | undefined): answered is AutoAnswer => answered !== undefined && answered.overruledAt === undefined && answered.closedAt === undefined;
+
+/** The question a person's answer to `entry` answers: the one the automatic answer it overrules answered, when there is one, else the run's own `needs-human` reason. PURE. */
+function questionOf(entry: Entry, overruling: AutoAnswer | undefined): string {
+  if (overruling !== undefined) return overruling.question;
+  return entry.outcome?.kind === "needs-human" ? entry.outcome.reason.trim() : "";
+}
+
 /** The name the entry is headed with: the one given, else the tracker's name for the key's person, else "a person". */
 async function nameOf(source: TicketSource, who: string | undefined): Promise<string> {
   if (who !== undefined) return who.trim();
@@ -70,25 +91,29 @@ async function nameOf(source: TicketSource, who: string | undefined): Promise<st
   }
 }
 
-/** The message the run is sent: who answered what, where the ticket records it, and what to do with it. */
-function messageOf(entry: Entry, { question, answer, heading }: Told): string {
+/** The message the run is sent: who answered what, where the ticket records it, and what to do with it. A person who overrules an automatic answer is said to (A11-438). */
+function messageOf(entry: Entry, { question, answer, heading, overruled }: Told): string {
   const quoted = (text: string): string => text.trim().split("\n").map((line) => `> ${line}`.trimEnd()).join("\n");
-  return `A person answered your question through the board.\n\nYour question:\n\n${quoted(question)}\n\nTheir answer:\n\n${quoted(answer)}\n\n`
+  const opening = overruled
+    ? "A person overruled the automatic answer to your question. Their answer replaces it: undo what you did only because of the automatic answer, and drop it from \"Decisions made without a person\"."
+    : "A person answered your question through the board.";
+  return `${opening}\n\nYour question:\n\n${quoted(question)}\n\nTheir answer:\n\n${quoted(answer)}\n\n`
     + `The board recorded both in the ticket's Decisions, under the heading \`${heading}\`, at ${entry.ticket.url}. Carry on with that answer: it overrides the plan and your own preference where they differ. `
     + `${RELAY_DECISION} Write the outcome file again as the last thing you do.`;
 }
 
-/** What the run is told once the answer is in the ticket: the question, the answer as given and the heading the entry stands under. */
-type Told = Readonly<{ question: string; answer: string; heading: string }>;
+/** What the run is told once the answer is in the ticket: the question, the answer as given, the heading the entry stands under, and whether it overrules an automatic answer (A11-438). */
+type Told = Readonly<{ question: string; answer: string; heading: string; overruled: boolean }>;
 
 /**
- * Write the answer into the ticket's description, read fresh, unless it is there already, and move the run's copy of the ticket on. Throws, naming why, when the tracker has no such ticket or refuses the write: nothing
+ * Write the answer into the ticket's description, read fresh, under the question of the automatic answer it is `overruling`, when there is one (A11-438), unless it is there already, and move the run's copy of the ticket on. Throws, naming why, when the tracker has no such ticket or refuses the write: nothing
  * has been sent to the run then.
  */
-async function writeAnswer(ctx: PoolContext, entry: Entry, given: Answer): Promise<Told> {
+async function writeAnswer(ctx: PoolContext, entry: Entry, given: Answer, overruling: AutoAnswer | undefined): Promise<Told> {
   const { now, source } = ctx;
   const key = entry.ticket.key;
-  const question = entry.outcome?.kind === "needs-human" ? entry.outcome.reason.trim() : "";
+  const question = questionOf(entry, overruling);
+  const overruled = overruling !== undefined;
   const fresh = await source.read(key);
   if (fresh === null) throw new Error(`the tracker has no ticket ${key}`);
   const at = now();
@@ -102,8 +127,18 @@ async function writeAnswer(ctx: PoolContext, entry: Entry, given: Answer): Promi
   }
   const briefed = entry.briefedAgainst?.hash === descriptionHash(fresh.description);
   const read = ticketReadOf({ description: entered.description, updatedAt: fresh.updatedAt }, at);
-  update(ctx, (queue) => (briefed ? moveBriefing(recordAnswer(queue, key, read), key, read) : recordAnswer(queue, key, read)));
-  return { question, answer: given.answer, heading: entered.heading };
+  // Recorded with the write, delivered or not: the answer is the person's from now on, and an automatic answer the run still holds is overruled by it, or closed by an answer to a later question.
+  const recorded = (queue: Queue): Queue => recordPersonAfterAuto(recordAnswer(queue, key, read), key, at, overruled ? "overruled" : "closed");
+  update(ctx, (queue) => (briefed ? moveBriefing(recorded(queue), key, read) : recorded(queue)));
+  return { question, answer: given.answer, heading: entered.heading, overruled };
+}
+
+/**
+ * Whether `entry`'s agent is there to be told: a run parked on its question, or, for a person who overrules an automatic answer (A11-438), a run that is still running or parked with its workspace open. PURE.
+ */
+function waitsForAnswer(entry: Entry, { overruled }: Told): boolean {
+  if (overruled) return entry.workspace !== undefined && (entry.phase === "running" || isParked(entry));
+  return isParked(entry) && entry.outcome?.kind === "needs-human";
 }
 
 /**
@@ -113,7 +148,7 @@ async function writeAnswer(ctx: PoolContext, entry: Entry, given: Answer): Promi
 async function deliver(ctx: PoolContext, key: string, told: Told): Promise<Answered> {
   const { herdrCall, now, settings, store } = ctx;
   const current = find(store.get(), key);
-  if (current === undefined || !isParked(current) || current.outcome?.kind !== "needs-human") {
+  if (current === undefined || !waitsForAnswer(current, told)) {
     return { written: true, delivered: false, why: `${key}'s run has no workspace open or is no longer waiting, so nothing is waiting for the answer: it is in the ticket, and the run that works the ticket next reads it first` };
   }
   try {
@@ -132,12 +167,14 @@ async function deliver(ctx: PoolContext, key: string, told: Told): Promise<Answe
 export async function answer(ctx: PoolContext, key: string, given: Answer): Promise<Answered> {
   const { answering, source, store } = ctx;
   const entry = find(store.get(), key);
-  const refusal = requestRefusal(given) ?? waitingRefusal(key, entry) ?? (source.updateTicketText === undefined ? `this tracker cannot edit ${key}'s text, so the answer cannot be recorded, and nothing is sent to the run` : null);
+  // Decided once, on the run as it was asked: whether this answer overrules an automatic one (A11-438) is what the route checks, writes and says.
+  const overruling = overrules(entry) ? entry.autoAnswer : undefined;
+  const refusal = requestRefusal(given) ?? (overruling !== undefined ? null : waitingRefusal(key, entry)) ?? (source.updateTicketText === undefined ? `this tracker cannot edit ${key}'s text, so the answer cannot be recorded, and nothing is sent to the run` : null);
   if (refusal !== null || entry === undefined) throw new Error(refusal ?? `${key} is not on the board`);
   if (answering.has(key)) throw new Error(`an answer to ${key} is being written: send yours when it has been`);
   answering.add(key);
   try {
-    return await deliver(ctx, key, await writeAnswer(ctx, entry, given));
+    return await deliver(ctx, key, await writeAnswer(ctx, entry, given, overruling));
   } finally {
     answering.delete(key);
   }
