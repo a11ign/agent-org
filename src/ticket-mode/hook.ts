@@ -88,6 +88,7 @@ import { ciWaitRefusal } from "./ci-wait.ts";
 import type { DenyRule } from "./settings.ts";
 import { ASKED_FILE, CONNECTORS_FILE, DENY_FILE, FINDINGS_GIVEN_FILE, FINDINGS_RETRIED_FILE, OUTCOME_FILE, PROTECTED_FILE, PR_REVIEW_FILE, PR_REVIEW_LOG_FILE, OPENED_FILE, PUBLISH_FILE, READY_FILE, REVIEW_FILE,
   ORDER_FILE, PLAN_DIR, QUESTION_FILE, STALE_OUTCOME_FILE, STOP_ACTIVE_FILE, STOP_COUNT_FILE, TALK_FILE, WAITING_FILE, WORKING_STOP_FILE, WRITER_FILE, defaultBinDir, protectedPaths } from "./worker-files.ts";
+import { LOCAL_REVIEW_FILE, LOCAL_REVIEW_RECORD_FILE } from "./local-review-record.ts";
 import { CREATED_FILE, MAX_CREATED, createdKeyOf, createdLine, parseWriterOutcome, readCreatedKeys } from "./writer.ts";
 import { createdPullOf, readOpenedRecord, recordOpenedPull } from "./opened-record.ts";
 import type { WriterMode } from "./queue/queue-entries-and-outcomes.ts";
@@ -149,9 +150,9 @@ function readyPattern(allowed: readonly string[], unlessBare: string): RegExp {
  * a run could not write in a key it did not create (A11-135). The stale mark and the stop hook's own file are the board's too (A11-152): a worker that
  * wrote the first could refuse its own outcome, and one that wrote the second could hold the board off its question. A planning run's list of the pull requests its plan must name and the mark of
  * its one automatic retry are the board's (A11-207): a planner that wrote the first could lift its own check, and one that wrote the second could skip the retry. The same goes for the list of paths other
- * tickets hold and the mark of the retry made for a folder claim (A11-212).
+ * tickets hold and the mark of the retry made for a folder claim (A11-212). The local review's mark and its record are the pool's and `ticket:review-local`'s (A11-440): a worker that wrote either could lift `pr:open`'s check.
  */
-const BOARD_FILES: readonly string[] = [REVIEW_FILE, PUBLISH_FILE, WRITER_FILE, READY_FILE, OPENED_FILE, WAITING_FILE, ASKED_FILE, CREATED_FILE, STALE_OUTCOME_FILE, STOP_ACTIVE_FILE, FINDINGS_GIVEN_FILE, FINDINGS_RETRIED_FILE, CLAIMS_GIVEN_FILE, CLAIMS_RETRIED_FILE, TALK_FILE, STANDOFF_PLANNER_FILE, STANDOFF_ROUND_FILE, CAP_PLANNER_FILE, DECISIONS_ROUND_FILE];
+const BOARD_FILES: readonly string[] = [REVIEW_FILE, PUBLISH_FILE, WRITER_FILE, READY_FILE, OPENED_FILE, WAITING_FILE, ASKED_FILE, CREATED_FILE, STALE_OUTCOME_FILE, STOP_ACTIVE_FILE, FINDINGS_GIVEN_FILE, FINDINGS_RETRIED_FILE, CLAIMS_GIVEN_FILE, CLAIMS_RETRIED_FILE, TALK_FILE, STANDOFF_PLANNER_FILE, STANDOFF_ROUND_FILE, CAP_PLANNER_FILE, DECISIONS_ROUND_FILE, LOCAL_REVIEW_FILE, LOCAL_REVIEW_RECORD_FILE];
 const MARK_REFUSAL: Refusal = { pattern: new RegExp(`\\b(?:${BOARD_FILES.map(escapeRegExp).join("|")})\\b`),
   why: `${BOARD_FILES.join(", ")} are the board's to write` };
 

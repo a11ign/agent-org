@@ -393,14 +393,27 @@ function namesRow(pull: OpenPull, rowKey: string, pullRepo: string): boolean {
  */
 export function diffBaseOf(rest: string[], git: (args: string[]) => string): string {
   const named = flagAfter(rest, "--base");
-  if (named !== null) return `origin/${named}`;
+  if (named !== null) return baseFrom(named, null);
   try {
-    const head = git(["symbolic-ref", "--short", "refs/remotes/origin/HEAD"]).trim();
-    if (/^origin\/[^\s]+$/.test(head)) return head;
+    return baseFrom(null, git(ORIGIN_HEAD_ARGS));
   } catch (error) {
     void error; // no `origin/HEAD` to read is a clone that never set one: `main`, as before
+    return baseFrom(null, null);
   }
-  return "origin/main";
+}
+
+/** The `git` arguments that read the branch `origin/HEAD` names. */
+export const ORIGIN_HEAD_ARGS: string[] = ["symbolic-ref", "--short", "refs/remotes/origin/HEAD"];
+
+/**
+ * THE RULE, PURE, shared with `ticket:review-local`, which must review the diff `pr:open` will check (A11-440): the branch `--base` names, else what `origin/HEAD` reads (`originHead`, null when it
+ * could not be read), else `origin/main`.
+ * @param {string | null} named @param {string | null} originHead @returns {string}
+ */
+export function baseFrom(named: string | null, originHead: string | null): string {
+  if (named !== null) return `origin/${named}`;
+  const head = originHead?.trim() ?? "";
+  return /^origin\/[^\s]+$/.test(head) ? head : "origin/main";
 }
 
 /**
