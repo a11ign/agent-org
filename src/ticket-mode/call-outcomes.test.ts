@@ -1,7 +1,7 @@
 // no-token: gh -- the clock and the fetch are injected; nothing is spawned or sent
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { addCallFigures, CALL_WINDOW_MS, countedFetch, createCallLedger, networkUpSince, per100, serviceOfUrl, statusFailed } from "./call-outcomes.ts";
+import { addCallFigures, CALL_WINDOW_MS, countedFetch, createCallLedger, networkUpSince, per100, serviceOfUrl, statusFailed, totalOf } from "./call-outcomes.ts";
 
 test("failures per 100 calls is rounded to one decimal place, and 0 when there were no calls", () => {
   assert.deepEqual([per100(0, 0), per100(1, 3), per100(3, 200), per100(5, 5)], [0, 33.3, 1.5, 100]);
@@ -13,7 +13,7 @@ test("a ledger counts each service's calls and failures over the last hour only"
   for (let call = 0; call < 199; call++) ledger.record("linear", false);
   ledger.record("linear", true);
   ledger.record("github", true);
-  assert.deepEqual(ledger.figures(), { linear: { calls: 200, failures: 1, failuresPer100: 0.5 }, github: { calls: 1, failures: 1, failuresPer100: 100 } });
+  assert.deepEqual(ledger.figures(), { linear: { calls: 200, failures: 1, failuresPer100: 0.5 }, github: { calls: 1, failures: 1, failuresPer100: 100 }, herdr: { calls: 0, failures: 0, failuresPer100: 0 } });
   clock += CALL_WINDOW_MS + 120_000;
   assert.deepEqual(ledger.figures().linear, { calls: 0, failures: 0, failuresPer100: 0 }, "past the hour, they are out");
 });
@@ -49,9 +49,9 @@ test("a fetch counted as the tracker counts every request, as failed when it thr
 });
 
 test("two threads' figures are added and the failures per 100 are worked out from the sums, not averaged", () => {
-  const board = { linear: { calls: 100, failures: 0, failuresPer100: 0 }, github: { calls: 0, failures: 0, failuresPer100: 0 } };
-  const page = { linear: { calls: 100, failures: 4, failuresPer100: 4 }, github: { calls: 50, failures: 5, failuresPer100: 10 } };
-  assert.deepEqual(addCallFigures(board, page), { linear: { calls: 200, failures: 4, failuresPer100: 2 }, github: { calls: 50, failures: 5, failuresPer100: 10 } });
+  const board = { linear: { calls: 100, failures: 0, failuresPer100: 0 }, github: { calls: 0, failures: 0, failuresPer100: 0 }, herdr: { calls: 0, failures: 0, failuresPer100: 0 } };
+  const page = { linear: { calls: 100, failures: 4, failuresPer100: 4 }, github: { calls: 50, failures: 5, failuresPer100: 10 }, herdr: { calls: 0, failures: 0, failuresPer100: 0 } };
+  assert.deepEqual(addCallFigures(board, page), { linear: { calls: 200, failures: 4, failuresPer100: 2 }, github: { calls: 50, failures: 5, failuresPer100: 10 }, herdr: { calls: 0, failures: 0, failuresPer100: 0 } });
 });
 
 test("A11-399: the ledger says when each service's last good and last failed call were, within the hour", () => {
@@ -89,4 +89,24 @@ test("A11-399: the network is up since a crash only when a call succeeded after 
   assert.equal(upAfter("linear", true), false, "Linear's latest call failed");
   clock += CALL_WINDOW_MS;
   assert.equal(networkUpSince(ledger, crashedAt), false, "calls of an hour ago are no evidence");
+});
+
+test("A11-436: a run that crashed on herdr not answering is not started again while herdr's latest call still fails, though Linear answers", () => {
+  let clock = 10 * CALL_WINDOW_MS;
+  const ledger = createCallLedger(() => clock);
+  const crashedAt = clock;
+  clock += 1;
+  ledger.record("linear", false);
+  ledger.record("herdr", true);
+  assert.equal(networkUpSince(ledger, crashedAt), false, "herdr's latest call failed");
+  clock += 1;
+  ledger.record("herdr", false);
+  assert.equal(networkUpSince(ledger, crashedAt), true, "and herdr answers again");
+});
+
+test("A11-436: every service's calls are one failure figure, the failures per 100 worked out from the sums", () => {
+  const figures = { linear: { calls: 300, failures: 3, failuresPer100: 1 }, github: { calls: 100, failures: 0, failuresPer100: 0 }, herdr: { calls: 600, failures: 2, failuresPer100: 0.3 } };
+  assert.deepEqual(totalOf(figures), { calls: 1_000, failures: 5, failuresPer100: 0.5 });
+  assert.deepEqual(totalOf({ ...figures, linear: { calls: 0, failures: 0, failuresPer100: 0 }, github: { calls: 0, failures: 0, failuresPer100: 0 }, herdr: { calls: 0, failures: 0, failuresPer100: 0 } }),
+    { calls: 0, failures: 0, failuresPer100: 0 }, "no calls is no failure");
 });

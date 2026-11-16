@@ -44,7 +44,6 @@ import { type RoundEnd, roundEndsOf } from "./outcomes/round-end.ts";
 import type { OutcomeRun } from "./outcomes/outcome-record.ts";
 import { appendOutcomeSaying } from "./outcomes/append-record.ts";
 import { isParked } from "./board-view/pull-status-and-notes.ts";
-import { settledByPulls } from "./board-view/pull-settled.ts";
 // eslint-disable-next-line clean-code/no-duplication -- import list: the rule matches statement shape, and imports are not duplicated logic
 import { stepNamed } from "./board-view/plan-steps.ts";
 import { HERDR_CALL_MS, herdrRefusal } from "./pool-herdr.ts";
@@ -60,6 +59,9 @@ import { isCapPlanner } from "./queue/queue-cap.ts";
 import { planFiles as downloadPlanFiles } from "./pool-ticket-text.ts";
 import type { PullFeedback } from "../plugins/contracts/code-host.ts";
 import type { PullState } from "./source.ts";
+import { reviewAtHead, settleStep } from "./pr-state-machine.ts";
+
+export { reviewAtHead } from "./pr-state-machine.ts";
 
 /**
  * Record the plan step a live run's worker wrote as `currentStep` in its outcome file (A11-219), as written, without settling anything: it is read while the agent works and again when its outcome is settled. A file
@@ -339,13 +341,6 @@ function resultWriteFailed(ctx: PoolContext, entry: Entry, { err, reasonFor, han
   log(`${entry.ticket.key}'s result could not be recorded in the tracker (${messageOf(err)}): trying again in ${writeWait(failures) / MS_PER_SECOND} seconds, failure ${failures}`);
 }
 
-/** What a review round's `done` does with its ticket, judged by the round's pull requests (A11-173): complete it now, leave it to the merge of an open pull request, or ask a person. PURE. */
-function reviewDoneVerdict(entry: Entry, states: Readonly<Record<string, PullState>>): "complete" | "wait" | "ask" {
-  const settled = settledByPulls({ ...entry, pullStates: states });
-  if (settled === "completed") return "complete";
-  return settled === "cancelled" ? "ask" : "wait";
-}
-
 /**
  * Settle a review round's `done` by its pull requests as the tracker reads them (A11-173). With every one merged or closed and one merged, the ticket is completed now: the pull requests'
  * states are returned, to be recorded once the run ends. With one still open the round ends as its ordinary `reviewed` result and the ticket completes when they merge, and the run's
@@ -356,9 +351,9 @@ async function settleReviewDone(ctx: PoolContext, entry: Entry, outcome: Extract
   const key = entry.ticket.key;
   const states = (await ctx.source.pullStates?.([key]))?.get(key) ?? {};
   if (!sameRun(ctx, entry)) return null;
-  const verdict = reviewDoneVerdict(entry, states);
-  if (verdict === "complete") return states;
-  if (verdict === "ask") end(ctx, entry, { kind: "needs-human", reason: `the worker wrote done in a review round, but its pull requests were closed without merging: ${outcome.reason}` });
+  const step = settleStep(entry, states);
+  if (step.do === "complete") return states;
+  if (step.do === "ask") end(ctx, entry, { kind: "needs-human", reason: `the worker wrote done in a review round, but ${step.reason}: ${outcome.reason}` });
   else {
     end(ctx, entry, { kind: "reviewed", prs: entry.review ?? [] });
     update(ctx, (queue) => clearPartial(queue, key));
@@ -613,7 +608,8 @@ async function attachPlan(ctx: PoolContext, entry: Entry): Promise<void> {
   try {
     // Not through `attachFiles`: its extra step would queue the ticket again only after this pass has filled its slots.
     const found = planFiles(planDir, checksFor(runPlace(ctx, entry).dir, key, entry.findingsGiven, entry.briefedAgainst, entry.ticket, closedWorkOf(ticketDir(settings, key))));
-    if ("refusal" in found) return found.afterMerge === undefined || !canSendBack(entry) ? end(ctx, entry, { kind: "needs-human", reason: found.refusal }) : sendBack(ctx, entry, [formatRefusalOf(entry, found.refusal, found.afterMerge.moves)]);
+    // `await`, not a bare return: the run stays in `attaching` until the send-back's herdr prompt is answered, so no pass settles the same `planned` meanwhile (A11-433).
+    if ("refusal" in found) return found.afterMerge === undefined || !canSendBack(entry) ? end(ctx, entry, { kind: "needs-human", reason: found.refusal }) : await sendBack(ctx, entry, [formatRefusalOf(entry, found.refusal, found.afterMerge.moves)]);
     if (source.attachPlan === undefined) return end(ctx, entry, { kind: "needs-human", reason: `this tracker takes no plans: attach the files in ${planDir} by hand` });
     const moving = { key, moves: found.moves, briefed: entry.briefedAgainst };
     // A plan that moves nothing awaits nothing before its attach, so the slot it frees is filled in this same pass.
@@ -678,7 +674,8 @@ async function attachBatch(ctx: PoolContext, entry: Entry): Promise<void> {
   try {
     // A member whose section the board refuses sends the whole run back before any member is attached, so the planner's next `planned` does not attach a plan twice (A11-288).
     const refused = canSendBack(entry) ? members.flatMap((member) => formatRefusalIn(ctx, member, join(planDir, member.ticket.key)) ?? []) : [];
-    if (refused.length > 0) return sendBack(ctx, entry, refused);
+    // Awaited inside the `attaching` hold, as in `attachPlan`.
+    if (refused.length > 0) return await sendBack(ctx, entry, refused);
     const handedBack = new Map<string, Outcome>();
     for (const { ticket: { key } } of members) {
       const outcome = await planOneOfBatch(ctx, key, join(planDir, key));
@@ -893,18 +890,6 @@ function appendOutcomes(ctx: PoolContext, ends: ReadonlyMap<string, RoundEnd>): 
  */
 export function pullFilesOf(open: readonly { url: string; read: PullFeedback }[]): Readonly<Record<string, readonly string[]>> {
   return Object.fromEntries(open.map(({ url, read }) => [url, read.filesComplete ? read.files : [...read.files, ""]]));
-}
-
-/**
- * What a read says of a head's review for readiness (A11-179), or undefined when the code host did not say: `none` when no review sits at the head, whatever GitHub's decision says, `approved` when the newest verdict on the head approves it
- * and GitHub's review decision is approved or needs none, `changes-requested` when a verdict is there and either asks for changes, and `none` otherwise, which is also a branch whose decision still asks for a review. GitHub's decision
- * follows the pull request and not the commit (A11-340): it stays `changes-requested` after a push to a head nobody has reviewed, so it says nothing of a head without a verdict. PURE.
- */
-export function reviewAtHead(read: PullFeedback): PullHead["review"] {
-  if (read.verdictAtHead === undefined || read.reviewDecision === undefined) return undefined;
-  if (read.verdictAtHead === null) return "none";
-  if (read.reviewDecision === "changes-requested" || read.verdictAtHead === "changes-requested") return "changes-requested";
-  return read.verdictAtHead === "approved" && (read.reviewDecision === "approved" || read.reviewDecision === null) ? "approved" : "none";
 }
 
 /**
