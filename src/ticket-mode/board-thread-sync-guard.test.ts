@@ -41,14 +41,8 @@ const ALLOWED: Readonly<Record<string, readonly Allowed[]>> = {
     reason: "`open` the browser as the page service starts listening; `request-thread-guard.test.ts` lists the same call, and this host runs Linux" }],
   "src/ticket-mode/plugin-contract.ts": [{ call: "execFileSync(\"sh\"", loop: "the contract check of the plugins, at the instance's start and on a Plugins read of the board thread", perHour: 1,
     reason: "`command -v` for each command a plugin's contract names, about 5 ms; the request thread hands the Plugins and Settings reads its own (`request-thread-guard.test.ts`), so only an instance's start asks" }],
-  "src/ticket-mode/pool-herdr.ts": [{ call: "herdrRun(args, timeoutMs)", loop: "the default of the synchronous `ctx.herdr`, which the two calls listed under pool-resume.ts alone use", perHour: 0,
-    reason: "the seam itself, not a call: nothing else on the board thread asks `ctx.herdr`, and a test hands the context its own" }],
-  "src/ticket-mode/pool-resume.ts": [
-    { call: "readAgents((args) => ctx.herdr(args)", loop: "`agentTarget`, for the one prompt below, when the run has no pane on record", perHour: 1,
-      reason: "the plan sent back to its planner (`sendBack`, at most `MAX_SEND_BACKS` times a run) marks the run's file stale only once the prompt went, so its caller is the board's synchronous settling and cannot let a pass in between" },
-    { call: "ctx.herdr(promptArgs(", loop: "`sendToAgent`: a plan the board refused is sent back to its planner (`pool-plan-send-back.ts`)", perHour: 2,
-      reason: "a refused `## After-merge checks` section, a few times a day at most: a planner is sent back at most `MAX_SEND_BACKS` times a run, and plans are not written many an hour" },
-  ],
+  "src/ticket-mode/pool-herdr.ts": [{ call: "herdrRun(args, timeoutMs)", loop: "the default of the synchronous `ctx.herdr`, which no call of the board thread asks since `pool-resume.ts` prompts over `herdrCall` (A11-433)", perHour: 0,
+    reason: "the seam itself, not a call: `server.ts` hands it to the reviewers' reading before activation, which this guard does not scan, and a test hands the context its own" }],
 };
 
 /** Every source file under `dir`, from the checkout's root: not a test, not `node_modules`. */
