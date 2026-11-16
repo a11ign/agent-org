@@ -1,5 +1,0 @@
----
-"agent-org": minor
----
-
-A Haiku start that fails CI twice, or reaches its turn or compaction cap, is restarted on Sonnet at high effort, once per row (a11ign/a11ign#4630). `src/engineer-escalation.ts` is the pure `shouldEscalate({ model, ciFailures, turns, compactions }, caps)`: caps are 2 distinct red pull request heads, 10 compactions (the stop rule's) and 300 turns (measured on the local trace store, the author's choice), a Sonnet start or an unknown model never escalates, and a figure that could not be read never fires. The tick reads each live Haiku start's claim record and transcript in `performEscalations`, closes the Haiku pane, records an `escalation` line in the claim-orders record (which is what makes it once per row and survives a restart that died half way), writes a `use: model-escalation`, `via: none` decision-log line and a row comment, and respawns through `spawnWorker` with the claim neither released nor re-won and a line in the brief saying why. The `arm` line now carries the `model` the worker was started on; workers armed before this change lack it and stay. The row keeps `tier:haiku`. No provider and no network.

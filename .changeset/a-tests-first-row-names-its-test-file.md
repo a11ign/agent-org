@@ -1,5 +1,0 @@
----
-"agent-org": minor
----
-
-Rows can be Haiku-ready: a row that says `Tests-first: <test file>` has its acceptance tests written before the worker starts (a11ign/a11ign#5109). `row-claim` refuses a claim of a row that says it and names no test file, and the merge guard (the required `--ci-gate` and the full `mergeReadiness`) refuses a PR that moves the named tests after its first commit, or whose first commit does not carry them, unless a reviewer other than the author approves with a review body line `Tests-first: change approved` on a commit that already holds the tests as they will merge. An unmarked row (decomposition, investigation, fleet) is exempt by saying nothing. Behind `rows.testsFirst` in `.agent-org/project.json`, absent meaning OFF, so a project that never declares it makes exactly the calls it made before; revert is the flag off. The PR's rows are read from its own `Closes` line because the gate is REST-only; an unreadable row, commit or review is `CANNOT_ASK`, never clear.
