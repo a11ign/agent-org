@@ -29,8 +29,6 @@ const OWN_PROCESS = "none: it runs in a process of its own";
 
 /** The synchronous calls that stay in `src/ticket-mode/` and `plugins/`, by file from the checkout's root. */
 const ALLOWED: Readonly<Record<string, readonly Allowed[]>> = {
-  "plugins/github/command-exec.ts": [{ call: "spawnSync(file", loop: OWN_PROCESS, perHour: 0,
-    reason: "the `deps.exec` of the CLI commands (`merge-flow-command.ts`, `stack-live-check-command.ts`), which run in a process of their own and hold nothing but themselves" }],
   "plugins/linear/key.ts": [{ call: "execFileSync(\"security\"", loop: "the Linear plugin's activation, once, on macOS only", perHour: 0,
     reason: "the macOS keychain's `security`, read once as the Linear key is, before the instance listens; this host runs Linux, where the key is a file" }],
   "src/ticket-mode/hook.ts": [{ call: "execFileSync(process.execPath", loop: OWN_PROCESS, perHour: 0,
@@ -94,6 +92,6 @@ test("every listed call has a loop, a reason and a rate, and the rates together 
 
 test("a one-off command or another process is listed as costing the board thread nothing", () => {
   const ownProcess = Object.entries(ALLOWED).flatMap(([file, listed]) => listed.filter(({ loop }) => loop === OWN_PROCESS).map(() => file));
-  assert.deepEqual(ownProcess.toSorted(), ["plugins/github/command-exec.ts", "src/ticket-mode/hook.ts", "src/ticket-mode/review-command.ts"]);
+  assert.deepEqual(ownProcess.toSorted(), ["src/ticket-mode/hook.ts", "src/ticket-mode/review-command.ts"]);
   for (const file of ownProcess) assert.ok(ALLOWED[file].every(({ perHour }) => perHour === 0));
 });
