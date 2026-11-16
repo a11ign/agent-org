@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { dirname } from "node:path";
 import { tmpDir } from "../../lib/tmp-fixture.ts";
 import type { ExecResult } from "../../plugins/manifest.ts";
 import { appendOutcome, outcomeRecordOf, type OutcomeRecord, outcomesPath } from "../outcomes/outcome-record.ts";
@@ -107,6 +108,18 @@ test("A11-432: the retro runs once a UTC day, and a day whose model run failed i
   b.at.now = NOW + DAY;
   await sweep();
   assert.equal(b.prompts.length, 2, "again tomorrow");
+});
+
+test("A11-432: a lessons-retro.json that cannot be read, or names no day, stops the retro: no model is asked and the file is left as it is", async () => {
+  const run = runOf(1, 1);
+  for (const broken of ["{ half", "{}"]) {
+    const b = boardWith({ records: [run], runLog: { [run.ticket]: [feedback(run, "a finding")] } });
+    mkdirSync(dirname(retroStatePath(b.dir)), { recursive: true });
+    writeFileSync(retroStatePath(b.dir), broken);
+    await assert.rejects(retroSweep(b.deps)(), (error: Error) => error.message.startsWith(`${retroStatePath(b.dir)} `), broken);
+    assert.equal(b.prompts.length, 0, broken);
+    assert.equal(readFileSync(retroStatePath(b.dir), "utf8"), broken, "not rewritten as today");
+  }
 });
 
 test("A11-432: an answer that cannot be read keeps the lessons as they were, and a lessons file that cannot be read is said and left as it is", async () => {
