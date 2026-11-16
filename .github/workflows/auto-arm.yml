@@ -47,7 +47,9 @@ name: auto-arm
 on:
   pull_request_target:
     branches: [main]
-    types: [opened, ready_for_review, reopened, synchronize]
+    # `edited` for a BASE change only (the `arm` job's `if:`): the board moves a stacked pull request's base to `main` once the one below it merges (`stack-retarget.ts`), and one left
+    # alone by an unstack (A11-450: a single member above is not stacked again) is then armed by nothing else; #2057 sat approved and green until armed by hand, 2026-11-16.
+    types: [opened, ready_for_review, reopened, synchronize, edited]
   pull_request_review:
     types: [submitted]
   # agent-org#1573: the outside home's two scheduled jobs. A cron is not a promise (GitHub disables scheduled workflows after 60 days without repository activity, and this repository is never idle that
@@ -65,7 +67,7 @@ jobs:
   arm:
     # The event name is checked first, as `github.event.pull_request` is null on any other event and `null == false` is TRUE in an Actions expression.
     # A fork's pull request gets no secrets and a read-only token, so arming it would only fail; a fork's change is armed by a maintainer.
-    if: github.event_name == 'pull_request_target' && github.event.pull_request.draft == false && github.event.pull_request.head.repo.full_name == github.repository
+    if: github.event_name == 'pull_request_target' && github.event.pull_request.draft == false && github.event.pull_request.head.repo.full_name == github.repository && (github.event.action != 'edited' || github.event.changes.base != null)
     # The job's own `GITHUB_TOKEN` holds only the OIDC request Octo STS needs; the writes come from the minted token, whose grant is `auto-arm.sts.yaml`'s.
     permissions:
       id-token: write
@@ -230,6 +232,30 @@ jobs:
             exit 0
           }
 
+          # GITHUB REFUSES AN APP THE STACK MERGE: `merge-async` answers "Enqueuer is not authorized to merge" to this job's token (#2048, 2026-11-16), as it does to every App token
+          # reported, while a person's token is let through. So a refusal of that kind takes this pull request, the bottom open member, out of its stack and arms it as any other
+          # (auto-merge, which joins the queue once `gate` is green), then stacks the open members above it again, so they stay linked. Their branches are the board's to restack
+          # either way (`stack-retarget.ts` moves their base to `main` once this one merges). Unstacking dissolves the stack, which is why the members above are stacked again.
+          unstack_and_arm() {
+            echo "AUTO-ARM: GitHub refused the stack merge of #${PULL_REQUEST} ($1): taking it out of stack ${stack}, arming it alone, and stacking the members above it again"
+            above=$(gh api -H "X-GitHub-Api-Version: $API_VERSION" "repos/$REPOSITORY/stacks/$stack" --jq "[.pull_requests[] | select(.state == \"open\" and .number != $PULL_REQUEST) | .number]") \
+              || refuse "$1; and stack ${stack} could not be read to take #${PULL_REQUEST} out of it"
+            gh api -X POST -H "X-GitHub-Api-Version: $API_VERSION" "repos/$REPOSITORY/stacks/$stack/unstack" >/dev/null \
+              || refuse "$1; and stack ${stack} could not be unstacked"
+            gh pr merge "$PULL_REQUEST" --repo "$REPOSITORY" --auto --merge
+            if [ "$(jq length <<<"${above:-[]}")" -ge 2 ]; then
+              members=(); for member in $(jq -r '.[]' <<<"$above"); do members+=(-F "pull_requests[]=$member"); done
+              gh api -X POST -H "X-GitHub-Api-Version: $API_VERSION" "repos/$REPOSITORY/stacks" "${members[@]}" >/dev/null \
+                || echo "::warning::AUTO-ARM: the pull requests above #${PULL_REQUEST} (${above}) could not be stacked again; the board still restacks their branches"
+            fi
+            exit 0
+          }
+          # The refusal that unstacking answers is the App's; any other is shown as before.
+          refused() {
+            case "$1" in *"not authorized"*) unstack_and_arm "$1";; esac
+            refuse "$1"
+          }
+
           echo "AUTO-ARM: #${PULL_REQUEST} is stacked: requesting the stack merge of ${REPOSITORY}#${PULL_REQUEST}, up to this pull request, with the Octo STS token"
           err=$(mktemp)
           trap 'rm -f "${err:?}"' EXIT
@@ -240,7 +266,7 @@ jobs:
             # 409: another request for this pull request is already running, which is the state asked for. Any other refusal is shown.
             if grep -q 'HTTP 409' "$err"; then echo "AUTO-ARM: a stack merge of #${PULL_REQUEST} is already pending"; exit 0; fi
             reason=$(jq -r '.message // empty' <<<"$answer" 2>/dev/null || true)
-            refuse "${reason:-$(cat "$err")}"
+            refused "${reason:-$(cat "$err")}"
           fi
           uuid=$(jq -r '.details.uuid // empty' <<<"$answer")
           # The answer to the PUT is read first, then each poll's: POLL_ATTEMPTS polls, every one read.
@@ -248,7 +274,7 @@ jobs:
             status=$(jq -r .status <<<"$answer")
             case "$status" in
               merged|enqueued) echo "AUTO-ARM: the stack merge of #${PULL_REQUEST} is ${status}"; exit 0;;
-              failed) refuse "$(jq -r '.details.message // "no reason given"' <<<"$answer")";;
+              failed) refused "$(jq -r '.details.message // "no reason given"' <<<"$answer")";;
             esac
             if [ -z "$uuid" ] || [ "$poll" -eq "$POLL_ATTEMPTS" ]; then break; fi
             sleep "$POLL_SECONDS"
