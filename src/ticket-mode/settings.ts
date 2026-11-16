@@ -514,9 +514,15 @@ function lessonsOf(value: unknown): boolean {
   return value;
 }
 
-/** `tickets.readiness`: true for the Tickets page to show each ticket's readiness score (A11-443). Absent is false. Any other value is refused by name. */
+/**
+ * Whether the readiness score is on when `tickets.readiness` is absent (A11-443). It turns on only by evidence: true only when the stored check of past tickets against their runs
+ * (`evals/readiness/result.json`) shows a clear link (`readiness-check.ts`), and a test holds the two together.
+ */
+export const DEFAULT_READINESS = false;
+
+/** `tickets.readiness`: true for the Tickets page to show each ticket's readiness score (A11-443). Absent is {@link DEFAULT_READINESS}. Any other value is refused by name. */
 function readinessOf(value: unknown): boolean {
-  if (value === undefined) return false;
+  if (value === undefined) return DEFAULT_READINESS;
   if (typeof value !== "boolean") throw new TicketSettingsRefusal("tickets.readiness", `must be true or false, not ${JSON.stringify(value)}`);
   return value;
 }
