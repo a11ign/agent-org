@@ -27,9 +27,14 @@ export function fakeHerdr(status: Map<string, string>) {
   const envs = new Map<string, Record<string, string>>();
   /** Set `on` to have `agent list` report no Claude session for any agent, as herdr does for one it could not read the session of. */
   const sessionless = { on: false };
-  /** The workspace id of each label a `workspace create` opened; a label not in it is listed as `w<digits of the label>`, as before. */
+  /** The workspace id of each label a `workspace create` opened; a label never opened is listed as `w<digits of the label>`, as before. */
   const opened = new Map<string, string>();
-  const workspaceOf = (label: string): string => opened.get(label) ?? `w${label.replace(/\D/g, "")}`;
+  /**
+   * The workspace each label last had, once it is closed: a status a test leaves set for a closed run is listed in that workspace, its own, and never in the `w<digits>` of its label, which another run may hold now that
+   * runs open side by side and herdr numbers them in the order it is asked (A11-442).
+   */
+  const closed = new Map<string, string>();
+  const workspaceOf = (label: string): string => opened.get(label) ?? closed.get(label) ?? `w${label.replace(/\D/g, "")}`;
   let next = 0;
   const run = (args: string[]): string => {
     calls.push(args);
@@ -48,7 +53,11 @@ export function fakeHerdr(status: Map<string, string>) {
     if (args.includes("workspace") && args.includes("close")) {
       const id = String(args[args.indexOf("close") + 1]);
       envs.delete(`${id}:p1`);
-      for (const [label, workspace] of opened) if (workspace === id) opened.delete(label);
+      for (const [label, workspace] of opened) {
+        if (workspace !== id) continue;
+        opened.delete(label);
+        closed.set(label, id);
+      }
       return JSON.stringify({ type: "ok" });
     }
     if (args.includes("agent") && args.includes("list")) {
