@@ -17,6 +17,15 @@ const NOT_READ = "not read yet";
 const isRead = (head: PullHead | undefined): head is PullHead & Required<Pick<PullHead, "review" | "red" | "pending">> =>
   head?.review !== undefined && head.red !== undefined && head.pending !== undefined;
 
+/**
+ * The clause for a head no review approves: changes requested, a review comment the code host named there (`tickets.reviewComments`), which is said and NEVER counted as an approval (the clause stays, so the head is not
+ * ready), or no review at all. No "; " in it: that separates the card's clauses. PURE.
+ */
+function reviewClause(head: PullHead, at: string): string {
+  if (head.review === "changes-requested") return `changes requested at ${at}`;
+  return head.commentReview === undefined ? `review: none yet at ${at}` : `review comment by ${head.commentReview.author} at ${at}, awaiting approval`;
+}
+
 /** What one open pull request waits on, one clause each: its review, its red checks, its running checks, or that none of that was read yet. Empty when it is ready. PURE. */
 function clausesOf(entry: ViewEntry, url: string): string[] {
   const head = entry.pullHeads?.[url];
@@ -26,7 +35,7 @@ function clausesOf(entry: ViewEntry, url: string): string[] {
   const notOurs = record?.step === "not-ours" && record.head === head.head ? Object.keys(record.notOurs ?? {}) : [];
   const named = (name: string): string => (notOurs.includes(name) ? `${name} (${NOT_THIS_RUNS})` : name);
   return [
-    ...(head.review === "approved" ? [] : [head.review === "changes-requested" ? `changes requested at ${at}` : `review: none yet at ${at}`]),
+    ...(head.review === "approved" ? [] : [reviewClause(head, at)]),
     ...(head.red.length === 0 ? [] : [`checks red: ${head.red.map(named).join(", ")}`]),
     ...(head.pending.length === 0 ? [] : [`checks not passed: ${head.pending.join(", ")}`]),
   ];
