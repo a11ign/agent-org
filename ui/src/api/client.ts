@@ -62,10 +62,10 @@ export function createClient(connection: ViewConnection | null, { fetch: fetchWi
     interventions: read<InterventionsView>("/api/interventions"),
     /** The tests that flaked three times in seven days (A11-300): the board lists them as needing a fix. */
     flakes: read<FlakesView>("/api/flakes"),
-    /** The model and effort the queue footer suggests for the selected tickets, from how past runs of their kind went (A11-435): advisory, the person still chooses. */
-    suggestion: (keys: readonly string[], signal?: AbortSignal) => read<SuggestionView>(`/api/suggestion?${new URLSearchParams({ keys: keys.join(",") })}`)(signal),
     /** The outcome rollups of a time window (A11-430): `query` is the page's own `?from=&to=`, passed on as it is, or empty for the last seven days. */
     outcomes: (query: string) => read<OutcomesView>(`/api/outcomes${query}`),
+    /** The model and effort the queue footer suggests for the selected tickets, from how past runs of their kind went (A11-435): advisory, the person still chooses. */
+    suggestion: (keys: readonly string[], signal?: AbortSignal) => read<SuggestionView>(`/api/suggestion?${new URLSearchParams({ keys: keys.join(",") })}`)(signal),
     settings: read<SettingsView>("/api/settings"),
     plugins: read<PluginsAnswer>("/api/plugins"),
     /** The plugins, with the instance asked to run their checks again (A11-270): what a person's Retry and "Read the plugins again" send. */

@@ -37,7 +37,7 @@ describe("the Assignee group", () => {
 
   it("says why there is no Mine when the tracker could not say whose key the board reads with", async () => {
     await pageOn(standOf(answers(tickets, { config: queueingConfig({ viewer: null }) })));
-    expect(group().getAttribute("title")).toContain("Linear could not say whose key this board reads with");
+    expect(group().getAttribute("title")).toContain("The tracker could not say whose key this board reads with");
     expect(within(group()).getAllByRole("button").map((button) => textOf(button))).toEqual(["Anyone4", "Unassigned", "Someone", "Me"]);
   });
 

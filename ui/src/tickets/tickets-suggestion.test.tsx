@@ -1,5 +1,5 @@
 import { fireEvent, screen, waitFor, within } from "@testing-library/react";
-import type { Suggestion } from "../api/types.ts";
+import type { Suggestion } from "./use-suggestion.ts";
 import { answers, BACKLOG, bar, openPage, posts, standOf, textOf, tick } from "./tickets-harness.tsx";
 
 // The queue footer's suggested model and effort (A11-435): shown with its reason and sample size when past runs give one, and never chosen for the person.

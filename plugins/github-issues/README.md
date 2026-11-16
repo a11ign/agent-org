@@ -26,7 +26,7 @@ In `host.json`, name the plugin as the tracker and the repository whose issues a
 - `token` says where the token is: `{ "path": "/abs/file" }`, a file of mode 600, or `{ "keychain": "<service>" }`, the macOS Keychain. With no `token`, the plugin reads the Keychain service `agent-org-github-issues`. The token needs to read and write the repository's issues: a fine-grained token with Issues read and write on that repository, or a classic token with `repo`.
 - `connectors`, `workingState`, `plannedState` and `takenStates` work as they do for Linear, with the state names below. `connectors` takes the patterns of GitHub's MCP issue tools.
 
-The token's setting is `token`, not Linear's `key`, so the Settings page keeps Linear's wording for a host that keeps Linear.
+The token's setting is `token`, not Linear's `key`, so the Settings page keeps Linear's wording for a host that keeps Linear. A host moved from Linear may still hold Linear's old `tickets.linearKey`: with GitHub Issues as the tracker it is not read, and `agent-org doctor --fix` does not move it into this block, which would refuse it.
 
 `agent-org doctor` shows one row for the plugin, `tracker key`: the settings are well formed, the token can be read, and a token file is readable by no one else. Onboard asks nothing for it yet.
 
@@ -81,11 +81,11 @@ GitHub's issue dependencies are Linear's "blocked by". `addBlockers` adds a depe
 ### Pull requests and closing words
 
 - A pull request is linked to a ticket when it names the issue: GitHub then lists a cross-reference on the issue's timeline, and the plugin reads each one's state and title from it.
-- GitHub closes an issue on merge only for a closing word followed by `#<number>` or the issue's address. Its words are close, fix and resolve, each with its -s and -d forms. A pull request body that names the key (`Closes GH-12`) does not close it, so the board closes the ticket itself once the pull request merges, as it completes a Linear ticket whose pull request did not.
+- GitHub closes an issue on merge only for a closing word followed by `#<number>` or the issue's address. Its words are close, fix and resolve, each with its -s and -d forms. A pull request body that names the key (`Closes GH-12`) does not close it, so the board closes the ticket itself once the pull request merges, as it completes a Linear ticket whose pull request did not. `fixture-run.test.ts` runs that end to end on fakes: a ticket queued, worked and merged ends closed as completed, with the board's comment saying why.
 - When GitHub closed the issue from a commit or a pull request, or an app closed it, `undoAutomaticCompletion` reopens it, in the state its labels name, and posts the board's comment. A closing by a person, the board's own included, is left alone.
 
 ## What is not there yet
 
 - `people` and `scoped`: the Pick view lists the token holder's open issues, the milestone picker and search reach the rest.
-- The writer tooling (`agentOrg.tooling.writer`): a new-ticket run cannot file a GitHub issue yet, because the key a filing tool answers with is an issue number, not `<prefix>-<number>`. That is core's to read, in step 2 of A11-447.
+- The writer tooling (`agentOrg.tooling.writer`): a new-ticket run cannot file a GitHub issue yet. It needs the plugin to declare GitHub's MCP issue tools as its filing tools, and core to read a created key that is an issue number (`createdKeyOf`, `src/ticket-mode/writer.ts`) as `<prefix>-<number>`. A11-447 left it out: queueing, working and closing an existing issue need none of it.
 - Onboard steps.

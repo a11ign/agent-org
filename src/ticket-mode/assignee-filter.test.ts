@@ -62,7 +62,7 @@ test("A11-108: the counter names the chosen scope: the person's own words, unass
 
 test("A11-108: an empty scope says who it asked for and names the other chips and tickets.pick; Anyone is never empty", () => {
   const you = scopeEmptyText(YOU, DAN);
-  assert.ok(you?.startsWith("No open tickets are assigned to Dan Beck, whose Linear key this board reads with."), you ?? "");
+  assert.ok(you?.startsWith("No open tickets are assigned to Dan Beck, whose key this board reads the tracker with."), you ?? "");
   assert.ok(you?.includes("The Assignee row shows Anyone and Unassigned") && you.includes('Set tickets.pick in the host file to { "team": "<key>" }'), you ?? "");
   assert.ok(scopeEmptyText(UNASSIGNED, DAN)?.startsWith("No open ticket is unassigned."));
   assert.equal(scopeEmptyText(ANYONE, DAN), null);
