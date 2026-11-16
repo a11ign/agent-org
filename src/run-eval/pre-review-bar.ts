@@ -49,26 +49,45 @@ function refusal(off: StoredRun, on: StoredRun): string | null {
 
 const convinced = (result: TicketResult): boolean => result.scores.verdict === "convinced";
 
+/** A ticket both runs have: its result with the key off and with it on. */
+type Pair = Readonly<{ off: TicketResult; on: TicketResult }>;
+
+/** The tickets both runs have, in the on run's order. PURE. */
+function pairsOf(off: StoredRun, on: StoredRun): Pair[] {
+  const offOf = new Map(off.results.map((result) => [result.entry.ticket, result]));
+  return on.results.filter(({ entry }) => offOf.has(entry.ticket)).map((result) => ({ on: result, off: offOf.get(result.entry.ticket) as TicketResult }));
+}
+
+/** The pre-PR reviews' tokens added up over `pairs`, or null when any ticket's are unknown or were not kept. PURE. */
+function reviewerTokensOf(pairs: readonly Pair[]): number | null {
+  let total = 0;
+  for (const { on } of pairs) {
+    const tokens = on.scores.localReviews?.tokens;
+    if (tokens === null || tokens === undefined) return null;
+    total += tokens;
+  }
+  return total;
+}
+
 /** The bar, over the tickets both runs have. THROWS naming why when the runs are not the off and on runs of the key at one committed sha. PURE. */
 export function preReviewBar(off: StoredRun, on: StoredRun, round: RoundCost): Bar {
   const refused = refusal(off, on);
   if (refused !== null) throw new Error(refused);
-  const offOf = new Map(off.results.map((result) => [result.entry.ticket, result]));
-  const pairs = on.results.filter(({ entry }) => offOf.has(entry.ticket)).map((result) => ({ on: result, off: offOf.get(result.entry.ticket) as TicketResult }));
+  const pairs = pairsOf(off, on);
   const convincedOff = pairs.filter((pair) => convinced(pair.off)).length;
   const convincedOn = pairs.filter((pair) => convinced(pair.on)).length;
   const roundsSaved = Math.max(0, convincedOn - convincedOff);
-  const reviews = pairs.map((pair) => pair.on.scores.localReviews);
-  const reviewerTokens = reviews.some((review) => review?.tokens === null || review === undefined) ? null : reviews.reduce((total, review) => total + (review?.tokens ?? 0), 0);
+  const counts = pairs.map((pair) => pair.on.scores.localReviews?.count ?? 0);
+  const reviewerTokens = reviewerTokensOf(pairs);
   const savedTokens = roundsSaved * round.tokens;
   const better = convincedOn > convincedOff;
   const affordable = reviewerTokens !== null && reviewerTokens <= savedTokens;
-  return { tickets: pairs.length, convincedOff, convincedOn, better, roundsSaved, savedTokens, reviews: reviews.reduce((n, review) => n + (review?.count ?? 0), 0),
-    reviewed: reviews.filter((review) => (review?.count ?? 0) > 0).length, reviewerTokens, affordable, met: better && affordable };
+  return { tickets: pairs.length, convincedOff, convincedOn, better, roundsSaved, savedTokens, reviews: counts.reduce((a, b) => a + b, 0),
+    reviewed: counts.filter((count) => count > 0).length, reviewerTokens, affordable, met: better && affordable };
 }
 
-const number = (value: number): string => value.toLocaleString("en-US");
-const signed = (value: number): string => `${value >= 0 ? "+" : ""}${number(value)}`;
+const withCommas = (value: number): string => value.toLocaleString("en-US");
+const signed = (value: number): string => `${value >= 0 ? "+" : ""}${withCommas(value)}`;
 
 /** The verdict line: better, or by how much it is not. PURE. */
 function verdictLine({ tickets, convincedOff, convincedOn, better }: Bar): string {
@@ -78,20 +97,16 @@ function verdictLine({ tickets, convincedOff, convincedOn, better }: Bar): strin
 
 /** The tokens line: within the rounds saved, or by how much it is over, or unknown. PURE. */
 function tokensLine({ reviewerTokens, savedTokens, reviews, reviewed, tickets }: Bar): string {
-  const spent = `reviewer tokens of the pre-PR reviews: ${reviewerTokens === null ? "unknown (a review's tokens could not be read)" : number(reviewerTokens)} in ${reviews} reviews on ${reviewed} of ${tickets} tickets`;
+  const spent = `reviewer tokens of the pre-PR reviews: ${reviewerTokens === null ? "unknown (a review's tokens could not be read)" : withCommas(reviewerTokens)} in ${reviews} reviews on ${reviewed} of ${tickets} tickets`;
   if (reviewerTokens === null) return `${spent}: NOT shown to be within the rounds saved`;
-  return reviewerTokens <= savedTokens ? `${spent}: within the ${number(savedTokens)} of the rounds saved` : `${spent}: ${number(reviewerTokens - savedTokens)} MORE than the ${number(savedTokens)} of the rounds saved`;
+  return reviewerTokens <= savedTokens ? `${spent}: within the ${withCommas(savedTokens)} of the rounds saved` : `${spent}: ${withCommas(reviewerTokens - savedTokens)} MORE than the ${withCommas(savedTokens)} of the rounds saved`;
 }
 
 /** One row per ticket both runs have: its verdict off and on, the pre-PR reviews and their tokens, and the worker's tokens off and on. PURE. */
-function ticketRows(off: StoredRun, on: StoredRun): string[] {
-  const offOf = new Map(off.results.map((result) => [result.entry.ticket, result]));
-  const known = (tokens: number | null | undefined): string => (tokens === null || tokens === undefined ? "?" : number(tokens));
-  const rows = on.results.filter(({ entry }) => offOf.has(entry.ticket)).map((result) => {
-    const before = offOf.get(result.entry.ticket) as TicketResult;
-    return [result.entry.ticket, `${before.scores.verdict ?? "?"} → ${result.scores.verdict ?? "?"}`, String(result.scores.localReviews?.count ?? "?"), known(result.scores.localReviews?.tokens),
-      `${known(before.scores.tokens)} → ${known(result.scores.tokens)}`];
-  });
+function ticketRows(pairs: readonly Pair[]): string[] {
+  const known = (tokens: number | null | undefined): string => (tokens === null || tokens === undefined ? "?" : withCommas(tokens));
+  const rows = pairs.map(({ off, on }) => [on.entry.ticket, `${off.scores.verdict ?? "?"} → ${on.scores.verdict ?? "?"}`, String(on.scores.localReviews?.count ?? "?"),
+    known(on.scores.localReviews?.tokens), `${known(off.scores.tokens)} → ${known(on.scores.tokens)}`]);
   return layOut([["ticket", "verdict off → on", "reviews", "reviewer tokens", "worker tokens off → on"], ...rows]);
 }
 
@@ -100,9 +115,9 @@ export function barText(off: StoredRun, on: StoredRun, round: RoundCost): { text
   const bar = preReviewBar(off, on, round);
   const lines = [
     `pre-PR review bar (${PRE_REVIEW_KEY}), ${on.set} at ${on.sha.slice(0, 7)}: off → on (${on.model}, effort ${on.effort})`,
-    "", ...ticketRows(off, on), "",
+    "", ...ticketRows(pairsOf(off, on)), "",
     verdictLine(bar),
-    `feedback rounds saved: ${bar.roundsSaved}, at ${number(round.tokens)} tokens a round (the median of ${round.rounds} rounds after a run's first in the outcome log) = ${number(bar.savedTokens)} tokens`,
+    `feedback rounds saved: ${bar.roundsSaved}, at ${withCommas(round.tokens)} tokens a round (the median of ${round.rounds} rounds after a run's first in the outcome log) = ${withCommas(bar.savedTokens)} tokens`,
     tokensLine(bar),
     bar.met ? `BAR MET: ${PRE_REVIEW_KEY} turns on by default` : `BAR MISSED: ${PRE_REVIEW_KEY} stays off`,
   ];
