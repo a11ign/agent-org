@@ -10,6 +10,12 @@ import { type Lesson, LESSON_TEXT_MAX, type Proposal } from "./lessons-store.ts"
 /** The fewest runs a new lesson cites. */
 export const RECURRING_MIN = 2;
 
+/**
+ * What a lesson never asks a worker to do: the steps the worker's brief keeps for the person (`worker-files.ts`). A lesson that asked for one would contradict the brief it is carried in, as
+ * the first retro over the board's own runs did ("enable auto-merge ... once it is open and green", A11-432 step 3).
+ */
+export const PERSONS_STEPS = "Never write or re-confirm a lesson that asks a worker to merge a pull request, enable auto-merge, mark a pull request ready, request a review, force-push or push to main: those are the person's, and the worker's brief forbids them. A lesson about a pull request that sat unmerged says what the worker should have done to its change, never that it should merge it; merging the base branch into the worker's own branch is the worker's, and a lesson may ask for it.";
+
 /** The prompt for `repo`'s retro: the instruction, its lessons so far and the items, one per line. PURE. */
 export function retroPrompt(repo: string, lessons: readonly Lesson[], items: readonly RetroItem[]): string {
   const known = lessons.length === 0 ? "(none yet)" : lessons.map((lesson) => `- ${lesson.id}: ${lesson.text}`).join("\n");
@@ -19,6 +25,7 @@ export function retroPrompt(repo: string, lessons: readonly Lesson[], items: rea
     "Below are what went wrong in their recent runs: reviewer findings, rounds started by red checks, cap and stand-off events, and the reasons runs were handed to a person. Each line names its run in brackets.",
     `Find the causes that RECUR: the same kind of mistake in at least ${RECURRING_MIN} different runs. For each, write one lesson: a short instruction a worker in ${repo} should follow, in one plain sentence. Ignore a one-off.`,
     "When a cause is one of the existing lessons, re-confirm it by giving that lesson's id instead of writing a new one.",
+    PERSONS_STEPS,
     "",
     `Answer with JSON only, no prose: {"lessons": [{"id": "<existing id, or omit for a new lesson>", "text": "<the lesson>", "runs": ["<run>", ...]}]}. List only the runs whose lines show the cause.`,
     "",
