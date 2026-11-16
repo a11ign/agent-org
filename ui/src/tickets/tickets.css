@@ -430,6 +430,16 @@
 .queue-bar-spacer {
   flex: 1 1 0;
 }
+/* The suggested model and effort (A11-435), in the spacer's place: advice beside the batch's choice, so it reads quieter than the count, on one line that shrinks. */
+.queue-bar-suggestion {
+  flex: 1 1 0;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-size: var(--font-size-small);
+  color: var(--color-text-muted);
+}
 .run-options-anchor {
   position: relative;
 }
