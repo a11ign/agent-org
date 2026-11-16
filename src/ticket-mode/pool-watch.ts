@@ -31,7 +31,7 @@ import { judgedWait, pollWhenDue } from "./wait-on/wait-watch.ts";
 import type { Judged } from "./wait-on/wait-verdict.ts";
 import type { Woke } from "./wait-on/wait-types.ts";
 import { paneBackgroundWork } from "./background-work.ts";
-import { holdAllowance, holdChanges, readAllowance, releaseAllowance } from "./allowance.ts";
+import { holdAllowance, holdChanges, readAllowance, releaseAllowance, resumeAfterReset } from "./allowance.ts";
 import { endPublish, endWriter, finishWriter } from "./pool-board-runs.ts";
 import { finishCheckRun } from "./pool-check-runs.ts";
 import { isCheckRun, MIGRATION_LIMIT_MS, VERIFIER_LIMIT_MS } from "./after-merge/verify.ts";
@@ -40,7 +40,7 @@ import { moveOutcomeHeads, recordBlockAsked, recordOutcomeHeads, recordPullHeads
 import { blockRoundLine, blocksToAnswer, isStaleBlockNote, type StaleBlock, staleBlockNote, stampedBlocks } from "./board-view/stale-block.ts";
 import { isReviewerDialogNote, reviewerDialogNote } from "./board-view/reviewer-dialog-note.ts";
 import { recordReviewerDialog } from "./queue/queue-reviewer-dialog.ts";
-import { observeWriter, writerResumed, writerWaiting } from "./queue.ts";
+import { holdStarts, observeWriter, releaseStarts, writerResumed, writerWaiting } from "./queue.ts";
 import { openPulls, type PullHead } from "./board-view/view-types-and-filters.ts";
 import type { PullFeedback } from "../plugins/contracts/code-host.ts";
 import { reviewerLines } from "./pool-reviewers.ts";
@@ -218,7 +218,7 @@ async function watchRunning(ctx: PoolContext, status: ReadonlyMap<string, string
 
 /**
  * Read whether a running run's worker is out of Claude allowance, on the status this pass read, and hold or release it as Waiting: allowance on every member of the run (A11-434). Each change is logged once.
- * True while it is held: the caller neither ends it nor treats its limit menu as a dialog.
+ * A run held holds every start until its reset, and is resumed once the reset has passed (`resumeAfterReset`). True while it is held: the caller neither ends it nor treats its limit menu as a dialog.
  */
 async function watchAllowance(ctx: PoolContext, entry: Entry, seen: string): Promise<boolean> {
   const read = await readAllowance(ctx, entry, runPlace(ctx, entry), seen);
@@ -226,17 +226,27 @@ async function watchAllowance(ctx: PoolContext, entry: Entry, seen: string): Pro
   if (current?.phase !== "running") return false;
   const who = entry.batch ?? entry.ticket.key;
   // What cannot be read now keeps the hold the run has: only a read that says the allowance is not spent drops it.
-  if (read.state === "unknown") return current.allowance !== undefined;
+  if (read.state === "unknown") {
+    if (current.allowance !== undefined) await resumeAfterReset(ctx, current, runPlace(ctx, current), seen);
+    return current.allowance !== undefined;
+  }
   if (read.state === "clear") {
     if (current.allowance === undefined) return false;
     updateEach(ctx, runMembers(ctx, current), releaseAllowance);
-    log(`${who} is no longer out of Claude allowance: its hold is dropped`);
+    // The allowance is the account's: a run that answered again says it is back for every run, so the hold on starts goes with it.
+    update(ctx, releaseStarts);
+    log(`${who} is no longer out of Claude allowance: its hold and the hold on starts are dropped`);
     return false;
   }
   const { spent } = read;
   if (current.allowance === undefined) log(`${who} is out of Claude allowance until ${new Date(spent.until).toISOString()}: held as Waiting: allowance, not ended ("${spent.text}")`);
   const at = ctx.now();
   if (holdChanges(current, spent)) updateEach(ctx, runMembers(ctx, current), (queue, member) => holdAllowance(queue, member, spent, at));
+  // The allowance is the account's, not the run's: no other run starts until the reset, and the run is resumed once it has passed.
+  const queue = ctx.store.get();
+  if (holdStarts(queue, spent) !== queue) update(ctx, (latest) => holdStarts(latest, spent));
+  const held = ctx.store.get().entries.find((e) => e.ticket.key === entry.ticket.key);
+  if (held?.allowance !== undefined) await resumeAfterReset(ctx, held, runPlace(ctx, held), seen);
   return true;
 }
 

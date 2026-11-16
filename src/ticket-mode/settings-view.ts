@@ -214,8 +214,10 @@ function rowsOf(entry: SchemaEntry, input: ViewInput): Unplaced[] {
     const source = set || aliased ? fileOf(entry) : "built-in default";
     const roleRow = /^(?:tickets\.providers\.codeHost|github)\.identity\.[^.]+$/.test(key);
     const shown = set ? (roleRow ? roleValue(root, path) : showValue({ key, value }, entry, input.exists)) : (aliased ? ALIASED_VALUE : absentValue(entry, state));
+    // An old key whose new key only a plugin the host does not name declares is not read (A11-447: Linear's `tickets.linearKey` on a GitHub Issues host), and doctor --fix has nothing to move it to.
+    const read = set && !(entry.aliasOf !== undefined && (input.otherPlugins?.has(entry.aliasOf) ?? false));
     rows.push({ key, file: entry.file, group: entry.group, value: shown, state, source, explanation: entry.explanation, breaks: entry.breaks, depth: path.length - 1, secret: entry.secret !== undefined,
-      ...editOf(entry), raw: set ? rawOf(value) : null, alias: set ? aliasText(entry, key) : null, inUse: set || (entry.aliasOf === undefined && !(input.otherPlugins?.has(entry.key) ?? false) && inUseOf(entry, key, root)), nest: nestOf(key) });
+      ...editOf(entry), raw: set ? rawOf(value) : null, alias: read ? aliasText(entry, key) : null, inUse: read || (entry.aliasOf === undefined && !(input.otherPlugins?.has(entry.key) ?? false) && inUseOf(entry, key, root)), nest: nestOf(key) });
     if (Array.isArray(value)) rows.push(...elementRows({ parent: entry, key, items: value, state }, input));
   }
   return rows;

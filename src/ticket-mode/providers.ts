@@ -226,8 +226,11 @@ function trackerOf(block: unknown, tickets: Record<string, unknown>, read: Alias
   const own = (name: string) => ownOf(block, "tracker", name);
   const trackers = Array.isArray(tickets.connectors) ? tickets.connectors.filter((pattern) => isTrackerConnector(catalog, pattern)) : [];
   const planner = isObject(tickets.planner) ? tickets.planner : {};
+  // `key`, and its old key `tickets.linearKey`, are read only for a tracker that declares `key` (Linear). Another keeps its secret under its own name (GitHub Issues' `token`), so a host moved from
+  // Linear that still holds `tickets.linearKey` is not offered a move of it into a block that refuses `key` (A11-447).
+  const declaresKey = blockSettings(pluginNamed(catalog, provider.provider) ?? { settings: {} }).includes("key");
   const settings = {
-    key: choose({ own: own("key"), alias: found(tickets.linearKey, "tickets.linearKey"), newAt: "tickets.providers.tracker.key" }, read),
+    ...(declaresKey ? { key: choose({ own: own("key"), alias: found(tickets.linearKey, "tickets.linearKey"), newAt: "tickets.providers.tracker.key" }, read) } : {}),
     connectors: choose({ own: own("connectors"), alias: trackers.length > 0 ? found(trackers, "tickets.connectors") : undefined, newAt: "tickets.providers.tracker.connectors", same: sameList }, read),
     workingState: choose({ own: own("workingState"), alias: found(tickets.workingState, "tickets.workingState"), newAt: "tickets.providers.tracker.workingState" }, read),
     plannedState: choose({ own: own("plannedState"), alias: found(planner.state, "tickets.planner.state"), newAt: "tickets.providers.tracker.plannedState" }, read),

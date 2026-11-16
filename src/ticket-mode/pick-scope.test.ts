@@ -15,7 +15,7 @@ test("A11-69: an empty Pick view says what it asked for, of whom, and names tick
   assert.ok(assigned.includes('Set tickets.pick in the host file to { "team": "<key>" } or { "project": "<name>" }'), assigned);
   assert.ok(pickEmptyText("assigned", null).startsWith("No open tickets are assigned to you,"), "a source that cannot name the person says you");
   const team = pickEmptyText({ team: "A11" }, null);
-  assert.ok(team.startsWith("Team A11 has no open tickets, or Linear has no team with that key.") && team.includes("tickets.pick"), team);
+  assert.ok(team.startsWith("Team A11 has no open tickets, or the tracker has no team with that key.") && team.includes("tickets.pick"), team);
   const project = pickEmptyText({ project: "Witness GA" }, null);
-  assert.ok(project.startsWith('Project "Witness GA" has no open tickets, or Linear has no project of that name.') && project.includes("tickets.pick"), project);
+  assert.ok(project.startsWith('Project "Witness GA" has no open tickets, or the tracker has no project of that name.') && project.includes("tickets.pick"), project);
 });

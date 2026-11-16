@@ -233,7 +233,8 @@ export function resumeAfterRestart(ctx: PoolContext, status: ReadonlyMap<string,
 
 async function promptAfter(ctx: PoolContext, status: ReadonlyMap<string, string>, restart: Restart): Promise<ReadonlySet<string>> {
   const prompted = new Set<string>();
-  for (const listed of ctx.store.get().entries.filter(resumable)) {
+  // A run held on the spent allowance is told to carry on by the allowance watch once its reset has passed (A11-434): a prompt before then is refused again, and one after it would be a second.
+  for (const listed of ctx.store.get().entries.filter((entry) => resumable(entry) && entry.allowance === undefined)) {
     // Each pane is read without holding the loop, so the queue moves between two runs: each is taken as the queue holds it now.
     if (!stillResumable(ctx, listed)) continue;
     const entry = ctx.store.get().entries.find((e) => e.ticket.key === listed.ticket.key)!;

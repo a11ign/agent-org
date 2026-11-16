@@ -4,7 +4,8 @@
 // OFF UNLESS `tickets.lessons` IS TRUE: the feature ships off and turns on only when the offline test (the M2 eval set, run with lessons off and on) shows no drop (the plan's step 3).
 //
 // ONCE A UTC DAY, AT THE FIRST SWEEP OF THE DAY. The board runs this with its feedback sweeps; the day it last ran is kept in `lessons-retro.json`, written BEFORE the model is asked, so a
-// retro that fails is tried again tomorrow, not every sweep of today (each try is a model run).
+// retro that fails is tried again tomorrow, not every sweep of today (each try is a model run). A `lessons-retro.json` that exists and cannot be read stops the retro, failing closed: it is
+// not read as "never ran", which would ask the model again.
 //
 // NEVER HOLDS THE BOARD'S LOOP: the model runs under `execFile` (`realExecAsync`), the sweep is not started over itself while it runs, and its reads are a few local files.
 //
@@ -47,13 +48,24 @@ export const retroStatePath = (stateDir: string): string => join(stateDir, "tick
 /** The UTC date of `at`, as `YYYY-MM-DD`. PURE. */
 const dateOf = (at: number): string => new Date(at).toISOString().slice(0, 10);
 
-/** The day the last retro ran, or null when none has. A file that cannot be read is none: the worst that does is one more retro. */
+/**
+ * The day the last retro ran, or null when none has: the file does not exist yet. A file that exists and cannot be read, or holds no day, THROWS naming it (A11-358: unreadable is an error, not
+ * absent), so no retro runs and no model is asked until it is repaired or removed; the board's sweep says the failure.
+ */
 function lastRan(stateDir: string): string | null {
+  const path = retroStatePath(stateDir);
+  if (!existsSync(path)) return null;
+  const { ranOn } = stateIn(path);
+  if (typeof ranOn !== "string") throw new Error(`${path} names no day the retro last ran, so no retro runs until it is repaired or removed`);
+  return ranOn;
+}
+
+/** The retro's state file at `path`, parsed; throws naming it when it cannot be read or is not JSON. */
+function stateIn(path: string): { ranOn?: unknown } {
   try {
-    const { ranOn } = JSON.parse(readFileSync(retroStatePath(stateDir), "utf8")) as { ranOn?: unknown };
-    return typeof ranOn === "string" ? ranOn : null;
-  } catch {
-    return null;
+    return (JSON.parse(readFileSync(path, "utf8")) ?? {}) as { ranOn?: unknown };
+  } catch (error) {
+    throw new Error(`${path} cannot be read, so no retro runs until it is repaired or removed: ${(error as Error).message}`);
   }
 }
 
