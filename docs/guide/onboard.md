@@ -45,10 +45,7 @@ What a profile sets, each only where the host file does not already have it:
 - The reviewer's identity: the App named in `codeHost.reviewerApp`, with its key, under `tickets.providers.codeHost.identity.reviewer`.
 
 Onboard also prints the Codex checklist when the reviewer is `atomic`: Codex is installed (`npm install -g @openai/codex`) and logged in (`codex login`).
-Onboard does not do either for you, since each needs your account. It starts the herdr service first. It retires the two guards an earlier hand setup left on Linux, the
-`gh-wrapper-watchdog` timer and the `KillMode=process` drop-in on the instance unit, each only once its replacement is proven: the watchdog once the
-installed `gh` wrapper is the one the host file declares, the drop-in once herdr's server runs in its own service. A guard whose replacement
-is not proven is kept, and the line says what to do (`agent-org start herdr --move`). Running onboard again changes no file, and it ends by printing the same checks as `agent-org doctor`.
+Onboard does not do either for you, since each needs your account. It starts the herdr service first. Running onboard again changes no file, and it ends by printing the same checks as `agent-org doctor`.
 
 **The host file without `AGENT_ORG_HOST`.** Every command finds the host file in this order: `$AGENT_ORG_HOST`, then the path in
 `~/.agent-org/host-file` (which onboard writes), then the `AGENT_ORG_HOST` in the instance service's unit, then `~/.agent-org/host.json`.

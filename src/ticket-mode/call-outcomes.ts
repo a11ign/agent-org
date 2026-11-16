@@ -2,7 +2,7 @@
 // module: how many calls the board made to Linear, to GitHub and to herdr in the last hour, and how many failed (A11-363, A11-436) -- the figure `/api/health` calls failures per 100 calls, by service and in total
 //
 // THE CALLS ARE COUNTED WHERE THEY LEAVE THE PROCESS, not where they are written: the TRACKER plugin's calls are counted as the `linear` figure, and the CODE HOST's `gh` calls that its
-// loop runners make as the `github` figure, by the outside client the loader hands each (`depsFor` in `src/plugins/loader.ts`, `outside-client.ts`: a call is counted once however often it is tried, and each retry is
+// loop runners make as the `github` figure, by the outside client the loader hands each (`depsFor` in `src/plugins/loader.ts`, `outside-client.ts`: a call is counted once however often it is tried, as failed only when it failed for good, and each retry is
 // only observed: A11-345, A11-436); `realExec` and `realExecAsync` count every other `gh` program (`countProgram`, by the client's one rule), and the `fetch` core hands every plugin counts each request to
 // `api.github.com` (which the GitHub plugin never calls today). The pool's herdr calls go through the same client as the `herdr` figure (`pool-herdr.ts`, A11-436 step 3), and every other `herdr` program,
 // synchronous or not, is counted by `countProgram` as a `gh` is.
@@ -28,8 +28,10 @@ export type LastCalls = Readonly<{ ok?: number; failed?: number }>;
 export type CallLedger = Readonly<{
   /** Counts one call to `service`, and whether it failed. */
   record: (service: CallService, failed: boolean) => void;
-  /** Notes that a call to `service` just succeeded or failed without counting it: an attempt that retries a call already counted. It moves {@link CallLedger.lastCalls} and nothing else (A11-345). */
+  /** Notes that a call to `service` just succeeded or failed without counting it: an attempt that is tried again, or one inside an outage already counted. It moves {@link CallLedger.lastCalls} and nothing else (A11-345). */
   observe: (service: CallService, failed: boolean) => void;
+  /** Counts one call to `service`, and whether it failed, without moving {@link CallLedger.lastCalls}: a call that ended with no attempt of its own, refused by the breaker after its last attempt was observed (A11-345). */
+  count: (service: CallService, failed: boolean) => void;
   figures: () => CallFigures;
   /** When the last good and the last failed call to `service` were made, within the window. */
   lastCalls: (service: CallService) => LastCalls;
@@ -43,14 +45,17 @@ export function createCallLedger(now: () => number = Date.now): CallLedger {
   const counts = Object.fromEntries(CALL_SERVICES.map((service) => [service, { calls: rollingCount(CALL_WINDOW_MS, now), failures: rollingCount(CALL_WINDOW_MS, now) }])) as Record<CallService, { calls: RollingCount; failures: RollingCount }>;
   const last = Object.fromEntries(CALL_SERVICES.map((service) => [service, {} as { ok?: number; failed?: number }])) as Record<CallService, { ok?: number; failed?: number }>;
   const inWindow = (at: number | undefined): number | undefined => (at !== undefined && at > now() - CALL_WINDOW_MS ? at : undefined);
-  return {
+  const ledger: CallLedger = {
     record: (service, failed) => {
-      counts[service].calls.add();
-      if (failed) counts[service].failures.add();
-      last[service][failed ? "failed" : "ok"] = now();
+      ledger.count(service, failed);
+      ledger.observe(service, failed);
     },
     observe: (service, failed) => {
       last[service][failed ? "failed" : "ok"] = now();
+    },
+    count: (service, failed) => {
+      counts[service].calls.add();
+      if (failed) counts[service].failures.add();
     },
     lastCalls: (service) => ({ ok: inWindow(last[service].ok), failed: inWindow(last[service].failed) }),
     figures: () => Object.fromEntries(CALL_SERVICES.map((service) => {
@@ -59,6 +64,7 @@ export function createCallLedger(now: () => number = Date.now): CallLedger {
       return [service, { calls, failures, failuresPer100: per100(failures, calls) }];
     })) as CallFigures,
   };
+  return ledger;
 }
 
 /** This thread's ledger, which the seams count into and `/api/health` reads. */

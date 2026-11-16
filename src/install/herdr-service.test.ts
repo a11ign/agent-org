@@ -12,7 +12,6 @@ import { emptyQueue } from "../ticket-mode/queue.ts";
 import { parseTicketSettings } from "../ticket-mode/settings.ts";
 import { cgroupPath, type HerdrPlace, herdrPlace, isHerdrServer, type PlaceReads } from "./herdr-place.ts";
 import { startHerdr, type MoveDeps } from "./herdr-move.ts";
-import { guardPaths, retireGuards } from "./interim-guards.ts";
 import { main, runAutoUpdateNow, SERVICE_NAMES, ServiceRefusal, startService, TOOL_SERVICES, unitFor, type RunResult, type ServiceDeps } from "./service.ts";
 
 const done = (stdout = ""): RunResult => ({ status: 0, stdout, stderr: "" });
@@ -185,11 +184,7 @@ test("on macOS a herdr server in the herdr job's group is the unit's, one in the
 const startsUnit = (file: string, args: string[]): boolean => (file === "systemctl" && args.includes("start")) || (file === "launchctl" && args[0] === "bootstrap");
 
 function mover(place: HerdrPlace, options: { live?: number | null } = {}) {
-  const { services, files, calls, home } = setup();
-  // Both interim guards stand on disk, and the real retirement runs: the drop-in's proof is that the server now runs in the unit.
-  const paths = guardPaths({}, home);
-  for (const path of [paths.dropIn, ...paths.watchdog]) files.set(path, "guard");
-  const removed: string[] = [];
+  const { services, files, calls } = setup();
   let current = place;
   const run: ServiceDeps["run"] = (file, args) => {
     calls.push([file, ...args].join(" "));
@@ -201,45 +196,37 @@ function mover(place: HerdrPlace, options: { live?: number | null } = {}) {
   const wired: ServiceDeps = { ...services, run };
   const deps: MoveDeps = {
     services: wired, liveRuns: () => (options.live === undefined ? 2 : options.live), placeOf: () => current, wait: async () => undefined,
-    retire: () => retireGuards({ platform: "linux", env: {}, home, exists: wired.exists, remove: (path) => { removed.push(path); files.delete(path); }, run,
-      replacements: async () => ({ ghWrapperDeclared: true, herdrInOwnUnit: true }) }),
   };
-  return { deps, calls, files, home, removed, paths };
+  return { deps, calls, files };
 }
 
 test("start herdr refuses while a server runs outside the unit, saying how many runs are live, and starts nothing", async () => {
-  const { deps, calls, removed } = mover({ kind: "instance", where: "/app.slice/agent-org-instance.service" }, { live: 2 });
+  const { deps, calls } = mover({ kind: "instance", where: "/app.slice/agent-org-instance.service" }, { live: 2 });
   await assert.rejects(() => startHerdr({ move: false }, deps), (err: Error) => err instanceof ServiceRefusal
     && /runs outside agent-org-herdr\.service \(\/app\.slice\/agent-org-instance\.service\), and moving it ends every pane and agent in it: 2 runs are live/.test(err.message)
     && err.message.includes("agent-org start herdr --move"));
   assert.deepEqual(calls, []);
-  assert.deepEqual(removed, [], "refused, so no guard is touched");
   const queueless = mover({ kind: "elsewhere", where: "/x.scope" }, { live: null });
   await assert.rejects(() => startHerdr({ move: false }, queueless.deps), /the queue cannot be read, so how many runs are live is not known/);
 });
 
-test("start herdr --move stops the server outside the unit, starts the unit, and retires both guards", async () => {
-  const { deps, calls, removed, paths } = mover({ kind: "elsewhere", where: "/app.slice/agent-org-herdr-work.scope" });
+test("start herdr --move stops the server outside the unit and starts the unit", async () => {
+  const { deps, calls } = mover({ kind: "elsewhere", where: "/app.slice/agent-org-herdr-work.scope" });
   const said: string[] = [];
   await startHerdr({ move: true }, deps, (line) => said.push(line));
   const stop = calls.findIndex((call) => call === "herdr --session work server stop");
   const start = calls.findIndex((call) => call === "systemctl --user start agent-org-herdr.service");
   assert.ok(stop >= 0 && start > stop, "the outside server is stopped first, then the unit is started");
-  assert.deepEqual(removed.toSorted(), [paths.dropIn, ...paths.watchdog].toSorted(), "the drop-in and the watchdog's three files are gone");
   assert.ok(said.some((line) => line.includes("stopped the herdr server that ran outside the unit")));
-  assert.ok(said.some((line) => line.includes("retired the KillMode drop-in")));
-  assert.ok(said.some((line) => line.includes("retired the gh-wrapper watchdog")));
 });
 
-test("start herdr with the server already in the unit starts it without stopping anything, and --move on such a host only retires the guards", async () => {
+test("start herdr with the server already in the unit starts it without stopping anything, and --move on such a host stops nothing either", async () => {
   const plain = mover({ kind: "unit", where: "/app.slice/agent-org-herdr.service" });
   await startHerdr({ move: false }, plain.deps);
   assert.equal(plain.calls.some((call) => call.includes("server stop")), false);
-  assert.deepEqual(plain.removed, [], "without --move the guards stand");
   const moved = mover({ kind: "unit", where: "/app.slice/agent-org-herdr.service" });
   await startHerdr({ move: true }, moved.deps);
   assert.equal(moved.calls.some((call) => call.includes("server stop")), false, "nothing outside the unit, so nothing to stop");
-  assert.deepEqual(moved.removed.toSorted(), [moved.paths.dropIn, ...moved.paths.watchdog].toSorted());
 });
 
 test("start herdr --move stops nothing when herdr will not stop, and starts no unit beside a server it could not stop", async () => {
@@ -259,20 +246,6 @@ test("the start command takes --move for herdr only, and a start of herdr says s
   assert.ok(out.at(-1)?.startsWith("moved herdr into its service"), "--move ends on its own result line");
   assert.equal(await main(["start", "ui", "--move"], deps.services, io, deps), 2);
   assert.ok(out.some((line) => line.includes("--move is for `agent-org start herdr`")));
-});
-
-test("the guards retire on their proofs: the drop-in once herdr runs in its own unit, and not before", async () => {
-  const { services, files, home } = setup();
-  const paths = guardPaths({}, home);
-  files.set(paths.dropIn, "[Service]\nKillMode=process\n");
-  const removed: string[] = [];
-  const base = { platform: "linux" as const, env: {}, home, exists: services.exists, remove: (path: string) => { removed.push(path); files.delete(path); }, run: services.run };
-  const kept = await retireGuards({ ...base, replacements: async () => ({ ghWrapperDeclared: true, herdrInOwnUnit: false }) });
-  assert.match(kept.join("\n"), /kept the KillMode drop-in: the herdr server does not run in agent-org-herdr\.service yet\. Run `agent-org start herdr --move`/);
-  assert.deepEqual(removed, []);
-  const gone = await retireGuards({ ...base, replacements: async () => ({ ghWrapperDeclared: true, herdrInOwnUnit: true }) });
-  assert.match(gone.join("\n"), /retired the KillMode drop-in: herdr has a service of its own/);
-  assert.deepEqual(removed, [paths.dropIn]);
 });
 
 test("stopping herdr says it ends every pane and agent, and stopping the instance says nothing of the kind", async () => {
