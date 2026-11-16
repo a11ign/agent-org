@@ -218,7 +218,7 @@ test("A11-437: from every start state, merged, closed and needs-a-person are eac
 test("A11-437: the transition functions read no file, network or clock: the module imports only types, words and pure helpers", () => {
   const source = readFileSync(new URL("./pr-state-machine.ts", import.meta.url), "utf8");
   const imports = [...source.matchAll(/^import .* from "([^"]+)";$/gmu)].map(([, from]) => from);
-  assert.deepEqual(imports, ["../plugins/contracts/code-host.ts", "./board-view/view-types-and-filters.ts", "./board-view/check-rerun-record.ts", "./board-view/queue-head.ts", "./board-view/cancelled-rerun-words.ts", "./failure-words.ts"]);
+  assert.deepEqual(imports, ["../plugins/contracts/code-host.ts", "./board-view/view-types-and-filters.ts", "./board-view/check-rerun-record.ts", "./board-view/queue-head.ts", "./board-view/cancelled-rerun-words.ts", "./failure-words.ts", "./board-view/pull-settled.ts", "./source.ts"]);
   assert.doesNotMatch(source, /Date\.now|new Date\(|performance\.now|process\.|fetch\(|node:/u, "no clock, environment, network or node module");
   const realNow = Date.now;
   Date.now = () => { throw new Error("the transition read the clock"); };
