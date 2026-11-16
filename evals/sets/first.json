@@ -1,0 +1,12 @@
+[
+  { "repo": "a11ign/agent-org", "ticket": "A11-376", "baseSha": "ebd2afa54f55538e260f0f2b45f9621605dfc0cf", "mergedPr": 1992 },
+  { "repo": "a11ign/agent-org", "ticket": "A11-397", "baseSha": "0abf0d183884d7f0253e9fa4829462d8c5f8d0e4", "mergedPr": 2009 },
+  { "repo": "a11ign/agent-org", "ticket": "A11-344", "baseSha": "20fa65db324c206c944e6d8dcf08f227b557f983", "mergedPr": 1965 },
+  { "repo": "a11ign/agent-org", "ticket": "A11-340", "baseSha": "dd387c44d23b11ea74614a2010e5a8b1cf508bed", "mergedPr": 1963 },
+  { "repo": "a11ign/agent-org", "ticket": "A11-341", "baseSha": "dd387c44d23b11ea74614a2010e5a8b1cf508bed", "mergedPr": 1962 },
+  { "repo": "a11ign/agent-org", "ticket": "A11-297", "baseSha": "ec59a7d579338a3f56ce7e75f4bae9b3769e2315", "mergedPr": 1948 },
+  { "repo": "a11ign/agent-org", "ticket": "A11-449", "baseSha": "f8be354d749c7455123384fc1a17882bfc57c5ab", "mergedPr": 2058 },
+  { "repo": "a11ign/agent-org", "ticket": "A11-394", "baseSha": "193545ed999a285ab3403fd11dec699198eafba1", "mergedPr": 2004 },
+  { "repo": "a11ign/agent-org", "ticket": "A11-239", "baseSha": "a05acda318a37b479a6e843d7a4ccee388d545eb", "mergedPr": 1880 },
+  { "repo": "a11ign/agent-org", "ticket": "A11-140", "baseSha": "7aad47e0bab698854ef9d497f03a133124f56ebe", "mergedPr": 1790 }
+]
