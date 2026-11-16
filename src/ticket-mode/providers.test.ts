@@ -265,3 +265,13 @@ test("A11-160: the providers of a host file's text are read leniently: a missing
   const reads = providersOfText(JSON.stringify({ gh: { workers: "/w" }, tickets: {} }));
   assert.deepEqual(reads.blocks.codeHost.settings.gh.value, { workers: "/w" });
 });
+
+test("A11-447: a GitHub Issues host that still holds Linear's old key does not read it as its tracker's key, and no move is offered into a block that refuses it", () => {
+  const github = { provider: "github-issues", repo: "acme/tracker", token: { path: "/k/github.token" } };
+  const resolved = resolveProviders({ tickets: { linearKey: { path: "/k/linear" }, providers: { tracker: github } } });
+  assert.equal(resolved.blocks.tracker.settings.key, undefined, "Linear's key is not GitHub Issues' setting");
+  assert.deepEqual(resolved.aliases, [], "tickets.linearKey is not offered to move to tickets.providers.tracker.key, which github-issues refuses");
+  assert.deepEqual(resolved.blocks.tracker.settings.token.value, { path: "/k/github.token" }, "its own token is read");
+  const linear = resolveProviders({ tickets: { linearKey: { path: "/k/linear" } } });
+  assert.deepEqual(linear.blocks.tracker.settings.key, { value: { path: "/k/linear" }, at: "tickets.linearKey" }, "a Linear host still reads the old key");
+});

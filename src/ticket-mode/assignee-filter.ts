@@ -48,7 +48,7 @@ export function scopeToRead(scope: string, read: ReadonlySet<string>): string | 
 export type ScopeChip = Readonly<{ scope: string; text: string; count: number; pressed: boolean }>;
 
 /** What the Assignee row says when the tracker cannot say whose key the board reads with: why there is no chip for the person. */
-export const NO_VIEWER = "Linear could not say whose key this board reads with, so the list starts on Anyone and there is no chip for your own tickets.";
+export const NO_VIEWER = "The tracker could not say whose key this board reads with, so the list starts on Anyone and there is no chip for your own tickets.";
 
 /** The scope the list starts on: the setting's default, the signed-in person's tickets when the setting says so and the person is known, else Anyone. */
 export function defaultScope(pickDefault: string, viewer: Viewer): string {
@@ -112,7 +112,7 @@ export function scopeWord(scope: string, chips: readonly ScopeChip[], open: stri
  */
 export function scopeEmptyText(scope: string, viewer: Viewer): string | null {
   if (scope === YOU && viewer !== null) {
-    return `No open tickets are assigned to ${viewer.name}, whose Linear key this board reads with. The Assignee row shows Anyone and Unassigned, and each other person with an open ticket. ${PICK_SETTING}`;
+    return `No open tickets are assigned to ${viewer.name}, whose key this board reads the tracker with. The Assignee row shows Anyone and Unassigned, and each other person with an open ticket. ${PICK_SETTING}`;
   }
   if (scope === UNASSIGNED) return "No open ticket is unassigned. The Assignee row shows Anyone, and each person with an open ticket.";
   return scope === ANYONE ? null : "No open tickets are assigned to that person. The Assignee row shows Anyone, and the people who have one.";

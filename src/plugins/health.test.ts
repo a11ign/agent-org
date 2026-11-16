@@ -64,7 +64,7 @@ test("A11-163: a required concern with no plugin running says the board cannot r
   const providers = resolveProviders(FRESH, catalog);
   const off = { ...providers, blocks: { ...providers.blocks, tracker: { ...providers.blocks.tracker, enabled: false } } };
   const health = pluginHealth({ catalog, providers: off, messaging: NO_MESSAGING, load: NO_LOAD, checks: {}, version: VERSION });
-  assert.deepEqual(concernOf(health, "tracker").empty, { text: "No tracker enabled: the board cannot run", commands: ["agent-org plugin install github-issues", "agent-org plugin enable linear"] });
+  assert.deepEqual(concernOf(health, "tracker").empty, { text: "No tracker enabled: the board cannot run", commands: ["agent-org plugin enable linear", "agent-org plugin install github-issues"] });
   assert.equal(concernOf(health, "codeHost").empty, null);
   const none = concernOf(healthOf(FRESH), "publisher").empty;
   assert.deepEqual(none, { text: "None", commands: ["agent-org plugin install slack"] });

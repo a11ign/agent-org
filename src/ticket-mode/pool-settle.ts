@@ -387,7 +387,7 @@ async function proposeEdit(ctx: PoolContext, entry: Entry, outcome: Extract<Outc
   if (!sameRun(ctx, entry)) return;
   const unrecorded = (error: string) => `${outcome.reason} (the worker's proposed edit to ${key}'s text could not be recorded: ${error})`;
   if (base === null && failure !== null) return resultWriteFailed(ctx, entry, { err: failure.err, reasonFor: unrecorded, handBack: handBackOfEdit(outcome) });
-  if (base === null) return end(ctx, entry, { kind: "needs-human", reason: unrecorded(`Linear has no ticket ${key}`) });
+  if (base === null) return end(ctx, entry, { kind: "needs-human", reason: unrecorded(`the tracker has no ticket ${key}`) });
   // The guard is released above, and nothing awaits between here and settle's own checks: the completion or end it starts takes `attaching` itself,
   // before its first await, so a tick that sees this outcome again meanwhile finds the run already held.
   settle(ctx, entry, { ...outcome, edit: { ...edit, base: { title: base.title, description: base.description } } });
