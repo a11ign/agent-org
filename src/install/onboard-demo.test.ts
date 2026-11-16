@@ -120,7 +120,7 @@ test("A11-163 done-when: a fresh machine's onboard enables the Linear and GitHub
 
   const list = machine.run("plugin", "list");
   assert.equal(list.status, 0, list.stderr);
-  assert.match(list.stdout, /^tracker: linear \(from tickets\.providers\.tracker\)\n {2}linear +enabled +contract 1\.9 +plugins\/linear$/m, "both are read from their blocks, as installed and enabled");
+  assert.match(list.stdout, /^tracker: linear \(from tickets\.providers\.tracker\)\n(?: {2}\S+ +available .*\n)* {2}linear +enabled +contract 1\.9 +plugins\/linear$/m, "both are read from their blocks, as installed and enabled");
   assert.match(list.stdout, /^code host: github \(from tickets\.providers\.codeHost\)\n {2}github +enabled +contract 4\.1 +plugins\/github$/m);
 
   const answer = await askPlugins(machine);

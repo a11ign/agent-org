@@ -32,7 +32,7 @@ test("a profile parses, and each refusal names the field it is about", () => {
   assert.equal(parseProfile(text()).tracker.provider, "linear");
   assert.throws(() => parseProfile(text({ extra: 1 })), /extra is not a profile key/);
   assert.throws(() => parseProfile(text({ schema: 2 })), /schema must be 1/);
-  assert.throws(() => parseProfile(text({ tracker: { provider: "jira" } })), /tracker\.provider must be one of "linear"/);
+  assert.throws(() => parseProfile(text({ tracker: { provider: "jira" } })), /tracker\.provider must be one of "github-issues", "linear"/);
   assert.throws(() => parseProfile(text({ reviewer: "atomic" })), /reviewer must be an object with a provider/);
   assert.throws(() => parseProfile(text({ repos: [] })), /repos must list at least one repository/);
   assert.throws(() => parseProfile(text({ repos: [{ name: "a b", path: "/x" }] })), /repos\[0\]\.name is a clone's name/);
@@ -86,14 +86,14 @@ const catalogWith = (plugin: Partial<CatalogPlugin> & Pick<CatalogPlugin, "name"
 test("A11-163: a block's provider is checked against the registry: a bundled plugin of the concern is named by the profile, with no list written in the profile reader", () => {
   const catalog = catalogWith({ name: "jira", concern: "tracker" });
   assert.equal(parseProfile(text({ tracker: { provider: "jira" } }), catalog).tracker.provider, "jira");
-  assert.throws(() => parseProfile(text({ tracker: { provider: "jira" } })), /tracker\.provider must be one of "linear", not "jira"/, "the real catalog has no jira");
+  assert.throws(() => parseProfile(text({ tracker: { provider: "jira" } })), /tracker\.provider must be one of "github-issues", "linear", not "jira"/, "the real catalog has no jira");
   assert.equal(parseProfile(text({ exposure: { provider: "local" } })).exposure.provider, "local");
   assert.equal(parseProfile(text({ publish: { provider: "slack" } })).publish.provider, "slack", "slack is the publisher core runs");
 });
 
 test("A11-163: a profile that names a fake, a plugin of another concern or an unknown plugin is refused by the field and the name", () => {
-  assert.throws(() => parseProfile(text({ tracker: { provider: "fake-tracker" } })), /tracker\.provider must be one of "linear", not "fake-tracker"/);
-  assert.throws(() => parseProfile(text({ tracker: { provider: "github" } })), /tracker\.provider must be one of "linear", not "github"/);
+  assert.throws(() => parseProfile(text({ tracker: { provider: "fake-tracker" } })), /tracker\.provider must be one of "github-issues", "linear", not "fake-tracker"/);
+  assert.throws(() => parseProfile(text({ tracker: { provider: "github" } })), /tracker\.provider must be one of "github-issues", "linear", not "github"/);
   assert.throws(() => parseProfile(text({ reviewer: { provider: "codex" } })), /reviewer\.provider must be one of "atomic", "none", not "codex"/);
   assert.throws(() => parseProfile(text({ exposure: { provider: "ngrok" } })), /exposure\.provider must be one of "local", "tailscale", not "ngrok"/);
   assert.throws(() => parseProfile(text({ codeHost: { provider: "gitlab" } })), /codeHost\.provider must be one of "github", not "gitlab"/);
