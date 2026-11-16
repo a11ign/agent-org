@@ -22,6 +22,7 @@ import type { Standoff } from "./standoff-types.ts";
 import type { CapRound, TicketWait } from "./queue-cap.ts";
 import type { CiHold, TicketCi } from "../ci-spend/store.ts";
 import type { Interventions } from "./interventions.ts";
+import type { AutoAnswer } from "./auto-answer-record.ts";
 import type { AfterWriting, QueueAfter } from "./queue-after-writing.ts";
 import type { OutcomeRun } from "../outcomes/outcome-record.ts";
 
@@ -210,6 +211,11 @@ export type Entry = Readonly<{
   waiting?: boolean;
   /** The first line of the dialog a waiting agent sits on, when the pool could read one from its pane. Cleared when the run stops waiting (A11-174). */
   prompt?: string;
+  /**
+   * Set while the run's worker is out of Claude allowance (A11-434): the message it was refused with, when the allowance returns, and when the board first held it. The run reads
+   * Waiting: allowance, and is never ended for it, as crashed, failed or for having no outcome. Dropped when its agent works again.
+   */
+  allowance?: Readonly<{ text: string; until: number; since: number }>;
   /**
    * The Claude Code safety prompt the pool last answered No to on this run (A11-174): the command it asked about, its warning, the subagent that raised it (absent for the main agent, A11-209), when, how many the run has had
    * answered (bounded), and whether the agent has been told yet (herdr refuses a message to an agent that still reads blocked). Dropped when the run ends.
@@ -477,7 +483,10 @@ export type Entry = Readonly<{
   freeRounds?: number;
   /** Set on a finished run the planner marked as waiting on another ticket (A11-343): see {@link TicketWait}. The run reads Waiting, and is dropped from the wait when that ticket's pull request merges. */
   waitingOnTicket?: TicketWait;
+  /** Set when the answerer answered this run's question from what is written down, instead of parking it for a person (A11-438): see {@link AutoAnswer}. The same question is never answered automatically twice while it is set; a round that builds the entry afresh drops it. */
+  autoAnswer?: AutoAnswer;
 }>;
+
 
 /**
  * The board sent a running run the resume prompt (A11-279): when, and why, after a restart or after its agent sat idle since `idleSince`; `refused` is herdr's reason when it would not take the prompt, which the card
@@ -525,7 +534,12 @@ export type Queue = Readonly<{ entries: readonly Entry[]; max: number; paused: b
   /** What each ticket's pushes have cost in CI, by ticket key, as the board last read it (A11-261, `ci-spend/store.ts`). Kept beside the entries for the reason the run log is: a run that is dropped or retried keeps its ticket's total. Unset until something is read. */
   ciSpend?: Readonly<Record<string, TicketCi>>;
   /** How often a person had to step in, by UTC day: the runs that went to Needs you and the fixes a chairman session recorded, for the last 30 days (A11-257, `queue/interventions.ts`). Unset until one is counted. */
-  interventions?: Interventions }>;
+  interventions?: Interventions;
+  /**
+   * The Claude allowance as the board last saw it spent (A11-434): the message a run was refused with, and the reset it names. Until then no run starts, since it would be refused as well; it
+   * lapses at its reset by itself, and a later reset read from another run replaces it. Unset until a run is first refused.
+   */
+  allowance?: Readonly<{ text: string; until: number }> }>;
 
 /**
  * A ticket a new-ticket run created, as the board shows it (A11-135): its key, its address when the tracker has the ticket, and whether Pick's list

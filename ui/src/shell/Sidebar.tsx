@@ -2,8 +2,8 @@ import type { ReactNode } from "react";
 import { connectionLabel } from "../../../src/ticket-mode/board-view.ts";
 import { NotificationCentre } from "../notifications/NotificationCentre.tsx";
 import { TicketSearch } from "../search/TicketSearch.tsx";
-import { Mark, RunsIcon, SettingsIcon, TicketsIcon } from "./icons.tsx";
-import { isSettingsPage, runsHref, settingsHref, ticketsHref, type Page } from "./routes.ts";
+import { LessonsIcon, Mark, OutcomesIcon, RunsIcon, SettingsIcon, TicketsIcon } from "./icons.tsx";
+import { isSettingsPage, lessonsHref, outcomesHref, runsHref, settingsHref, ticketsHref, type Page } from "./routes.ts";
 import { loopLine } from "./loop-line.ts";
 import { pillOf } from "./shell-model.ts";
 import { useShell } from "./ShellProvider.tsx";
@@ -74,7 +74,7 @@ function NavLink({ href, current, icon, label, trailing }: NavLinkProps) {
   );
 }
 
-/** Tickets with its count, and Runs with the number of runs running. Both are blank while their read is loading, and the Runs badge is hidden at 0. */
+/** Tickets with its count, Runs with the number of runs running, Outcomes (A11-430) and Lessons (A11-432). The counts are blank while their read is loading, and the Runs badge is hidden at 0. */
 function MainNav({ page }: Readonly<{ page: Page }>) {
   const { ticketCount, runningRuns } = useShell();
   const running = runningRuns === null || runningRuns === 0 ? null : (
@@ -87,6 +87,8 @@ function MainNav({ page }: Readonly<{ page: Page }>) {
     <nav aria-label="Main" className="sidebar-section main-nav">
       <NavLink href={ticketsHref} current={page === "tickets"} icon={<TicketsIcon />} label="Tickets" trailing={<span className="nav-count">{ticketCount ?? ""}</span>} />
       <NavLink href={runsHref} current={page === "runs" || page === "run"} icon={<RunsIcon />} label="Runs" trailing={running} />
+      <NavLink href={outcomesHref} current={page === "outcomes"} icon={<OutcomesIcon />} label="Outcomes" />
+      <NavLink href={lessonsHref} current={page === "lessons"} icon={<LessonsIcon />} label="Lessons" />
     </nav>
   );
 }

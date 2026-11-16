@@ -3,7 +3,7 @@
 // ONLY THE FIELDS THE SHELL READS ARE FILLED, so the fixtures are cast to the server's types: a field the shell starts to read that is missing here fails its check. Used by the
 // component checks (as the client's `fetch`) and by the page checks (answered through Playwright's `page.route`), so both see the same instance.
 import type { Fetch } from "../src/api/request.ts";
-import type { ConfigView, ConnectionsView, PickView, ProjectView, QueueView, People, Ticket, TicketCheck, TicketsPageView, TicketView, ViewConnection, WritersView } from "../src/api/types.ts";
+import type { ConfigView, ConnectionsView, PickView, ProjectView, QueueView, People, SuggestionView, Ticket, TicketCheck, TicketsPageView, TicketView, ViewConnection, WritersView } from "../src/api/types.ts";
 
 export const HERE: ViewConnection = { name: "here", kind: "local" };
 export const PERSONAL: ViewConnection = { name: "personal", kind: "ssh" };
@@ -54,6 +54,8 @@ export type InstanceAnswers = Readonly<{
   ticketChecks?: Readonly<Record<string, readonly TicketCheck[]>>;
   /** The sentence an instance sends instead of any ticket's checks when it cannot read them (A11-302). */
   ticketChecksUnreadable?: string;
+  /** What `/api/suggestion` answers for the keys asked (A11-435), or the failure it answers with; absent, the route is not there, as on an instance from before it. */
+  suggestion?: (keys: readonly string[]) => SuggestionView | Failure;
 }>;
 
 export type Stand = Readonly<{
@@ -112,6 +114,9 @@ function pageAnswer(answers: InstanceAnswers, query: URLSearchParams): { status:
 /** What the search answers: its matches, or the tracker's refusal (A11-387). */
 const searchAnswer = (found: readonly TicketView[] | Failure): { status: number; body: string } => (isFailure(found) ? failed(found) : json(found));
 
+/** What the suggestion route answers: the suggestion, or its refusal (A11-435). */
+const suggestionAnswer = (answer: SuggestionView | Failure): { status: number; body: string } => (isFailure(answer) ? failed(answer) : json(answer));
+
 /** The answer to one request (a path `/api/...` or `/c/<name>/api/...`, and its method and body), as a status and a JSON body, or null for a path no instance has. */
 export function answerFor(stand: Stand, path: string, request: Readonly<{ method: string; body?: unknown }> = { method: "GET" }): { status: number; body: string } | null {
   if (path === "/api/connections") {
@@ -142,6 +147,8 @@ export function answerFor(stand: Stand, path: string, request: Readonly<{ method
       return answers.pick === undefined ? null : json(answers.pick);
     case "/api/writer":
       return answers.writer === undefined ? null : json(answers.writer);
+    case "/api/suggestion":
+      return answers.suggestion === undefined ? null : suggestionAnswer(answers.suggestion((new URLSearchParams(path.split("?")[1] ?? "").get("keys") ?? "").split(",")));
     default: {
       const run = route === undefined ? null : /^\/api\/queue\/([^/]+)$/.exec(route);
       return run === null ? null : runAnswer(answers, decodeURIComponent(run[1]));

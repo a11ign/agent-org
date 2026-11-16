@@ -19,6 +19,10 @@ import { countText, planPatternOf, queueOptionsOf, type QueueOptions } from "./t
 import { useFolding } from "./use-folding.ts";
 import { useQueueNow } from "./use-queue-now.ts";
 import { useBatch, useSelection } from "./use-queue-state.ts";
+import { useSuggestion } from "./use-suggestion.ts";
+import { useReadiness } from "./use-readiness.ts";
+import { ImproveDialog, type Improving } from "./ImproveDialog.tsx";
+import { isParentTicket } from "../../../src/ticket-mode/board-view/view-types-and-filters.ts";
 import { useTicketActions } from "./use-ticket-actions.ts";
 import { useFilters, useList } from "./use-tickets-page.ts";
 import { useWorkspaceSearch } from "./use-workspace-search.ts";
@@ -36,20 +40,31 @@ function usePage(shell: ShellValue) {
   // A match the search found outside the list can be picked and queued as a listed ticket can (A11-378).
   const selected = mergedTickets(shell.allTickets, search.results).filter(({ key }) => selection.selected.has(key));
   const options = shell.config === null ? NO_OPTIONS : queueOptionsOf(shell.config, selected, batch);
+  const suggestion = useSuggestion(shell.client, [...selection.selected]);
   const { queue, learn } = useQueueNow();
   const actions = useTicketActions({ selection, batch, options, learn });
   // A ticket opened from the "Search tickets" palette arrives here ticked, with the banner that says so (A11-387).
   const fromSearch = useFromSearch(shell, selection, batch);
-  return { filters, list, search, folding, selection, batch, options, actions, queue, fromSearch };
+  // Each listed ticket's readiness score (A11-443), asked only while tickets.readiness is on: a parent is not scored, since it is never queued itself.
+  const scored = shell.config?.readiness === true ? shell.projectTickets.filter((ticket) => !isParentTicket(ticket)).map(({ key }) => key) : [];
+  const readiness = useReadiness(shell.client, scored);
+  const [improving, setImproving] = useState<Improving | null>(null);
+  return { filters, list, search, folding, selection, batch, options, suggestion, actions, queue, fromSearch, readiness, improving, setImproving };
 }
 
 type Page = ReturnType<typeof usePage>;
 
+/** Why Grill and Improve with the writer cannot start on a machine with no ticket writer, in `ui.html`'s words. */
+const NO_WRITER = "this machine names no tickets.writer, so it writes no tickets: name one in the host file";
+
 /** Why Grill cannot start on this machine, in `ui.html`'s words, or null when it can. */
 function grillReasonOf(shell: ShellValue): string | null {
-  if (shell.config?.writer !== true) return "this machine names no tickets.writer, so it writes no tickets: name one in the host file";
+  if (shell.config?.writer !== true) return NO_WRITER;
   return shell.config.writerGrill ? null : "Grill needs a terminal: name tickets.terminal in the host file";
 }
+
+/** Why "Improve with the writer" cannot open on this machine, or null when it can: it opens the New ticket dialog, which needs a ticket writer. */
+const improveReasonOf = (shell: ShellValue): string | null => (shell.config?.writer === true ? null : NO_WRITER);
 
 /** What every row needs of the page: the listed ones and the search's matches outside the list alike. */
 function contextOf(page: Page, shell: ShellValue): SectionsContext {
@@ -61,6 +76,7 @@ function contextOf(page: Page, shell: ShellValue): SectionsContext {
     row: {
       queue: page.queue, selected: selection.selected, openParents: folding.openParents, showsOwner: list.showsOwner, grillReason: grillReasonOf(shell),
       plan: planPatternOf(shell.config), planUniverse: [...shell.allTickets, ...shell.contextParents],
+      readiness: page.readiness, improveReason: improveReasonOf(shell), improve: (ticket, view) => page.setImproving({ ticket, view }),
       pick: selection.pick, unpick: selection.unpick, toggleParent: folding.toggleParent, queueChildren: actions.queueChildren, grill: actions.grill, paused: shell.unreachable !== null, held,
     },
   };
@@ -68,7 +84,7 @@ function contextOf(page: Page, shell: ShellValue): SectionsContext {
 
 /** The sections, the search's matches outside them, and the queue bar while tickets are selected. */
 function Listing({ page, shell }: Readonly<{ page: Page; shell: ShellValue }>) {
-  const { list, selection, actions, batch, options } = page;
+  const { list, selection, actions, batch, options, suggestion } = page;
   const held = shell.tickets.cached || shell.queue.cached;
   const context = contextOf(page, shell);
   return (
@@ -76,7 +92,7 @@ function Listing({ page, shell }: Readonly<{ page: Page; shell: ShellValue }>) {
       <Sections sections={list.sections} context={context} />
       <SearchResults search={page.search} listed={shell.projectTickets} context={context} />
       {selection.selected.size > 0 && shell.config !== null ? (
-        <QueueBar config={shell.config} count={selection.selected.size} options={options} batch={batch} busy={actions.busy || held} paused={shell.unreachable !== null} onClear={() => { selection.clear(); batch.reset(); }} onQueue={actions.queueSelected} />
+        <QueueBar config={shell.config} count={selection.selected.size} options={options} batch={batch} busy={actions.busy || held} paused={shell.unreachable !== null} suggestion={suggestion} onClear={() => { selection.clear(); batch.reset(); }} onQueue={actions.queueSelected} />
       ) : null}
     </>
   );
@@ -136,6 +152,7 @@ function TicketsContent() {
       <ScopeChips />
       {/* Outside the unreachable frame, which swaps its element when the connection drops or returns: a request held in what it wraps would be lost with it. */}
       {writing && config !== null ? <NewTicket config={config} paused={unreachable === null ? null : (connection?.name ?? "")} open={newTicketOpen} onClose={() => setNewTicketOpen(false)} /> : null}
+      {writing && config !== null && page.improving !== null ? <ImproveDialog improving={page.improving} config={config} onClose={() => page.setImproving(null)} /> : null}
       <TicketsUnreachable>
         <FailureBanner refusal={page.actions.refusal} clearRefusal={page.actions.clearRefusal} />
         {body}

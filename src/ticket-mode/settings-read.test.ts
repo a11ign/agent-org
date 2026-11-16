@@ -102,3 +102,28 @@ test("a plugin with no contract has no rows", async () => {
   const view = await viewOfPlugin(tmpDir("settings-read-no-contract-"), undefined);
   assert.deepEqual(view.contract, [], "a plugin with no contract declares none");
 });
+
+test("A11-447: a Linear host's Settings page draws the GitHub Issues tracker's own rows as not in use, and Linear's key and the shared rows as in use; a GitHub Issues host the other way round", async () => {
+  const dir = tmpDir("settings-read-two-trackers-");
+  const path = join(dir, "host.json");
+  writeFileSync(path, JSON.stringify({ clones: { r: "/r" }, stateDir: dir, tickets: {} }));
+  const inUse = (view: View) => Object.fromEntries(rowsIn(view).filter((row) => /^tickets\.providers\.tracker\.(repo|token|key|workingState)$/.test(row.key)).map((row) => [row.key.split(".").pop(), row.inUse]));
+  assert.deepEqual(inUse(await readSettingsView(options(dir, path))), { repo: false, token: false, key: true, workingState: true }, "the default tracker, Linear: an edit of repo or token would be refused");
+  const issues = { ...options(dir, path), settings: parseTicketSettings({ clones: { r: "/r" }, stateDir: dir, tickets: { providers: { tracker: { provider: "github-issues", repo: "acme/tracker" } } } }) };
+  assert.deepEqual(inUse(await readSettingsView(issues)), { repo: true, token: true, key: false, workingState: true });
+});
+
+test("A11-447: a GitHub Issues host that still holds Linear's tickets.linearKey draws it as not in use, and sends no one to a doctor --fix that has nothing to move", async () => {
+  const dir = tmpDir("settings-read-stale-linear-key-");
+  const path = join(dir, "host.json");
+  const host = { clones: { r: "/r" }, stateDir: dir, tickets: { linearKey: { path: "/k/linear.key" }, providers: { tracker: { provider: "github-issues", repo: "acme/tracker" } } } };
+  writeFileSync(path, JSON.stringify(host));
+  const view = await readSettingsView({ ...options(dir, path), settings: parseTicketSettings(host) });
+  const row = rowsIn(view).find((candidate) => candidate.key === "tickets.linearKey");
+  assert.equal(row?.inUse, false, "Linear's old key is not read for GitHub Issues");
+  assert.equal(row?.alias, null, "no Alias of tickets.providers.tracker.key: run agent-org doctor --fix");
+  const linear = { clones: { r: "/r" }, stateDir: dir, tickets: { linearKey: { path: "/k/linear.key" } } };
+  writeFileSync(path, JSON.stringify(linear));
+  const kept = rowsIn(await readSettingsView({ ...options(dir, path), settings: parseTicketSettings(linear) })).find((candidate) => candidate.key === "tickets.linearKey");
+  assert.equal(kept?.alias, "Alias of tickets.providers.tracker.key: run agent-org doctor --fix", "a Linear host is still told to move it");
+});

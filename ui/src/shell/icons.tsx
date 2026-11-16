@@ -26,6 +26,24 @@ export function RunsIcon() {
   );
 }
 
+/** Outcomes (A11-430): three bars, the figures runs add up to. */
+export function OutcomesIcon() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+      <path d="M3.5 13V9M8 13V3.5M12.5 13V6.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+/** Lessons (A11-432): an open book, what the runs taught. */
+export function LessonsIcon() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+      <path d="M8 4.5C6.5 3.4 4.6 3 2.5 3v9c2.1 0 4 .4 5.5 1.5M8 4.5c1.5-1.1 3.4-1.5 5.5-1.5v9c-2.1 0-4 .4-5.5 1.5M8 4.5v9" stroke="currentColor" strokeWidth="1.5" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
 export function SettingsIcon() {
   return (
     <svg width="15" height="15" viewBox="0 0 24 24" fill="none" aria-hidden="true">

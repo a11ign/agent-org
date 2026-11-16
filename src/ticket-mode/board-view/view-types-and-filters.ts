@@ -31,6 +31,8 @@ export type ViewEntry = Readonly<{
   ticket: Readonly<{ key: string; url?: string; branch?: string }>; phase: string; outcome?: Readonly<{ kind: string; prs?: readonly PullRef[]; edit?: ViewEdit; reason?: string; where?: string; unreadable?: boolean }>; waiting?: boolean;
   /** What the first line of the dialog a waiting run sits on says, when the pool could read one (A11-174). */
   prompt?: string;
+  /** Set while the run's worker is out of Claude allowance (A11-434): the message, when the allowance returns (ms) and when the run was first held (ms). */
+  allowance?: Readonly<{ text: string; until: number; since: number }>;
   /** A Claude Code safety prompt the pool answered No to on this run, the command it asked about (A11-174) and the subagent that raised it, absent for the main agent (A11-209). */
   declined?: Readonly<{ command: string; agent?: string }>;
   trackerState?: string; pullStates?: Readonly<Record<string, string>>; queuedAt?: number; startedAt?: number; finishedAt?: number; workspace?: string;
@@ -183,7 +185,9 @@ export type AfterMergeLine = Readonly<{ line: string; owner: string | null }>;
  * `notMerging` is the reason the watch gave once it had been so for `NOT_MERGING_MINUTES`, which is what makes the card say so; it stays while the reading does. `firstFlow` marks an approved head whose pull request adds the repository's first merge flow, which nothing can merge but a person.
  */
 export type PullHead = Readonly<{
-  head: string; approved: boolean; review?: "approved" | "none" | "changes-requested"; red?: readonly string[]; pending?: readonly string[]; mergeable?: boolean; conflict?: Readonly<{ base: string | null }>; blockedSince?: number;
+  head: string; approved: boolean; review?: "approved" | "none" | "changes-requested";
+  /** The review comment the code host named at this head (`tickets.reviewComments`, code host contract 4.2): who posted it and when. The card names it where no review is at the head; IT IS NEVER AN APPROVAL. */
+  commentReview?: Readonly<{ author: string; at: number }>; red?: readonly string[]; pending?: readonly string[]; mergeable?: boolean; conflict?: Readonly<{ base: string | null }>; blockedSince?: number;
   unmergedSince?: number; notMerging?: string; firstFlow?: true;
 }>;
 

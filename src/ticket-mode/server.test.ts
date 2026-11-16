@@ -13,7 +13,7 @@ import { dismiss as dismissRun, remove as removeQueued, retry as retryQueued } f
 import { retryRefusal } from "./queue/queue-retry-refusal.ts";
 import { refusal } from "./local-http.ts";
 import { logEvent } from "./queue/run-log.ts";
-import { checkGhWrapperAtStart, STOPPED_BEFORE_QUEUEING, createBoard, runNodeProgram, dependencyUpdatesOf, FEEDBACK_MS, holdsKey, idleBlockersOf, REVIEW_START_MS, startFeedbackSweeps, type BoardDeps } from "./server.ts";
+import { checkGhWrapperAtStart, STOPPED_BEFORE_QUEUEING, createBoard, runNodeProgram, dependencyUpdatesOf, FEEDBACK_MS, holdsKey, idleBlockersOf, REVIEW_START_MS, retroOf, startFeedbackSweeps, type BoardDeps } from "./server.ts";
 import type { Outcome } from "./queue/queue-entries-and-outcomes.ts";
 import { DEPENDENCY_PULL_AUTHOR } from "../plugins/contracts/code-host.ts";
 import type { Ticket, TicketSource } from "./source.ts";
@@ -398,7 +398,7 @@ test("A11-257: /api/interventions answers the last 7 days and today's total, fro
   assert.equal(fixed, 200);
   assert.equal(after.today, 1, "the answer to a record is the view after it");
   const [, read] = await b.api("GET", "/api/interventions", {}) as [number, any];
-  assert.deepEqual(read.days.slice(-2), [{ date: "2026-10-25", needsYou: 1, fixes: 0, total: 1, standoffs: 0 }, { date: "2026-10-26", needsYou: 0, fixes: 1, total: 1, standoffs: 0 }]);
+  assert.deepEqual(read.days.slice(-2), [{ date: "2026-10-25", needsYou: 1, fixes: 0, total: 1, standoffs: 0, autoAnswers: 0, personAnswers: 0 }, { date: "2026-10-26", needsYou: 0, fixes: 1, total: 1, standoffs: 0, autoAnswers: 0, personAnswers: 0 }]);
   assert.equal("interventions" in ((await b.api("GET", "/api/queue", {}))[1] as object), false, "the queue's own answer does not carry the tally");
 });
 
@@ -744,19 +744,20 @@ function epicBoard(blockers: TicketSource["blockers"] | null) {
   return { ...board(4747, {}, { source }), reads };
 }
 
-test("A11-76: the queue refuses a parent with a 400 that says why, over HTTP, and queues the same ticket once its sub-issues are done", async () => {
+test("A11-429: a parent sent to /api/queue is queued as its open sub-issues, never itself, beside the ordinary tickets with it, and an epic of epics down to its leaves", async () => {
   const b = epicBoard(null);
   await b.api("GET", "/api/tickets", {});
-  await assert.rejects(b.api("POST", "/api/queue", { keys: ["A11-25", "A11-24"], model: "opus", effort: "high" }),
-    /A11-24 has 3 open sub-issues \(A11-27, A11-25, A11-26\): a parent is not queued.*Queue its children instead/);
-  assert.deepEqual(b.store.get().entries, [], "nothing of the request is queued, not even the ordinary ticket beside the parent");
-  const [, queue] = await b.api("POST", "/api/queue", { keys: ["A11-30"], model: "opus", effort: "high" }) as [number, any];
-  assert.deepEqual(queue.entries.map((e: any) => e.ticket.key), ["A11-30"], "an epic with no sub-issue open is an ordinary ticket");
-  const source: TicketSource = createFakeTracker([{ ...ticket("A11-24"), children: ["A11-25"] }]);
+  const [, queue] = await b.api("POST", "/api/queue", { keys: ["A11-30", "A11-24", "A11-25"], model: "opus", effort: "high" }) as [number, any];
+  assert.deepEqual(queue.entries.map((e: any) => e.ticket.key), ["A11-30", "A11-25", "A11-26", "A11-27"],
+    "the ordinary ticket, then A11-24's sub-issues in identifier order; A11-25, named twice, is queued once, and A11-24 is not queued");
+  const nested = epicBoard(null);
+  const [, deep] = await nested.api("POST", "/api/queue", { keys: ["A11-40"], model: "opus", effort: "high" }) as [number, any];
+  assert.deepEqual(deep.entries.map((e: any) => e.ticket.key), ["A11-25", "A11-26", "A11-27", "A11-41"], "A11-40's sub-issue A11-24 is itself a parent, so its own sub-issues are queued");
+  const source: TicketSource = createFakeTracker([{ ...ticket("A11-24"), children: ["A11-25"] }, ticket("A11-25")]);
   await overHttp(async (base) => {
-    const refused = await fetch(`${base}/api/queue`, { method: "POST", headers: keyed, body: JSON.stringify({ keys: ["A11-24"], model: "opus", effort: "high" }) });
-    assert.equal(refused.status, 400);
-    assert.match((await refused.json() as { error: string }).error, /^A11-24 has 1 open sub-issue \(A11-25\): a parent is not queued/);
+    const answer = await fetch(`${base}/api/queue`, { method: "POST", headers: keyed, body: JSON.stringify({ keys: ["A11-24"], model: "opus", effort: "high" }) });
+    assert.equal(answer.status, 200, "not the 400 that queued nothing (A11-429)");
+    assert.deepEqual(((await answer.json()) as any).entries.map((e: any) => e.ticket.key), ["A11-25"]);
   }, { source });
 });
 
@@ -988,6 +989,25 @@ test("A11-199: a placement that is not auto or manual is refused, and so is an a
   assert.deepEqual(b.ticks, [], "and wakes nothing");
 });
 
+test("A11-443: POST /api/readiness scores the page's listed tickets through the board, once per description, and /api/config says whether the page asks; off, the model is never asked", async () => {
+  const asked: string[] = [];
+  const askReadiness = async (prompt: string) => { asked.push(prompt); return { status: 0, stdout: JSON.stringify({ result: '{"score": 15, "reasons": ["No acceptance criteria."]}' }), stderr: "" }; };
+  const vague = () => createFakeTracker([{ ...ticket("NBF-1"), description: "Make the board nicer." }]);
+  const on = board(4747, { readiness: true }, { askReadiness }, vague());
+  await on.api("GET", "/api/tickets", {});
+  const [, config] = await on.api("GET", "/api/config", {}) as [number, any];
+  assert.equal(config.readiness, true);
+  assert.deepEqual(await on.api("POST", "/api/readiness", { keys: ["NBF-1"] }), [200, { on: true, scores: { "NBF-1": { state: "pending" } } }]);
+  await on.readiness.idle();
+  assert.deepEqual(await on.api("POST", "/api/readiness", { keys: ["NBF-1"] }), [200, { on: true, scores: { "NBF-1": { state: "scored", score: 15, reasons: ["No acceptance criteria."], low: true } } }]);
+  assert.equal(asked.length, 1);
+  const off = board(4747, {}, { askReadiness }, vague());
+  await off.api("GET", "/api/tickets", {});
+  assert.equal(((await off.api("GET", "/api/config", {})) as [number, any])[1].readiness, false);
+  assert.deepEqual(await off.api("POST", "/api/readiness", { keys: ["NBF-1"] }), [200, { on: false, scores: {} }]);
+  assert.equal(asked.length, 1);
+});
+
 test("grill is refused without a terminal, and a machine with no writer writes no tickets", async () => {
   const tracker = creating();
   const plain = board(4747, { writer: WRITER.writer }, {}, tracker);
@@ -1086,15 +1106,15 @@ test("A11-420: a request stopped while its tickets are read queues none: the sto
   assert.deepEqual(await b.queueWritten(["NBF-1", "NBF-2"], { model: "sonnet", effort: "high", plan: false }, () => true), { queued: 2 }, "POSITIVE CONTROL: a run still running queues them");
 });
 
-test("A11-420: a run's queueing is refused with the queue's own sentence when another instance holds a ticket or one is a parent, and nothing is queued", async () => {
+test("A11-420: a run's queueing is refused with the queue's own sentence when another instance holds a ticket, and nothing is queued; a parent it filed is queued as its sub-issues", async () => {
   const taken = board(4747, {}, {}, trackerClaimedBy(["NBF-1"], [inProgress("NBF-1"), ticket("NBF-2")]));
   assert.deepEqual(await taken.queueWritten(["NBF-2", "NBF-1"], { model: "sonnet", effort: "high", plan: true }, () => true),
     { refused: "NBF-1 is In Progress in the tracker and desk.99999999 claimed it, so another instance holds it" }, "refuseTaken's sentence, as /api/queue answers it");
   assert.deepEqual(taken.store.get().entries, [], "not even the ticket that is free");
-  const parent = board(4747, {}, {}, createFakeTracker([{ ...ticket("A11-24"), children: ["A11-25"] }, ticket("A11-30")]));
-  const refused = await parent.queueWritten(["A11-30", "A11-24"], { model: "sonnet", effort: "high", plan: false }, () => true);
-  assert.match("refused" in refused ? refused.refused : "", /^A11-24 has 1 open sub-issue \(A11-25\): a parent is not queued/, "enqueue's refusal, as its sentence");
-  assert.deepEqual(parent.store.get().entries, []);
+  const parent = board(4747, {}, {}, createFakeTracker([{ ...ticket("A11-24"), children: ["A11-25"] }, ticket("A11-25"), ticket("A11-30")]));
+  const queued = await parent.queueWritten(["A11-24", "A11-25", "A11-30"], { model: "sonnet", effort: "high", plan: false }, () => true);
+  assert.deepEqual(queued, { queued: 2 }, "an epic a writer run filed, with its sub-issue, queues the sub-issue once and not the epic (A11-429)");
+  assert.deepEqual(parent.store.get().entries.map((e) => e.ticket.key), ["A11-25", "A11-30"]);
   await assert.rejects(parent.queueWritten(["NBF-404"], { model: "sonnet", effort: "high", plan: false }, () => true), /no ticket NBF-404/, "a ticket that cannot be read throws, as the route's read does");
 });
 
@@ -1496,7 +1516,7 @@ test("A11-163: GET /api/plugins answers every concern in order with each plugin'
   assert.equal(status, 200);
   assert.deepEqual(view.concerns.map(({ concern }) => concern), ["tracker", "codeHost", "publisher", "reviewer", "exposure", "messaging"]);
   assert.deepEqual(["linear", "github", "tailscale", "local", "slack"].map((name) => { const e = entryOf(view, name); return [name, e.version, e.contract, e.state]; }),
-    [["linear", "v1.2.3", "1.9", "enabled"], ["github", "v1.2.3", "4.1", "enabled"], ["tailscale", "v1.2.3", "1.2", "enabled"], ["local", "v1.2.3", "1.1", "not installed"], ["slack", "v1.2.3", "1.1", "not installed"]]);
+    [["linear", "v1.2.3", "1.9", "enabled"], ["github", "v1.2.3", "4.2", "enabled"], ["tailscale", "v1.2.3", "1.2", "enabled"], ["local", "v1.2.3", "1.1", "not installed"], ["slack", "v1.2.3", "1.1", "not installed"]]);
   assert.equal(view.concerns.find(({ concern }) => concern === "publisher")?.empty?.text, "None");
   assert.deepEqual(Object.keys(view.bases).sort(), ["host.json"], "this machine declares no project, so only the host file has a base");
   assert.equal(view.note, null);
@@ -1712,6 +1732,20 @@ test("A11-347: the idle-blocker sweep is scheduled on the feedback cadence besid
   const said = await saidWhileRunning(scheduled[5]!.run);
   assert.deepEqual(calls, ["idleBlockers"]);
   assert.deepEqual(said, ["ticket:serve: the tickets that hold queued runs back with no run could not be completed or queued: the tracker is down\n"]);
+});
+
+test("A11-432: the daily retro is scheduled on the feedback cadence beside the others, and a failure of it is said when it settles, without stopping the rest", async () => {
+  const scheduled = scheduledWith({ idleBlockers: () => {}, retro: () => Promise.reject(new Error("the outcome log is not JSON")) });
+  assert.deepEqual(scheduled.map(({ ms }) => ms), Array(7).fill(FEEDBACK_MS), "on the feedback cadence, a sweep of its own");
+  const said = await saidWhileRunning(scheduled[6]!.run);
+  assert.deepEqual(said, ["ticket:serve: the daily retro could not write the lessons: the outcome log is not JSON\n"]);
+});
+
+test("A11-432: the board's retro sweep does nothing while tickets.lessons is off: no model is asked and no lessons are written", async () => {
+  const b = board();
+  await retroOf(b, { settings: b.settings, now: () => 7 } as BoardDeps)();
+  assert.equal(existsSync(join(b.settings.stateDir, "tickets", "lessons")), false);
+  assert.equal(existsSync(join(b.settings.stateDir, "tickets", "lessons-retro.json")), false);
 });
 
 test("A11-347: the board's idle-blocker sweep queues a ticket this instance claimed, on the saved choice, and wakes the pool; the same ticket claimed by nobody is left", async () => {

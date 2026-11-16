@@ -21,6 +21,7 @@ import { ticketDir, ticketFolder } from "./ticket-paths.ts";
 import { DEFAULT_KEYWORDS, type Ticket, type TrackerWriting } from "./source.ts";
 import { batchPlanBriefText, type BatchTicket, BRIEF_FILE, briefText, CONNECTORS_FILE, DENY_FILE, FINDINGS_GIVEN_FILE, FINDINGS_RETRIED_FILE, OUTCOME_FILE, type ParentTicket, PLAN_DIR, planBriefText, PLANNING_DENY, PR_REVIEW_FILE, PR_REVIEW_LOG_FILE, PROTECTED_FILE, protectedPaths, OPENED_FILE, PUBLISH_FILE, READY_FILE, REVIEW_FILE, reviewBriefText, STOP_COUNT_FILE, TALK_FILE, workerSettings, WORKING_STOP_FILE } from "./worker-files.ts";
 import { join } from "node:path";
+import { LOCAL_REVIEW_FILE } from "./local-review-record.ts";
 import { unclonedNames } from "./pool-org-repos.ts";
 import { isPlanning, runChoice, runPlace, update } from "./pool-state.ts";
 import { heldClaims } from "./board-view/overlap-hold.ts";
@@ -42,6 +43,7 @@ import { SENT_BACK_FILE } from "./pool-plan-send-back.ts";
 import { recordBriefed, recordFindingsGiven } from "./queue/queue-ticket-text.ts";
 import { DECISIONS_ROUND_FILE } from "./decisions-files.ts";
 import { writeDecisionsMark } from "./pool-decisions-change.ts";
+import { briefLessons, type RepoLessons } from "./retro/lessons-brief.ts";
 
 const SETTINGS_FILE = ".claude/settings.local.json";
 
@@ -143,7 +145,7 @@ export async function prepare(ctx: PoolContext, entry: Entry): Promise<{ folder:
     const replan = entry.previousPlan === undefined ? undefined : { files: entry.previousPlan, ...(entry.ticketChange ? { change: entry.ticketChange } : {}), findings: findings.length > 0 };
     const claims = heldClaims(store.get().entries, [entry]);
     writeFileSync(join(dir, BRIEF_FILE), planBriefText({ ticket, ticketDir: dir, planDir, attachments, parent, clones: settings.clones, uncloned: await unclonedNames(ctx), run: settings.planner.run,
-      notes, connectors, read, comments: await readTicketComments(source, ticket.key), blockers: entry.blockers, findings, closed, claims, ...(replan ? { replan } : {}) }));
+      notes, connectors, read, comments: await readTicketComments(source, ticket.key), blockers: entry.blockers, findings, closed, claims, ...(replan ? { replan } : {}), lessons: lessonsFor(ctx, [repoOf(entry)]) }));
     writeClaimsGiven(dir, claims);
     const urls = findings.map(({ url }) => url);
     writeFindingsGiven(dir, [{ key: ticket.key, planDir, urls }]);
@@ -151,15 +153,27 @@ export async function prepare(ctx: PoolContext, entry: Entry): Promise<{ folder:
   } else {
     const worktreeCommand = `${hook.node} ${hook.bin} ticket:worktree`;
     const prOpenCommand = `${hook.node} ${hook.bin} pr:open`;
+    // The review of the worker's local diff before its pull request opens (A11-440): asked for only on a machine that turns it on.
+    const localReviewCommand = settings.localReview === true ? { localReviewCommand: `${hook.node} ${hook.bin} ticket:review-local` } : {};
     writeFileSync(join(dir, BRIEF_FILE), briefText({ ticket, folder, ticketDir: dir, attachments, parent, blockers: entry.blockers,
       stackedOn: stackedOn(entry, store.get().entries), ...(entry.overlapStack === undefined ? {} : { overlapStack: entry.overlapStack }), steps: entry.steps, clones: settings.clones, worktreeCommand, prOpenCommand, repo: repoOf(entry),
       notes, connectors, planned: entry.planned === true, drafts: settings.drafts, designTools: settings.designTools, capture: settings.capture, prReview: settings.prReview, keywords: source.keywords ?? DEFAULT_KEYWORDS,
-      read, comments: await readTicketComments(source, ticket.key), findings, closed, numberedSteps: startedSteps(store.get().entries, entry), opened: await openedPullsOf(ctx, entry), held: entry.ciHold?.reason ?? entry.ciTold, lost: lostBeforeThisStart(entry) }));
+      read, comments: await readTicketComments(source, ticket.key), findings, closed, numberedSteps: startedSteps(store.get().entries, entry), opened: await openedPullsOf(ctx, entry), held: entry.ciHold?.reason ?? entry.ciTold, lost: lostBeforeThisStart(entry), ...localReviewCommand,
+      lessons: lessonsFor(ctx, [repoOf(entry), ...entry.repos]) }));
   }
   update(ctx, (queue) => recordBriefed(queue, [ticket.key], read));
   await writeRunFiles(ctx, entry, folder, dir);
   recordPluginCopies(ctx, [entry.ticket.key], folder);
   return { folder, dir, ...(resume ? { resume } : {}) };
+}
+
+/**
+ * The lessons a worker or planner brief carries for `repos` (A11-432): each one's lessons file, read now so a person's edit or delete on the board is in it, and none while `tickets.lessons` is off.
+ * A file that cannot be read is said on the board's log and left out.
+ */
+function lessonsFor({ settings }: PoolContext, repos: readonly (string | null)[]): RepoLessons[] {
+  if (settings.lessons !== true) return [];
+  return briefLessons({ stateDir: settings.stateDir, repos, log: (line) => process.stderr.write(`ticket:serve: ${line}\n`) });
 }
 
 /** Whether the run being prepared recorded numbered plan steps as it started (A11-219): the entry the start was given is the queued one, so the queue's is read. PURE. */
@@ -296,6 +310,10 @@ export async function writeRunFiles(ctx: PoolContext, entry: Entry, folder: stri
   // A ticket run on a machine with `tickets.drafts: false` may open its pull request ready, and mark its own ready, in a round that answers feedback too (A11-358): A11-254's worker opened toolchain#60 in one, and the hook made it a draft. No planning run, and no machine that keeps drafts, may.
   if (!settings.drafts && opensPullRequests(ctx, entry)) writeFileSync(join(dir, READY_FILE), "\n");
   else rmSync(join(dir, READY_FILE), { force: true });
+  // `pr:open` refuses a create until the reviewer ran on the local diff at the current commit, on a machine that turns that review on (A11-440). Only a worker's first start is briefed to run it
+  // (step 5b of `briefText`), so a feedback round, whose brief says nothing of it, is not held to it.
+  if (settings.localReview === true && entry.review === undefined && opensPullRequests(ctx, entry)) writeFileSync(join(dir, LOCAL_REVIEW_FILE), "\n");
+  else rmSync(join(dir, LOCAL_REVIEW_FILE), { force: true });
   // The record of the pull requests the run opened is the run's own: what the entry holds, which a round carries, and not an earlier run's (a plan's next step starts with none) (A11-358).
   if (entry.opened === undefined || entry.opened.length === 0) rmSync(join(dir, OPENED_FILE), { force: true });
   else writeFileSync(join(dir, OPENED_FILE), entry.opened.map((pull) => `${JSON.stringify(pull)}\n`).join(""));
@@ -327,7 +345,7 @@ export async function prepareBatch(ctx: PoolContext, members: readonly Entry[]):
   const planDir = emptyPlanDir(dir);
   const claims = heldClaims(store.get().entries, members);
   writeFileSync(join(dir, BRIEF_FILE), batchPlanBriefText({ tickets, runDir: dir, planDir, clones: settings.clones, uncloned: await unclonedNames(ctx), run: settings.planner.run,
-    notes: notesFile(settings.brief, "tickets.brief"), connectors: settings.connectors, claims }));
+    notes: notesFile(settings.brief, "tickets.brief"), connectors: settings.connectors, claims, lessons: lessonsFor(ctx, members.map(repoOf)) }));
   writeClaimsGiven(dir, claims);
   writeFindingsGiven(dir, tickets.map(({ ticket, findings = [] }) => ({ key: ticket.key, planDir: join(planDir, ticket.key), urls: findings.map(({ url }) => url) })));
   for (const { ticket, read, findings } of tickets) {

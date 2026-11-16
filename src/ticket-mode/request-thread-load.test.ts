@@ -8,9 +8,10 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { isRunning } from "../lib/stop-child.ts";
 import { tmpDir } from "../lib/tmp-fixture.ts";
 import { BOARD_THREAD_ROUTES, type Health, HOLD_LOG, ROUTES, startThrowawayInstance, timedRead, waitFor } from "../../scripts/loop-load.ts";
 import type { RequestHealthView } from "./health-route.ts";
@@ -83,4 +84,38 @@ test("A11-282: while the tick's herdr listing is held, the board thread goes on:
   } finally {
     await instance.stop();
   }
+});
+
+/**
+ * Puts in place a stand-in `systemctl` that, on the tick's next call, starts in the background a writer that waits for `stopped` and then writes into the state folder, and records
+ * the writer's pid. Answers the pid file.
+ */
+function placeLateWriter(dir: string): string {
+  const [script, pidFile, stopped, late] = [join(dir, "late-writer.sh"), join(dir, "late-writer.pid"), join(dir, "stopped"), join(dir, "state", "late-writer", "wrote")];
+  // The writer polls for at most a minute, so a run that fails here leaves it behind for no longer than that. It holds none of the stand-in's output, so the tick's call returns at once.
+  writeFileSync(script, `i=0\nwhile [ ! -e '${stopped}' ] && [ "$i" -lt 1200 ]; do sleep 0.05; i=$((i + 1)); done\nmkdir -p '${dirname(late)}' && echo late > '${late}'\n`);
+  // Renamed into place, not written over: the tick may be running the stand-in it replaces.
+  const standIn = join(dir, "systemctl.next");
+  writeFileSync(standIn, `#!/bin/sh\n[ -e '${pidFile}' ] || { sh '${script}' < /dev/null > /dev/null 2>&1 & echo $! > '${pidFile}.next' && mv '${pidFile}.next' '${pidFile}'; }\nexit 0\n`, { mode: 0o755 });
+  renameSync(standIn, join(dir, "stub", "systemctl"));
+  return pidFile;
+}
+
+
+test("A11-449: once stop() resolves, no process the instance started is left to write under its directory", { timeout: 240_000 }, async () => {
+  const instance = await startThrowawayInstance(tmpDir("request-thread-stop-"));
+  let writer = 0;
+  try {
+    // A program the instance runs (the tick asks the service manager every second) starts a process of its own that writes to the state folder: the stand-ins and the
+    // `ticket:serve` behind `bin.ts` are such processes, and `stop()` once waited for `bin.ts` alone.
+    const pidFile = placeLateWriter(instance.dir);
+    await waitFor("the instance starting the late writer", () => existsSync(pidFile));
+    writer = Number(readFileSync(pidFile, "utf8"));
+    assert.ok(isRunning(writer), "the late writer runs while the instance does");
+  } finally {
+    await instance.stop();
+  }
+  // By order, not by a clock: the writer writes only once this file exists, so a writer still alive now would write after stop() resolved, into a directory the test's cleanup removes.
+  writeFileSync(join(instance.dir, "stopped"), "");
+  assert.equal(isRunning(writer), false, `the instance's process ${writer} outlived stop(), and writes to ${join(instance.dir, "state")} after it`);
 });

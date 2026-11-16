@@ -41,6 +41,8 @@ import { decisionsChange, decisionsChangedSection } from "./decisions-change.ts"
 import { diffText, type Finding, findingsText, lostText, type OpenedPull, openedText, readLine, type Replan, replanText } from "./brief-ticket-text.ts";
 import type { TicketRead } from "./ticket-read.ts";
 import { commentsText, type CommentsRead } from "./ticket-comments.ts";
+import { localReviewStep } from "./local-review-record.ts";
+import { lessonsText, type RepoLessons } from "./retro/lessons-brief.ts";
 
 /** The file a worker writes last, and the one thing the pool and the stop hook read to know a run has ended. */
 export const OUTCOME_FILE = "outcome.json";
@@ -410,9 +412,11 @@ export function conflictsIn(text: string): string | null {
  * The planning run's brief, as markdown: plan the ticket with this machine's planner, change no code, and leave the plan's files in `planDir`
  * for the board to attach. `run` is the host file's `tickets.planner.run`, with the ticket and the folder filled in.
  */
-export function planBriefText({ ticket, ticketDir, planDir, attachments, parent = null, clones, uncloned = [], run, notes, connectors = [], read, comments, blockers = [], findings = [], closed = [], claims = [], replan }: {
+export function planBriefText({ ticket, ticketDir, planDir, attachments, parent = null, clones, uncloned = [], run, notes, connectors = [], read, comments, blockers = [], findings = [], closed = [], claims = [], replan, lessons = [] }: {
   ticket: Ticket; ticketDir: string; planDir: string; attachments: readonly string[]; parent?: ParentTicket | null;
   clones: Readonly<Record<string, string>>; uncloned?: readonly string[]; run: string; notes?: string; connectors?: readonly string[]; read?: TicketRead; comments?: CommentsRead; blockers?: readonly Blocker[]; findings?: readonly Finding[]; closed?: readonly KeptClosedWork[]; claims?: readonly HeldClaim[]; replan?: Replan;
+  /** The lessons of the repository the ticket is planned for (A11-432), read as the run starts while `tickets.lessons` is on; none otherwise. */
+  lessons?: readonly RepoLessons[];
 }): string {
   const repos = reposText(clones);
   const instruction = plannerInstruction(run, [ticket.key], planDir);
@@ -438,7 +442,7 @@ Read them to plan, but never change them, commit in them or change their branche
 
 ${repos}${unclonedText(uncloned)}
 
-${claimsSection(claims)}
+${claimsSection(claims)}${lessonsText(lessons, "planner")}
 ## What to do
 
 ${instruction}
@@ -513,8 +517,10 @@ ${parentPart}${findingsText(blockers, findings).replace(/^\n## /, "\n### ")}${cl
  * question) per ticket, and the batch's order, in `planDir`. `runDir` holds the run's outcome file. `run` is the host file's
  * `tickets.planner.run`, with the tickets and the folder filled in.
  */
-export function batchPlanBriefText({ tickets, runDir, planDir, clones, uncloned = [], run, notes, connectors = [], claims = [] }: {
+export function batchPlanBriefText({ tickets, runDir, planDir, clones, uncloned = [], run, notes, connectors = [], claims = [], lessons = [] }: {
   tickets: readonly BatchTicket[]; runDir: string; planDir: string; clones: Readonly<Record<string, string>>; uncloned?: readonly string[]; run: string; notes?: string; connectors?: readonly string[]; claims?: readonly HeldClaim[];
+  /** The lessons of the repositories the batch's tickets are planned for (A11-432), read as the run starts while `tickets.lessons` is on; none otherwise. */
+  lessons?: readonly RepoLessons[];
 }): string {
   const keys = tickets.map(({ ticket }) => ticket.key);
   return `# Plan ${keys.length} tickets together: ${keys.join(", ")}
@@ -527,7 +533,7 @@ Read them to plan, but never change them, commit in them or change their branche
 
 ${reposText(clones)}${unclonedText(uncloned)}
 
-${claimsSection(claims, BATCH_CLAIMS_BULLET)}
+${claimsSection(claims, BATCH_CLAIMS_BULLET)}${lessonsText(lessons, "planner")}
 ## What to do
 
 ${plannerInstruction(run, keys, planDir)}
@@ -658,15 +664,19 @@ function openPullRequestStep(opening: string, ticket: Ticket, prReview: string |
  * `prReview` is the skill `tickets.prReview` names, which the worker runs on its whole diff before any push or pull request, or null for none.
  * `keywords` are the two words the tracker reads a pull request's body by (`source.ts`), which the brief names; a source without its own gets the defaults.
  * `numberedSteps` is true when the run's plan numbers its steps, which has the worker write the step it is on in its outcome file (A11-219).
+ * `localReviewCommand` is the command that runs the reviewer on the worker's local diff (`ticket:review-local`), given when the machine has `tickets.localReview: true` (A11-440); absent, the brief asks for no such review.
  */
 export function briefText({ ticket, folder, ticketDir, attachments, parent = null, blockers = [], stackedOn = [], overlapStack, steps = [], clones, worktreeCommand, prOpenCommand, notes,
-  connectors = [], planned = false, drafts = true, designTools = false, capture = false, prReview = null, keywords = DEFAULT_KEYWORDS, repo = null, read, comments, findings = [], closed = [], numberedSteps = false, opened = [], held, lost }: {
+  connectors = [], planned = false, drafts = true, designTools = false, capture = false, prReview = null, keywords = DEFAULT_KEYWORDS, repo = null, read, comments, findings = [], closed = [], numberedSteps = false, opened = [], held, lost, localReviewCommand, lessons = [] }: {
   ticket: Ticket; folder: string; ticketDir: string; attachments: readonly string[]; parent?: ParentTicket | null; blockers?: readonly Blocker[];
   stackedOn?: readonly StackBase[]; overlapStack?: OverlapStackRecord; steps?: readonly MergedStep[]; clones: Readonly<Record<string, string>>; worktreeCommand: string; prOpenCommand: string; notes?: string;
   connectors?: readonly string[]; planned?: boolean; drafts?: boolean; designTools?: boolean; capture?: boolean; prReview?: string | null; keywords?: Keywords; repo?: string | null;
   read?: TicketRead; comments?: CommentsRead; findings?: readonly Finding[]; closed?: readonly KeptClosedWork[]; numberedSteps?: boolean; opened?: readonly OpenedPull[]; held?: string;
   /** When the board found the run lost in a restart and queued it again (A11-279), for the section that says its worktree holds the earlier run's work. */
   lost?: number;
+  localReviewCommand?: string;
+  /** The lessons of the run's repositories (A11-432), read as it starts while `tickets.lessons` is on; none otherwise. */
+  lessons?: readonly RepoLessons[];
 }): string {
   const stacked = new Set(stackedOn.map(({ key }) => key));
   const repos = Object.entries(clones).map(([name, path]) => `- \`${name}\` at \`${path}\``).join("\n");
@@ -703,7 +713,7 @@ ${repos}
 1. From the ticket, decide which repository the fix belongs in. ${repo === null ? "" : `The ticket's plan, project or an earlier run names \`${repo}\`, so its work lands there unless it belongs in another of these repositories: then name that one. `}A ticket may name a repository that has since been retired or moved into another one: check where the code lives now, and use that. If the fix belongs in none of these (a backend service, a plugin, another team's code), change nothing and write a \`wrong-repo\` outcome naming where it belongs. When it belongs in another repository of the organisation, name it as \`owner/repo\`: the board clones it if this machine has not, and starts you again there, so nothing is asked of a person.
 2. Make your worktree there with \`${worktreeCommand} <repo>\`. It creates \`${folder}/<repo>\` on the ticket's branch \`${ticket.branch}\`, from the repository's default branch, and on a retry it gives you back the one an earlier run made: continue from its commits rather than starting again. Run it once per repository you change; most tickets need one.
 3. Work, commit and push only inside those worktrees. Read each repository's \`CLAUDE.md\` and \`AGENTS.md\` before you change anything, and use the install, test, typecheck and lint commands they give, scoped to the package you change. ${CHECK_CHANGED_RULE} ${PUSH_ONCE_RULE}
-
+${lessonsText(lessons, "worker")}
 ## What to do
 
 ${plannedText({ planned })}1. Find the cause in the code. Fix it, with a test that fails without the fix.
@@ -711,7 +721,7 @@ ${plannedText({ planned })}1. Find the cause in the code. Fix it, with a test th
 3. Check your diff against what was asked. List each acceptance criterion in the ticket. Add each decision in its files, its parent's description and its parent's files that applies to this ticket. Find where your diff meets each one, and finish any it misses. If you leave one unmet on purpose, say which and why in the pull request body.
 4. Check what your pull request body will claim. For each behaviour it says you fixed, kept or changed, name the test assertion that checks exactly that behaviour, not a neighbouring value. Run it on the base: a fix must fail there, and a kept behaviour must pass there too. Claim nothing you have no such assertion for, or say it is unchecked.
 ${commitStep(prReview)}
-${capture ? `${captureStep(ticketDir)}\n` : ""}${drafts ? draftPullRequestStep(ticket, prOpenCommand, prReview, keywords, read) : readyPullRequestStep(ticket, prOpenCommand, prReview, keywords, read)}
+${capture ? `${captureStep(ticketDir)}\n` : ""}${localReviewCommand === undefined ? "" : `${localReviewStep(localReviewCommand)}\n`}${drafts ? draftPullRequestStep(ticket, prOpenCommand, prReview, keywords, read) : readyPullRequestStep(ticket, prOpenCommand, prReview, keywords, read)}
 ${designTools ? DESIGN_CHECK_DONE : DESIGN_CHECK_DECLINED}
 
 ${END_AT_PUSH}

@@ -234,7 +234,8 @@ jobs:
           err=$(mktemp)
           trap 'rm -f "${err:?}"' EXIT
           put=0
-          answer=$(gh api -X PUT -H "X-GitHub-Api-Version: $API_VERSION" "repos/$REPOSITORY/pulls/$PULL_REQUEST/merge-async" -f sha="$head" -f merge_method=merge -f merge_action=default 2>"$err") || put=$?
+          # No `merge_method`: `main` merges through a queue, and GitHub refuses a queued stack merge that names one ("Custom merge params are not supported when merging via a merge queue", #2048).
+          answer=$(gh api -X PUT -H "X-GitHub-Api-Version: $API_VERSION" "repos/$REPOSITORY/pulls/$PULL_REQUEST/merge-async" -f sha="$head" -f merge_action=default 2>"$err") || put=$?
           if [ "$put" -ne 0 ]; then
             # 409: another request for this pull request is already running, which is the state asked for. Any other refusal is shown.
             if grep -q 'HTTP 409' "$err"; then echo "AUTO-ARM: a stack merge of #${PULL_REQUEST} is already pending"; exit 0; fi

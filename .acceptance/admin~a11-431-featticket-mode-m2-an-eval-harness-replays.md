@@ -1,0 +1,10 @@
+The worker eval, step 2 of 2 (A11-431): a run of a set is stored by its set and the sha it ran from (`<stateDir>/evals/<set>/<sha>.json`), and `node scripts/run-eval.ts compare --set <set> <A> <B>` prints two stored runs side by side, each score as `A → B (change)` per ticket and in total. `--key <switch>=on|off` runs the set with one switch of the host file set in the eval's own read of it, and stores that run apart, so a feature's off and on runs compare side by side. `tickets.evalTokenCap` (300,000,000 by default) stops a run before its next ticket once its tokens reach the cap, and the run says and stores how far it got. `evals/sets/first.json` is the first set, ten merged agent-org tickets, and `docs/run-eval.md` gives its measured cost.
+
+Acceptance:
+```bash
+npx rstest run --config scripts/rstest/rstest.config.ts src/run-eval.test.ts src/run-eval/ src/review-eval.test.ts src/ticket-mode/settings.test.ts src/ticket-mode/config-schema.test.ts
+```
+
+Mutation: change `spent >= tokenCap` to `spent > tokenCap` in `runSet` (`src/run-eval.ts`), and "the token cap reached mid-set stops the run" fails (its third ticket starts); drop the check, and that test fails on the exit code. Drop the `existsSync(storedAt)` refusal in `main`, and "a run already stored at this sha is refused before any ticket starts" fails. Store a `--only` run, and the same test fails on its `existsSync`. Count the tickets only one run has in `compareTable`'s totals, and "the totals count only the tickets both runs have" fails. Accept a key the schema does not mark `switch` in `parseKey`, and the key tests fail on `tickets.max`. Drop `evalTokenCap` from `workerLimitsOf`, and the settings test and the config-schema drift test fail.
+
+Consumer-declaration: one new optional host-file key, `tickets.evalTokenCap` (a whole number of 1 or more); absent it reads as 300,000,000, and only the worker eval reads it. A wrong value refuses the board's start by name, as every key of the `tickets` block does. No contract or API changes.

@@ -3,7 +3,7 @@
 // EVERY WORD ABOUT A RUN IS board-view's. The status names, the order, the counts, the runs a filter shows, each line of a row's note and the verbs a run offers come from `src/ticket-mode/board-view.ts`
 // and `board-view/*.ts`, as `ui.html` draws them; this file only arranges what they return. The two small formatters `ui.html` keeps to itself (`length` and `since`) are restated here, since
 // `ui.html` cannot be imported and is retired by A11-202.
-import { reviewLinesOf } from "../../../src/ticket-mode/board-view.ts";
+import { reviewLinesOf, safeHref } from "../../../src/ticket-mode/board-view.ts";
 import { learnsLine } from "../../../src/ticket-mode/board-view/ticket-change.ts";
 import { conflictNote } from "../../../src/ticket-mode/board-view/pull-conflict.ts";
 import { checkNote, promptNote, queueNote, reasonOf, updateLines } from "../../../src/ticket-mode/board-view/run-reason.ts";
@@ -17,6 +17,7 @@ import {
 } from "../../../src/ticket-mode/board-view/pull-status-and-notes.ts";
 import { crashedHoldsNote, crashedRunOf, isCrashedBlocker } from "../../../src/ticket-mode/board-view/crashed-blockers.ts";
 import { stackedOnItNote, stackWaitNote } from "../../../src/ticket-mode/board-view/stack-wait.ts";
+import { criticalPathNote } from "../../../src/ticket-mode/board-view/critical-path.ts";
 import { publishingOffLine } from "../../../src/ticket-mode/board-view/publishing-off.ts";
 import { RUN_STATUSES, type RunStatus } from "../../../src/ticket-mode/board-view/view-types-and-filters.ts";
 import type { ConfigView, QueueView } from "../api/types.ts";
@@ -199,6 +200,21 @@ export function ciLineOf(entry: Pick<RunEntry, "ci">): CiLine | null {
   return { text, tone: state === "over" || state === "held" ? "warn" : "plain" };
 }
 
+/** The line of a run's card that shows its automatic answer (A11-438): what it says, the sources it cites, and whether a person overruled it. */
+export type AutoAnswerLine = Readonly<{ text: string; sources: readonly Readonly<{ label: string; href: string }>[]; overruled: boolean }>;
+
+/**
+ * The automatic answer on a run's card, or null when the answerer answered nothing on it: the answer and how sure it was, or that a person overruled it, and each source it cites, linked when its address is http or https.
+ * PURE.
+ */
+export function autoAnswerLineOf(entry: Pick<RunEntry, "autoAnswer">): AutoAnswerLine | null {
+  const answered = entry.autoAnswer;
+  if (answered === undefined) return null;
+  const overruled = answered.overruledAt !== undefined;
+  const text = overruled ? `Automatic answer overruled by a person: ${answered.answer}` : `Answered automatically (${Math.round(answered.confidence * 100)}% sure): ${answered.answer}`;
+  return { text, sources: answered.sources.map(({ label, url }) => ({ label, href: safeHref(url ?? "") })), overruled };
+}
+
 /** The keys of the queued tickets that wait on a crashed run of ticket `key`, or none when the run is not a crashed one (A11-399). A ticket whose card says a person or its worker decides about `key` (canceled, a duplicate, stopped for) does not wait on the crash. */
 const waitingOnCrashed = (key: string, entries: QueueView["entries"]): string[] =>
   crashedRunOf(key, entries) === null ? [] : entries.filter((other) => other.phase === "queued" && waitsOn(other, entries).some((blocker) => blocker.key === key && isCrashedBlocker(other, blocker, entries))).map((other) => other.ticket.key);
@@ -238,6 +254,7 @@ function linesOf(entry: RunEntry, { queue, publisher, now }: NoteContext, ci?: s
     checkNote(entry),
     queueNote(entry),
     conflictNote(entry),
+    criticalPathNote(entry, entries),
     ci,
     stalled?.stalled === true ? stalled.text : null,
     isParked(entry) ? PARKED_LINE : null,

@@ -258,26 +258,26 @@ describe("keyboard focus", () => {
     return names;
   }
 
-  it("runs the bell, the switcher, Tickets, Runs, the projects, the goals, then Settings, then the page, as the boards lay them out", async () => {
+  it("runs the bell, the switcher, Tickets, Runs, Outcomes, Lessons, the projects, the goals, then Settings, then the page, as the boards lay them out", async () => {
     const stand: Stand = { instances: { here: { ...STAND.instances?.here, queueFails: { status: 500, error: "boom" } } } };
     const { page, context } = await open("/runs", { stand });
     await page.getByRole("alert").waitFor();
-    expect(await tabbed(page, 5)).toEqual(["Notifications, 0", "select", "Tickets3", "Runs", "Settings"]);
+    expect(await tabbed(page, 7)).toEqual(["Notifications, 0", "select", "Tickets3", "Runs", "Outcomes", "Lessons", "Settings"]);
     expect(await tabbed(page, 1)).toEqual(["Retry"]);
     await context.close();
   });
 
-  it("puts the projects and goals between Runs and Settings on Tickets", async () => {
+  it("puts the projects and goals between Lessons and Settings on Tickets", async () => {
     const { page, context } = await open("/tickets");
     await page.getByRole("button", { name: /^a11ign/ }).waitFor();
-    expect(await tabbed(page, 11)).toEqual(["Notifications, 0", "select", "Tickets3", "Runs3", "a11ign3", "agent-org1", "All goals3", "Clean boundaries1", "Fleet1", "(no Goal)1", "Settings"]);
+    expect(await tabbed(page, 13)).toEqual(["Notifications, 0", "select", "Tickets3", "Runs3", "Outcomes", "Lessons", "a11ign3", "agent-org1", "All goals3", "Clean boundaries1", "Fleet1", "(no Goal)1", "Settings"]);
     await context.close();
   });
 
-  it("puts the Settings sub-nav between Runs and Settings on Settings", async () => {
+  it("puts the Settings sub-nav between Lessons and Settings on Settings", async () => {
     const { page, context } = await open("/settings/workers");
     await page.getByRole("link", { name: /^Tickets\s*3$/ }).waitFor();
-    expect(await tabbed(page, 9)).toEqual(["Notifications, 0", "select", "Tickets3", "Runs3", "Models", "Workers", "Machine", "Plugins", "Settings"]);
+    expect(await tabbed(page, 11)).toEqual(["Notifications, 0", "select", "Tickets3", "Runs3", "Outcomes", "Lessons", "Models", "Workers", "Machine", "Plugins", "Settings"]);
     await context.close();
   });
 

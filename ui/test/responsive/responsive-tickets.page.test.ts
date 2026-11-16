@@ -116,3 +116,24 @@ describe("the Tickets rows and bars at 390px", () => {
     await runs.context.close();
   });
 });
+
+describe("the Tickets selection bar with a suggestion at 390px", () => {
+  it("keeps the selection bar one row high with a suggested model and effort: the suggestion shrinks to one line between Clear and Options (A11-435)", async () => {
+    const reason = "94% first-pass, n=31, on dependency-update tickets in agent-org";
+    const suggestion = { model: "sonnet", effort: "medium", firstPass: 94, n: 31, label: "dependency-update", repo: "agent-org", reason };
+    const { page, context } = await openAt(browser, site.origin, "/tickets", PHONE, { ready: rows, suggestion });
+    for (const key of ["A11-63", "A11-62"]) await page.locator(`[data-key="${key}"] .row-check`).tap();
+    const bar = page.getByRole("region", { name: "Queue selected tickets" });
+    const line = bar.locator(".queue-bar-suggestion");
+    await line.waitFor();
+    expect(await line.getAttribute("title")).toBe(`Suggested: sonnet/medium · ${reason}`);
+    const box = await boxOf(bar);
+    const shown = await boxOf(line);
+    const options = await boxOf(bar.getByRole("button", { name: "Run options" }));
+    expect(PHONE.height - (box.y + box.height)).toBe(OVER_TAB_BAR);
+    expect(Math.abs(shown.y + shown.height / 2 - (options.y + options.height / 2))).toBeLessThanOrEqual(2);
+    expect(shown.x + shown.width).toBeLessThanOrEqual(options.x);
+    expect(await line.evaluate((element) => element.scrollWidth > element.clientWidth)).toBe(true);
+    await context.close();
+  });
+});

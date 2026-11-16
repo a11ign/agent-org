@@ -23,7 +23,6 @@ const SYNC_SPAWN = /\b(?:spawnSync|execFileSync|execSync)\s*\(/;
 
 /** The modules under `plugins/` that spawn synchronously, each with why it never runs on the instance's loop. Paths from the checkout's root. */
 const SPAWNING_MODULES: Readonly<Record<string, string>> = {
-  "plugins/github/command-exec.ts": "the `deps.exec` of the CLI commands (`merge-flow-command.ts`, `stack-live-check-command.ts`), which run in a process of their own and hold nothing but themselves",
   "plugins/linear/key.ts": "the macOS keychain's `security`, once, as the Linear key is read before the instance listens; it is no `gh`",
 };
 

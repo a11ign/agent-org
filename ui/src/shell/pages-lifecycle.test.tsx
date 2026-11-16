@@ -1,9 +1,13 @@
 import { render, screen } from "@testing-library/react";
 import { HERE, standFetch, type Failure, type Stand } from "../../test/fixtures.ts";
+import { lessonsFetch, lessonsState } from "../../test/lessons/lessons-stand.ts";
+import { outcomesFetch, outcomesFiles } from "../../test/outcomes/outcomes-stand.ts";
 import { pluginsFetch, pluginsSettings, standOf as pluginsOf } from "../../test/plugins/plugins-stand.ts";
 import { detailStand } from "../../test/run-detail/run-detail-stand.ts";
 import { runsStand } from "../../test/runs/runs-stand.ts";
 import { modelsConfig, settingsFetch, standOf as settingsOf } from "../../test/settings/settings-stand.ts";
+import { LessonsApp } from "../lessons/LessonsApp.tsx";
+import { OutcomesApp } from "../outcomes/OutcomesApp.tsx";
 import { PluginsApp } from "../plugins/PluginsApp.tsx";
 import { RunsApp } from "../runs/RunsApp.tsx";
 import { SettingsApp } from "../settings/SettingsApp.tsx";
@@ -26,6 +30,8 @@ const PAGES: Readonly<Record<string, Readonly<{ path: string; draw: (fails: Fail
   Tickets: { path: "/tickets", draw: (fails) => { renderOn(ticketsStand(answers([], { ticketsFail: fails }))); } },
   Runs: { path: "/runs", draw: (fails) => { render(<RunsApp fetchWith={standFetch(runsStand({ queueFails: fails }))} />); } },
   "Run detail": { path: "/runs/A11-183", draw: (fails) => { render(<RunsApp fetchWith={standFetch(detailStand("running", { queueFails: fails }))} />); } },
+  Outcomes: { path: "/outcomes", draw: (fails) => { render(<OutcomesApp fetchWith={outcomesFetch(outcomesFiles(), { fails })} />); } },
+  Lessons: { path: "/lessons", draw: (fails) => { render(<LessonsApp fetchWith={lessonsFetch(lessonsState(), { fails })} />); } },
   Models: { path: "/settings/models", draw: (fails) => { render(<SettingsApp section="models" fetchWith={settingsFetch(here(), settingsOf({ viewFails: fails }))} />); } },
   Workers: { path: "/settings/workers", draw: (fails) => { render(<SettingsApp section="workers" fetchWith={settingsFetch(here(), settingsOf({ viewFails: fails }))} />); } },
   Machine: { path: "/settings/machine", draw: (fails) => { render(<SettingsApp section="machine" fetchWith={settingsFetch(here(), settingsOf({ viewFails: fails }))} />); } },

@@ -24,6 +24,7 @@ import { DEFAULT_CI_BUDGET_MINUTES } from "./ci-spend/budget.ts";
 import { pricesOf } from "./outcomes/prices-config.ts";
 import { isActive, PROVIDER_BLOCKS, PUBLISHER_SHAPE, resolveProviders, type BlockReport, type Providers, type Setting } from "./providers.ts";
 import type { Catalog } from "../plugins/manifest.ts";
+import type { ReviewCommentMatcher } from "../plugins/contracts/review-comments.ts";
 import { defaultCatalog, isTrackerConnector, pluginNamed } from "../plugins/registry.ts";
 import { TicketSettingsRefusal } from "./settings-refusal.ts";
 import { DEFAULT_PUBLISH_WHEN, PUBLISH_WHEN, type PublishWhen } from "./board-view/publish-when.ts";
@@ -106,6 +107,27 @@ export type TicketSettings = Readonly<{
    */
   fixRedMain?: boolean;
   /**
+   * Whether the board runs the daily ticket-mode retro, which writes each repository's lessons from its recent runs (A11-432, `retro/retro-job.ts`), and worker and planner briefs carry them (`retro/lessons-brief.ts`). False by default: the feature turns on only once
+   * the offline eval shows no drop. Optional, so a settings object made by hand (a test's) leaves it off.
+   */
+  lessons?: boolean;
+  /**
+   * Whether a worker runs the reviewer on its local diff before it opens a pull request (A11-440, `local-review.ts`), and `pr:open` refuses a create until that review ran at the
+   * worker's current commit. The board's own review of each new head still runs. False by default: the feature turns on only once the offline eval shows a better first-pass verdict
+   * at no more tokens than the rounds it saves. Optional, so a settings object made by hand (a test's) leaves it off.
+   */
+  localReview?: boolean;
+  /**
+   * Whether the Tickets page shows each ticket's readiness score, which a cheap model makes once per description (A11-443, `readiness.ts`), and offers the writer for a low one. False by default:
+   * the feature turns on only once the offline check shows low scores go with more rounds, re-plans or Needs-you. Optional, so a settings object made by hand (a test's) leaves it off.
+   */
+  readiness?: boolean;
+  /**
+   * The answerer (A11-438, `auto-answer.ts`): whether a cheap model tries to answer a worker's `needs-human` question from what is written down before the run is parked for a person (`on`, off by default), the confidence
+   * an answer needs (`threshold`, 0.9 by default) and the model asked (`model`, `haiku` by default). Optional, so a settings object made by hand (a test's) leaves it off.
+   */
+  autoAnswer?: AutoAnswerSettings;
+  /**
    * Whether this machine can capture the board for a worker (`ticket:capture`): both Chromium builds start, so the worker brief asks for a capture of a page a
    * change alters, and the pull request shows it. False by default: a worker is then not told to capture. Onboard sets it when both builds start.
    */
@@ -135,6 +157,10 @@ export type TicketSettings = Readonly<{
    * should have woken it by then. Marking it ends nothing. 30 by default.
    */
   stallMinutes: number;
+  /** How many decided past runs of one model and effort, of a kind, the queue footer needs before it suggests them (A11-435, `suggest-model.ts`). */
+  suggestMinSample: number;
+  /** The tokens one worker eval run may spend before it stops at the next ticket (A11-431, `run-eval.ts`). {@link DEFAULT_EVAL_TOKEN_CAP} by default. */
+  evalTokenCap: number;
   /**
    * The weighted CI minutes one ticket's pushes may run before the board warns its worker, and, at twice that, holds the run (A11-261); 0 is none. {@link DEFAULT_CI_BUDGET_MINUTES} by default. The figures show whatever it is.
    */
@@ -144,6 +170,11 @@ export type TicketSettings = Readonly<{
    * once it has passed are stopped and queued again, and the update applies (A11-90, A11-169). A release that is not breaking waits for nothing. 2 by default.
    */
   updateMaxDeferHours: number;
+  /**
+   * The conversation comments that say a review was done, by their author's login and the text their body starts with: a repository whose review runs as a CI workflow that comments. The card names one posted or edited
+   * after a head (`review comment by <author> at <head>`) where it would say no review is there, and NOTHING reads it as an approval. Empty, the default, names none.
+   */
+  reviewComments: readonly ReviewCommentMatcher[];
   /** Whether doctor requires the `gh stack` extension of the workers' account, the code host's `stack` setting. True by default. */
   stackRequired: boolean;
   /** The named provider blocks and the old keys still read, as `providers.ts` reports them, for doctor and the Settings page (A11-144). */
@@ -405,6 +436,21 @@ function publisherSettingsOf(publish: BlockReport): Publisher {
     connectors: connectorPatterns(connectors.value, connectors.at) });
 }
 
+const REVIEW_COMMENT_SHAPE = "{ \"author\": \"<login>\", \"startsWith\": \"<text>\" }";
+
+/** `tickets.reviewComments`: a list of {@link REVIEW_COMMENT_SHAPE}, each with a login and a text that is not blank. Absent is none. Anything else is refused by name and place. */
+function reviewCommentsOf(value: unknown): readonly ReviewCommentMatcher[] {
+  if (value === undefined) return [];
+  if (!Array.isArray(value)) throw new TicketSettingsRefusal("tickets.reviewComments", `must be a list of ${REVIEW_COMMENT_SHAPE}, not ${JSON.stringify(value)}`);
+  return Object.freeze(value.map((matcher: unknown, i) => {
+    const field = `tickets.reviewComments[${i}]`;
+    if (!isObject(matcher)) throw new TicketSettingsRefusal(field, `must be ${REVIEW_COMMENT_SHAPE}`);
+    if (typeof matcher.author !== "string" || matcher.author.trim() === "") throw new TicketSettingsRefusal(`${field}.author`, "must be the login of the account that posts the review comment");
+    if (typeof matcher.startsWith !== "string" || matcher.startsWith.trim() === "") throw new TicketSettingsRefusal(`${field}.startsWith`, "must be the text the review comment's body starts with, not blank");
+    return Object.freeze({ author: matcher.author.trim(), startsWith: matcher.startsWith.trim() });
+  }));
+}
+
 function denyRules(value: unknown): readonly DenyRule[] {
   if (value === undefined) return [];
   if (!Array.isArray(value)) throw new TicketSettingsRefusal("tickets.deny", `must be a list of ${DENY_RULE_SHAPE}`);
@@ -427,10 +473,55 @@ function designToolsOf(value: unknown): boolean {
   return value;
 }
 
+/** What the answerer is set to (A11-438): see `TicketSettings.autoAnswer`. */
+export type AutoAnswerSettings = Readonly<{ on: boolean; threshold: number; model: string }>;
+
+/**
+ * Whether the answerer is on when `tickets.autoAnswer` is absent (A11-438). It turns on only by evidence: true only when the stored replay of past answered questions (`evals/auto-answer/result.json`) meets the bar
+ * (`auto-answer-replay.ts`), and a test holds the two together.
+ */
+export const DEFAULT_AUTO_ANSWER = false;
+
+/** The confidence an automatic answer needs when `tickets.autoAnswerThreshold` is absent (A11-438). */
+export const DEFAULT_AUTO_ANSWER_THRESHOLD = 0.9;
+
+/**
+ * `tickets.autoAnswer`, `tickets.autoAnswerThreshold` and `tickets.autoAnswerModel` (A11-438): off, 0.9 and `haiku` when absent. A switch that is not true or false, a threshold that is not a number above 0 and at most 1, and a
+ * model that is not a word are each refused by name.
+ */
+function autoAnswerOf(tickets: Readonly<Record<string, unknown>>): AutoAnswerSettings {
+  const { autoAnswer: on = DEFAULT_AUTO_ANSWER, autoAnswerThreshold: threshold = DEFAULT_AUTO_ANSWER_THRESHOLD, autoAnswerModel: model = "haiku" } = tickets;
+  if (typeof on !== "boolean") throw new TicketSettingsRefusal("tickets.autoAnswer", `must be true or false, not ${JSON.stringify(on)}`);
+  if (typeof threshold !== "number" || !(threshold > 0 && threshold <= 1)) throw new TicketSettingsRefusal("tickets.autoAnswerThreshold", `must be a number above 0 and at most 1, not ${JSON.stringify(threshold)}`);
+  if (typeof model !== "string" || !/^[\w.[\]-]+$/.test(model)) throw new TicketSettingsRefusal("tickets.autoAnswerModel", `must be a model name, such as "haiku", not ${JSON.stringify(model)}`);
+  return { on, threshold, model };
+}
+
 /** `tickets.fixRedMain`: false for the board not to file fix tickets for checks red on main (A11-428). Absent is true. Any other value is refused by name. */
 function fixRedMainOf(value: unknown): boolean {
   if (value === undefined) return true;
   if (typeof value !== "boolean") throw new TicketSettingsRefusal("tickets.fixRedMain", `must be true or false, not ${JSON.stringify(value)}`);
+  return value;
+}
+
+/** `tickets.lessons`: true for the board to run the daily retro and write each repository's lessons (A11-432). Absent is false. Any other value is refused by name. */
+function lessonsOf(value: unknown): boolean {
+  if (value === undefined) return false;
+  if (typeof value !== "boolean") throw new TicketSettingsRefusal("tickets.lessons", `must be true or false, not ${JSON.stringify(value)}`);
+  return value;
+}
+
+/** `tickets.readiness`: true for the Tickets page to show each ticket's readiness score (A11-443). Absent is false. Any other value is refused by name. */
+function readinessOf(value: unknown): boolean {
+  if (value === undefined) return false;
+  if (typeof value !== "boolean") throw new TicketSettingsRefusal("tickets.readiness", `must be true or false, not ${JSON.stringify(value)}`);
+  return value;
+}
+
+/** `tickets.localReview`: true for a worker to run the reviewer on its local diff before it opens a pull request (A11-440). Absent is false. Any other value is refused by name. */
+function localReviewOf(value: unknown): boolean {
+  if (value === undefined) return false;
+  if (typeof value !== "boolean") throw new TicketSettingsRefusal("tickets.localReview", `must be true or false, not ${JSON.stringify(value)}`);
   return value;
 }
 
@@ -551,6 +642,23 @@ function instanceOf(value: unknown, machine: string): string {
 }
 
 /**
+ * The tokens a worker eval run spends before it stops (A11-431): ten tickets at the 90th percentile of a first round on this board's outcome log on 2026-11-16 (29M tokens, cache
+ * reads included, of 104 runs), rounded up.
+ */
+export const DEFAULT_EVAL_TOKEN_CAP = 300_000_000;
+
+/** The whole-number limits on a worker's run, in the order they are checked: its idle time, the runs a suggestion needs (A11-435), an eval run's tokens (A11-431), its CI budget and how long an update may wait for it. */
+function workerLimitsOf(tickets: Readonly<Record<string, unknown>>): Pick<TicketSettings, "stallMinutes" | "suggestMinSample" | "evalTokenCap" | "ciBudgetMinutes" | "updateMaxDeferHours"> {
+  return {
+    stallMinutes: positiveInteger(tickets.stallMinutes, "tickets.stallMinutes", 30),
+    suggestMinSample: positiveInteger(tickets.suggestMinSample, "tickets.suggestMinSample", 20),
+    evalTokenCap: positiveInteger(tickets.evalTokenCap, "tickets.evalTokenCap", DEFAULT_EVAL_TOKEN_CAP),
+    ciBudgetMinutes: nonNegativeInteger(tickets.ciBudgetMinutes, "tickets.ciBudgetMinutes", DEFAULT_CI_BUDGET_MINUTES),
+    updateMaxDeferHours: positiveInteger(tickets.updateMaxDeferHours, "tickets.updateMaxDeferHours", 2),
+  };
+}
+
+/**
  * The settings, from the host file's parsed JSON. PURE: the caller reads the file.
  * @param home the user's home directory, for the default state directory
  * @param machine the machine's host name, which `tickets.instance` defaults to
@@ -608,6 +716,7 @@ export function parseTicketSettings(host: unknown, home: string = homedir(), mac
     brief: tickets.brief === undefined ? null : absolutePath(tickets.brief, "tickets.brief"),
     review: tickets.review === undefined ? null : absolutePath(tickets.review, "tickets.review"),
     deny: denyRules(tickets.deny),
+    reviewComments: reviewCommentsOf(tickets.reviewComments),
     plugins: pluginList(tickets.plugins),
     terminal: terminalTemplate(terminal.value, terminal.at),
     plan,
@@ -621,15 +730,17 @@ export function parseTicketSettings(host: unknown, home: string = homedir(), mac
     drafts: draftsOf(tickets.drafts),
     designTools: designToolsOf(tickets.designTools),
     fixRedMain: fixRedMainOf(tickets.fixRedMain),
+    lessons: lessonsOf(tickets.lessons),
+    localReview: localReviewOf(tickets.localReview),
+    readiness: readinessOf(tickets.readiness),
+    autoAnswer: autoAnswerOf(tickets),
     capture: captureOf(tickets.capture),
     prReview: prReviewOf(tickets.prReview),
     reviewer: isActive(reviewer) ? reviewer.provider : null,
     reviewerRequired: reviewerRequiredOf(reviewer),
     publishWhen: publishWhenOf(publish),
     pick: pickOf(tickets.pick),
-    stallMinutes: positiveInteger(tickets.stallMinutes, "tickets.stallMinutes", 30),
-    ciBudgetMinutes: nonNegativeInteger(tickets.ciBudgetMinutes, "tickets.ciBudgetMinutes", DEFAULT_CI_BUDGET_MINUTES),
-    updateMaxDeferHours: positiveInteger(tickets.updateMaxDeferHours, "tickets.updateMaxDeferHours", 2),
+    ...workerLimitsOf(tickets),
     // Where the tailnet ports were read before they moved to the exposure plugin: a value no exposure could serve on is still refused after the fields before it.
     ...refuseUnservablePorts(settingOf(exposure, "tailnetPorts")),
     stackRequired: stack.value ?? true,

@@ -4,7 +4,7 @@ import { requireBuild, UI_ROOT } from "./site.ts";
 
 const DIST = join(UI_ROOT, "dist");
 /** The pages that hold the shell: one for each route that has its own file. */
-const SHELL_PAGES = ["runs/index.html", "settings/machine/index.html", "settings/models/index.html", "settings/plugins/index.html", "settings/workers/index.html", "tickets/index.html"];
+const SHELL_PAGES = ["lessons/index.html", "outcomes/index.html", "runs/index.html", "settings/machine/index.html", "settings/models/index.html", "settings/plugins/index.html", "settings/workers/index.html", "tickets/index.html"];
 
 function filesUnder(directory: string): string[] {
   return readdirSync(directory).flatMap((name) => {

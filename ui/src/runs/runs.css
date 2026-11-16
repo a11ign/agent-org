@@ -289,7 +289,8 @@
   font-variant-numeric: tabular-nums;
 }
 .run-note,
-.run-ci {
+.run-ci,
+.run-auto-answer {
   max-width: var(--measure-readable);
   color: var(--color-text-nav);
   font-size: var(--font-size-small);
