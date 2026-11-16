@@ -26,8 +26,8 @@ import type { ToolPin } from "./queue/queue-pins.ts";
 export const recordClosedByBoard = (queue: Queue, key: string): Queue => replace(queue, key, (entry) => ({ ...entry, closedByBoard: true }));
 
 /**
- * The queued entries to start now, in queue order: none while the queue is paused or the host is loaded past its cores (`wake.ts`'s `hostLoadRefusal` rule, where
- * exactly equal does not refuse), and otherwise as many as the free slots allow. An entry still waiting on a blocker, or on a path another run holds
+ * The queued entries to start now, in queue order: none while the queue is paused, the host is loaded past its cores (`wake.ts`'s `hostLoadRefusal` rule, where
+ * exactly equal does not refuse), or the Claude allowance is spent until a reset still ahead of `now` ({@link allowanceHolds}, A11-434), and otherwise as many as the free slots allow. An entry still waiting on a blocker, or on a path another run holds
  * ({@link overlapWait}), is passed over, and holds no slot. So is one whose plan could not be downloaded (`pathsFailure`): it takes no slot another
  * run could use (A11-125). And so is a review round or talk session that a working agent's session holds back (`sessionWait`, A11-154). A batch is one run, so its tickets take one slot between them, live or starting.
  * An entry this call starts holds its paths against the entries after it, as a live run would, so overlapping runs never start in the same pass: the later one waits for the first to push a branch, and is stacked on it in a later pass.
@@ -37,7 +37,7 @@ export const recordClosedByBoard = (queue: Queue, key: string): Queue => replace
  * A STACK IS A PRIORITY (A11-370): a queued run whose pull request has another stacked on it ({@link keysWithStackAbove}) starts before the other queued runs of its model, since that run is waiting for it. The queue order holds among the runs that are equal in this.
  */
 export function nextStarts(queue: Queue, load: number, cores: number, now?: number): Entry[] {
-  if (queue.paused || load > cores) return [];
+  if (queue.paused || load > cores || allowanceHolds(queue, now)) return [];
   const free = queue.max - slotsHeld(queue);
   const runs = new Set<string>();
   const started: Entry[] = [];
@@ -92,7 +92,7 @@ export function loadQueue(path: string, max: number): Queue {
   const parsed = JSON.parse(readFileSync(path, "utf8")) as Omit<Queue, "writers"> & { writers?: readonly LegacyRun[] };
   return { entries: parsed.entries ?? [], max: parsed.max ?? max, paused: parsed.paused ?? true, ...(parsed.publish ? { publish: parsed.publish } : {}),
     ...(parsed.writers ? { writers: parsed.writers.map(writerAsRead) } : {}), ...(parsed.runLog ? { runLog: parsed.runLog } : {}), ...(parsed.ciSpend ? { ciSpend: parsed.ciSpend } : {}),
-    ...(parsed.interventions ? { interventions: parsed.interventions } : {}) };
+    ...(parsed.interventions ? { interventions: parsed.interventions } : {}), ...(parsed.allowance ? { allowance: parsed.allowance } : {}) };
 }
 
 /** Replace the file whole: write beside it, then rename over it. */
@@ -165,10 +165,21 @@ export function queueWriter(queue: Queue, request: Pick<WriterRun, "id" | "reque
 }
 
 /** The writer run that starts now: the first queued one, when a worker slot is free. A person's request waits for no Pause: they just asked for it. The board's own check runs (A11-302) do wait for it. */
-export function writerToStart(queue: Queue): WriterRun | undefined {
+export function writerToStart(queue: Queue, now?: number): WriterRun | undefined {
   if (slotsHeld(queue) >= queue.max) return undefined;
-  return (queue.writers ?? []).find((run) => run.phase === "queued" && !(queue.paused && isCheckRun(run.mode)));
+  // A check run waits on what holds the queue's runs, a pause or a spent allowance (A11-434); a request a person made in the form is theirs to start, as it is while paused.
+  return (queue.writers ?? []).find((run) => run.phase === "queued" && !((queue.paused || allowanceHolds(queue, now)) && isCheckRun(run.mode)));
 }
+
+/**
+ * Whether the spent Claude allowance holds every start at `now` (A11-434): the board saw a run refused with a reset still ahead. Without `now` it holds nothing, as a caller with no clock judges
+ * nothing by time. PURE.
+ */
+export const allowanceHolds = (queue: Queue, now?: number): boolean => now !== undefined && queue.allowance !== undefined && now < queue.allowance.until;
+
+/** The queue with the allowance seen spent until `spent.until`, unless it already holds starts as long or longer: one run's earlier reset never shortens another's. PURE. */
+export const holdStarts = (queue: Queue, spent: Readonly<{ text: string; until: number }>): Queue =>
+  queue.allowance !== undefined && queue.allowance.until >= spent.until ? queue : { ...queue, allowance: { text: spent.text, until: spent.until } };
 
 export const markWriterStarting = (queue: Queue, id: string, now: number): Queue =>
   replaceWriter(queue, id, (run) => ({ ...run, phase: "starting", startedAt: now }));

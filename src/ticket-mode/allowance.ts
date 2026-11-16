@@ -14,8 +14,9 @@ import { replace, type Entry, type Queue } from "./queue/queue-entries-and-outco
 import { findTranscript } from "./pool-transcripts.ts";
 import type { PoolContext } from "./pool-context.ts";
 import type { RunPlace } from "./pool-paths.ts";
-import { agentTargetAsync } from "./pool-resume.ts";
+import { agentTargetAsync, readScreen, sendToAgentAsync } from "./pool-resume.ts";
 import { HERDR_CALL_MS } from "./pool-herdr.ts";
+import { log } from "./pool-state.ts";
 
 /** A run held on a spent Claude allowance: the message, when the allowance returns (ms), and when the board first held the run (ms). */
 export type AllowanceHold = NonNullable<Entry["allowance"]>;
@@ -169,3 +170,56 @@ export const holdAllowance = (queue: Queue, key: string, spent: SpentAllowance, 
 /** The run `key` is no longer out of allowance: its hold is dropped. PURE. */
 export const releaseAllowance = (queue: Queue, key: string): Queue =>
   replace(queue, key, ({ allowance: _held, ...entry }) => entry);
+
+/** What the board tells a held run once its allowance is back (A11-434): carry on where the limit stopped it, and check a declared wait before declaring it again. */
+export const ALLOWANCE_BACK_PROMPT = "Your Claude allowance has reset, so the board is resuming you. The limit stopped your last turn, so the step you were on may not have run: "
+  + "check where your work stands, carry on from there, and check any wait you declared before you declare it again.";
+
+/** How long after the board resumed a held run it may resume it again: one refused again was resumed before its allowance was back, and is not prompted on every pass. */
+export const ALLOWANCE_RETRY_MS = 15 * 60_000;
+
+/** When the board last resumed each run out of allowance, by its herdr name and pool: kept apart from the hold, so a run that worked a moment and was refused again is not prompted at once. */
+const resumes = new WeakMap<PoolContext, Map<string, number>>();
+
+function resumesOf(ctx: PoolContext): Map<string, number> {
+  const held = resumes.get(ctx) ?? new Map<string, number>();
+  resumes.set(ctx, held);
+  return held;
+}
+
+/**
+ * Resume a run held on the allowance once its reset has passed (A11-434): its limit menu is cancelled, and it is told to carry on. Its hold stays until its agent is read working or its transcript
+ * clear, so a run refused again is held again on what it was refused with. A run with a person at its terminal (a talk session) is theirs to resume, and a run on a dialog other than the limit menu
+ * is left to the watch. True when the prompt went.
+ */
+export async function resumeAfterReset(ctx: PoolContext, entry: Entry, place: RunPlace, seen: string): Promise<boolean> {
+  const now = ctx.now();
+  if (entry.allowance === undefined || !dueForResume(entry, entry.allowance, seen, now, resumesOf(ctx).get(place.name))) return false;
+  if (seen !== "idle" && seen !== "done" && !(await cancelLimitMenu(ctx, place))) return false;
+  remember(resumesOf(ctx), place.name, now);
+  const refused = await sendToAgentAsync(ctx, place, ALLOWANCE_BACK_PROMPT);
+  const who = entry.batch ?? entry.ticket.key;
+  log(refused === null ? `${who}: its Claude allowance was due back at ${new Date(entry.allowance.until).toISOString()}, so it was told to carry on` : `${who} could not be told its Claude allowance is back: ${refused}`);
+  return refused === null;
+}
+
+/**
+ * Whether a held run is due to be told its allowance is back at `now`: its reset has passed, no person is at its terminal, its agent is not working, and the board did not tell it within
+ * {@link ALLOWANCE_RETRY_MS} (`last`). PURE.
+ */
+function dueForResume(entry: Entry, hold: AllowanceHold, seen: string, now: number, last: number | undefined): boolean {
+  if (entry.talk === true || seen === "working" || now < hold.until) return false;
+  return last === undefined || now - last >= ALLOWANCE_RETRY_MS;
+}
+
+/** Cancel the limit menu on a run's pane, as its own `Esc to cancel` line says, so a prompt reaches the agent. False when the pane shows no limit menu, or herdr would not take the key. */
+async function cancelLimitMenu(ctx: PoolContext, place: RunPlace): Promise<boolean> {
+  const screen = await readScreen(ctx, place);
+  if (screen === null || !showsLimitMenu(screen)) return false;
+  try {
+    await ctx.herdrCall(["--session", ctx.settings.herdrSession, "agent", "send-keys", await agentTargetAsync(ctx, place), "esc"], HERDR_CALL_MS);
+    return true;
+  } catch {
+    return false;
+  }
+}
