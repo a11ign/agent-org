@@ -147,15 +147,20 @@ async function paneAllowance(ctx: PoolContext, entry: Entry, place: RunPlace): P
 
 /**
  * What a running run's worker's allowance is, on the status herdr reads for it (`seen`). A working agent is clear, and nothing is read for it. The transcript decides first; a
- * `blocked` agent whose transcript has not said it has its pane read for the limit menu, and a pane read that shows another dialog is clear.
+ * `blocked` agent whose transcript has not said it has its pane read for the limit menu, and a pane read that shows another dialog is clear. So does a `blocked` agent whose
+ * transcript's reset has passed: the message is then the last one said, not what holds the agent now, and a dialog on its pane is a person's to see, not hidden behind the
+ * hold (A11-434). It is judged on the message's own reset, not on the hold, so a hold dropped for the dialog is not taken again from the same message on the next pass.
  */
 export async function readAllowance(ctx: PoolContext, entry: Entry, place: RunPlace, seen: string): Promise<AllowanceRead> {
   if (seen === "working") return CLEAR;
   const said = await transcriptAllowance(ctx, entry);
-  if (said.state === "spent" || seen === "idle" || seen === "done") return said;
+  if (seen === "idle" || seen === "done" || saidStillSpent(said, ctx.now())) return said;
   const shown = await paneAllowance(ctx, entry, place);
   return shown.state === "unknown" ? said : shown;
 }
+
+/** Whether a read of the transcript says the allowance is spent, with its reset not yet passed by {@link ALLOWANCE_GRACE_MS}. PURE. */
+const saidStillSpent = (said: AllowanceRead, now: number): boolean => said.state === "spent" && stillSpent(said.spent.until, now);
 
 /** Whether holding `entry` on `spent` would change it: a run already held on the same message and reset, with no dialog marked, is left as it is, so a pass writes nothing for it. PURE. */
 export const holdChanges = (entry: Entry, spent: SpentAllowance): boolean =>

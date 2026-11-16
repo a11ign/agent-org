@@ -10,6 +10,7 @@ import { ALLOWANCE_BACK_PROMPT, ALLOWANCE_RETRY_MS } from "./allowance.ts";
 import { ALLOWANCE_GRACE_MS, allowanceHolds, holdStarts, loadQueue, nextStarts, saveQueue, writerToStart } from "./queue.ts";
 import { RESUME_PROMPT } from "./pool-resume.ts";
 import { whyNothingStarts } from "./pool-start.ts";
+import { runStatus } from "./board-view/pull-status-and-notes.ts";
 import { liveRuns, MENU, MIN, RESET, SAID, T0 } from "./allowance-fixture.ts";
 import type { Entry, Queue } from "./queue/queue-entries-and-outcomes.ts";
 
@@ -170,4 +171,21 @@ test("A11-434: a talk session starts while the allowance is spent, since a perso
   const queue = holdStarts({ entries, max: 2, paused: false } as Queue, { text: SAID, until: RESET });
   assert.deepEqual(nextStarts(queue, 1, 14, T0).map((entry) => entry.ticket.key), ["NBF-1"]);
   assert.deepEqual(nextStarts(queue, 1, 14, DUE).map((entry) => entry.ticket.key), ["NBF-1", "NBF-2"]);
+});
+
+test("A11-434: after the reset, a held run whose transcript still ends on the limit but whose pane shows another dialog has its hold dropped and reads Needs you, and is not held again from the same message", async () => {
+  const runs = await onLimitMenu();
+  const pane = String(runs.entry("NBF-1").pane);
+  assert.notEqual(runs.entry("NBF-1").allowance, undefined);
+  // Before the reset the transcript decides: another dialog on the pane changes nothing yet.
+  const update = "Update available! 0.162.1 -> 0.163.0\n\n  1. Update now\n  2. Skip\n\n  Press enter to continue";
+  runs.herdr.screens.set(pane, update);
+  await runs.advance(RESET - runs.now() - MIN);
+  assert.equal(runStatus(runs.entry("NBF-1")), "waiting");
+  await runs.advance(DUE - runs.now());
+  assert.equal(runs.entry("NBF-1").allowance, undefined, "before this the run stayed held, its dialog hidden, until its transcript read clear");
+  assert.equal(runStatus(runs.entry("NBF-1")), "needs-you");
+  await runs.advance(MIN);
+  assert.deepEqual([runs.entry("NBF-1").allowance, runStatus(runs.entry("NBF-1"))], [undefined, "needs-you"], "the same message does not hold it again");
+  assert.deepEqual(runs.prompts().filter((args) => args[3] === "prompt"), [], "no carry-on prompt is typed into another dialog");
 });
