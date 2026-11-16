@@ -1,5 +1,0 @@
----
-"agent-org": patch
----
-
-A plan that misses a blocker pull request is sent back once by the board, in the planner's own session, before it goes to Needs you (A11-207). On 2026-10-24 A11-179's plan missed seven A11-160 pull requests and A11-191's missed agent-org#1841, and each cost a person's turn to paste the address back. The planning brief now lists every blocker and every pull request of each, with its state, title and address, marks the ones the plan needs a line for (the merged pull requests whose findings the board read) and shows the exact line the check accepts. The planner's Stop hook runs the board's own check (`blocker-findings-check.ts`, now shared with the settle step) before the planner ends and, on a miss, refuses the stop once with the missing addresses; a second miss goes to Needs you, and the card names the missing pull requests and says one automatic retry was made. A blocker with no pull request needs no line. Tracker contract 1.6 adds the optional `titles` of a `Blocker`, which the Linear plugin fills from the pull request's attachment title.
