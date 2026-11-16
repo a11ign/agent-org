@@ -1,5 +1,0 @@
----
-"agent-org": patch
----
-
-The work gate no longer lists rows through GitHub SEARCH (a11ign/a11ign#5050, the gate half of #5039). `gh issue list --label` and `--search` are sent as a search whose allowance is separate from, and far smaller than, the GraphQL points, and the scheduler App's installation spent it. The gate's label lists (`ready`, `backlog`, `needs:chairman`, the claimed rows' comments, the closed `in-progress` debris, the resolver-defect row) are now `repository.issues(labels:)` connections; the closed rows owing an answer are aliased `issues`/`pullRequests` connections; the newest-updated closed rows are `issues(orderBy: UPDATED_AT)`. On a tick whose open list is complete the three open label lists are still answered from it and not sent. Every one of these reads shares one refusal memory: a read the limit refused is not asked again in the tick, whichever list it was, and the line it leaves names the resource that refused it. `src/packaging/no-search-reads.test.ts` now walks `work-gate.ts`, `queue-table.ts`, `work-tick.ts` and `work-gate/`.
