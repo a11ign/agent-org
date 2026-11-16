@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { dirname } from "node:path";
 import { tmpDir } from "../lib/tmp-fixture.ts";
 import type { ExecResult } from "../plugins/manifest.ts";
 import { createReadiness, LOW_READINESS, type ReadinessAnswer, READINESS_BOUNDS, readinessPath, readinessPrompt, readinessRoute, scoreOf } from "./readiness.ts";
@@ -117,6 +118,64 @@ test("A11-443: a call that fails is kept as failed and said, and is not tried ag
   assert.equal(answer.scores["A11-1"]?.state, "failed");
   assert.equal(prompts.length, 1);
   assert.deepEqual(said, ["the readiness of A11-1 could not be scored: the model's answer could not be read (exit 1): claude: the allowance is spent"]);
+});
+
+/** A state directory whose kept scores file holds `contents`, written as is. */
+function keptFile(contents: string): string {
+  const dir = tmpDir("readiness-");
+  mkdirSync(dirname(readinessPath(dir)), { recursive: true });
+  writeFileSync(readinessPath(dir), contents);
+  return dir;
+}
+
+/** Asks the scorer over `dir` for a ticket with a description and one without, twice, and checks it fails closed: each failed with why, no model call, the file unchanged, said once. */
+async function assertFailsClosed(dir: string, why: RegExp): Promise<void> {
+  const before = readFileSync(readinessPath(dir));
+  const { readiness, prompts, said } = scorer({ dir });
+  const empty = ticketOf("A11-2", "");
+  for (let ask = 0; ask < 2; ask += 1) {
+    const [, answer] = post(readiness, [VAGUE, empty]);
+    for (const key of ["A11-1", "A11-2"]) {
+      const view = answer.scores[key];
+      assert.equal(view?.state, "failed", `${key} is failed, not scored again`);
+      assert.match((view as { reason: string }).reason, why);
+    }
+    await readiness.idle();
+  }
+  assert.equal(prompts.length, 0, "the model is not asked");
+  assert.deepEqual(readFileSync(readinessPath(dir)), before, "the file is left byte for byte as it was");
+  assert.equal(said.length, 1, "the unreadable file is said once, not on every ask");
+  assert.match(said[0]!, why);
+}
+
+test("A11-443: a kept scores file that is not JSON fails closed: no model call, the file is not written over, and every ticket is failed with why", async () => {
+  await assertFailsClosed(keptFile('{"scores": {"A11-1": {"hash": "'), /cannot be read/);
+});
+
+test("A11-443: a kept scores file that is JSON but not { scores: {...} } fails closed", async () => {
+  await assertFailsClosed(keptFile('{"scores": 5}'), /does not hold/);
+  await assertFailsClosed(keptFile("[]"), /does not hold/);
+});
+
+test("A11-443: a kept scores file that cannot be read fails closed", async () => {
+  const dir = tmpDir("readiness-");
+  mkdirSync(readinessPath(dir), { recursive: true });
+  const { readiness, prompts, said } = scorer({ dir });
+  assert.equal(post(readiness, [VAGUE])[1].scores["A11-1"]?.state, "failed", "a path that cannot be read as a file (here a directory, EISDIR, whoever runs the test) is failed");
+  await readiness.idle();
+  assert.equal(prompts.length, 0, "the model is not asked");
+  assert.match(said[0]!, /cannot be read/);
+});
+
+test("A11-443: a kept scores file put right is used without a restart", async () => {
+  const dir = keptFile("not json");
+  const { readiness, prompts } = scorer({ dir });
+  assert.equal(post(readiness, [VAGUE])[1].scores["A11-1"]?.state, "failed");
+  rmSync(readinessPath(dir));
+  assert.deepEqual(post(readiness, [VAGUE])[1].scores["A11-1"], { state: "pending" }, "with the file gone, nothing is scored yet, so the call starts");
+  await readiness.idle();
+  assert.equal(prompts.length, 1);
+  assert.equal(JSON.parse(readFileSync(readinessPath(dir), "utf8")).scores["A11-1"].score, 20);
 });
 
 test("A11-443: a ticket with no description is scored 0 without asking the model", () => {

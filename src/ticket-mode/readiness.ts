@@ -6,6 +6,8 @@
 // AT MOST ONE MODEL CALL PER DESCRIPTION. A score is kept in `<stateDir>/tickets/readiness.json` with the hash of the description it was made from (`descriptionHash`, the one every brief
 // stamps with). A ticket whose description hashes the same is answered from the file and the model is not asked. A call that fails is kept too, by the same hash: it is not tried again until
 // the description changes, so a model that is down costs one call per ticket, not one per page read. A call already under way for that hash is never started twice.
+// A kept file that is there but cannot be read fails closed: every ticket is answered `failed` with why, the model is not asked and the file is not written, so a broken file never costs a
+// second call for a description already scored, nor loses the scores it holds. Only a missing file means nothing is scored yet.
 //
 // THE PAGE NEVER WAITS FOR THE MODEL. A ticket with no score for its description is answered `pending` at once, and its call starts in the background, at most READINESS_PARALLEL at a time;
 // the page asks again while any is pending. The model runs under `execFile` (`realExecAsync`), so the board's loop is never held.
@@ -60,15 +62,25 @@ export type ReadinessDeps = Readonly<{
 /** The file the scores are kept in. */
 export const readinessPath = (stateDir: string): string => join(stateDir, "tickets", "readiness.json");
 
-/** The kept scores, by ticket key. A file that is missing, or cannot be read, is none: the worst that does is one more call per ticket. */
-function readRecords(stateDir: string): Map<string, ReadinessRecord> {
+/** The kept scores, by ticket key, or why the file that holds them cannot be read. */
+type KeptRecords = Readonly<{ records: Map<string, ReadinessRecord> } | { unreadable: string }>;
+
+/** Whether `value` is a plain object, as the file's `scores` must be. PURE. */
+const isPlainObject = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
+
+/**
+ * The kept scores, by ticket key. A missing file is none: nothing has been scored yet. A file that is there but cannot be read, or does not hold `{ scores: {...} }`, FAILS CLOSED: it is
+ * answered `unreadable`, so the scorer neither asks the model again for scores it may already hold nor writes over the file (A11-443 review of #2062).
+ */
+function readRecords(stateDir: string): KeptRecords {
   const path = readinessPath(stateDir);
-  if (!existsSync(path)) return new Map();
+  if (!existsSync(path)) return { records: new Map() };
   try {
-    const { scores } = JSON.parse(readFileSync(path, "utf8")) as { scores?: Record<string, ReadinessRecord> };
-    return new Map(Object.entries(scores ?? {}));
-  } catch {
-    return new Map();
+    const kept = JSON.parse(readFileSync(path, "utf8")) as unknown;
+    if (!isPlainObject(kept) || !isPlainObject(kept.scores ?? {})) return { unreadable: `${path} does not hold { "scores": { ... } }` };
+    return { records: new Map(Object.entries((kept.scores ?? {}) as Record<string, ReadinessRecord>)) };
+  } catch (error) {
+    return { unreadable: `${path} cannot be read: ${(error as Error).message}`.slice(0, REASON_CHARS) };
   }
 }
 
@@ -123,10 +135,35 @@ function viewOf(record: ReadinessRecord): ReadinessView {
 /** The first line of what a failed run said, for its kept reason. PURE. */
 const failureOf = (answer: ExecResult): string => `the model's answer could not be read (exit ${String(answer.status)}): ${(answer.stderr || answer.stdout).trim().split("\n")[0] ?? ""}`.slice(0, REASON_CHARS);
 
+/**
+ * The kept scores, read once; or, while the file cannot be read, why. An unreadable file is read again on the next load (nothing is kept from it), so a file put right is used without a
+ * restart, and until then the scorer asks nothing of the model and writes nothing. The unreadable file is said once per reason, not on every page read.
+ */
+function keptScores(deps: Pick<ReadinessDeps, "stateDir" | "log">) {
+  let records: Map<string, ReadinessRecord> | null = null;
+  let saidUnreadable: string | null = null;
+  function load(): KeptRecords {
+    if (records !== null) return { records };
+    const read = readRecords(deps.stateDir);
+    if ("records" in read) records = read.records;
+    else if (saidUnreadable !== read.unreadable) {
+      saidUnreadable = read.unreadable;
+      deps.log(`the readiness scores are not used, and none is asked for or written, until the file is put right or removed: ${read.unreadable}`);
+    }
+    return read;
+  }
+  /** The kept scores, once {@link load} has read them: the scorer only keeps a score after a load that succeeded, so this never runs before one. */
+  function loaded(): Map<string, ReadinessRecord> {
+    if (records === null) throw new Error("the readiness scores were kept to before the file was read");
+    return records;
+  }
+  return { load, loaded };
+}
+
 /** The scorer the board keeps for its life: what it has kept, read once from the file, and the calls under way. */
 export function createReadiness(deps: ReadinessDeps) {
-  let records: Map<string, ReadinessRecord> | null = null;
-  const kept = (): Map<string, ReadinessRecord> => (records ??= readRecords(deps.stateDir));
+  const store = keptScores(deps);
+  const kept = store.loaded;
   /** The calls under way and waiting, each by `<key> <hash>`, so one description is never asked twice at once. */
   const asked = new Set<string>();
   /** The hash of each ticket's latest description asked for: an answer for an older one, which ends after the newer one's, is dropped rather than kept over it. */
@@ -170,10 +207,15 @@ export function createReadiness(deps: ReadinessDeps) {
     }
   }
 
-  /** `ticket`'s readiness now: its kept score when its description is the one scored, or pending, with its call started when none is under way. A ticket with no description is scored 0 with no call. */
+  /**
+   * `ticket`'s readiness now: its kept score when its description is the one scored, or pending, with its call started when none is under way. A ticket with no description is scored 0 with
+   * no call. While the kept scores cannot be read, every ticket is failed with that reason, and no call starts.
+   */
   function readinessOf(ticket: Ticket): ReadinessView {
+    const read = store.load();
+    if ("unreadable" in read) return { state: "failed", reason: `The kept scores cannot be read: ${read.unreadable}`.slice(0, REASON_CHARS) };
     const hash = descriptionHash(ticket.description);
-    const record = kept().get(ticket.key);
+    const record = read.records.get(ticket.key);
     if (record?.hash === hash) return viewOf(record);
     if (ticket.description.trim() === "") {
       const empty: ReadinessRecord = { hash, at: deps.now(), score: 0, reasons: ["The ticket has no description."] };
