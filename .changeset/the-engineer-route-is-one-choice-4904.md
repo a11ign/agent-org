@@ -1,5 +1,0 @@
----
-"agent-org": minor
----
-
-The engineer route can be ONE choice put to Jev instead of four questions composed by hand thresholds (a11ign/a11ign#4904). A project declaration's optional `routing` block (`question: "choice" | "traits"`, `routes`, `guidance`, `cheaperMinP`, `dearerMinP`) selects it; an absent block is today's `traits` rule, byte for byte, and the block is validated at load (an unknown route, a fallback route left out, an unknown key or a threshold outside (0, 1] is refused naming the field). In `choice` mode the provider's pick is taken when cheaper than the fallback at P >= 0.5 or dearer at P >= 0.7; an off-list answer, a pick under its threshold, no distribution or a failed call is the deterministic fallback, and the four questions are still asked and logged. `tier:<model>-<effort>` labels override the provider for any configured route, and a row nothing may lower is never lowered by one. The outcome line gains `[pick …; ran …; because …; P …; <n>ms]`, which `pickedOf` reads back.
