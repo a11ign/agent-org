@@ -10,7 +10,8 @@
 // - THE TRACKER: the worker is started with no MCP server (`--strict-mcp-config`, and claude.ai's connectors off), and `agent-org` is a stand-in that refuses, as is the host's
 //   own launcher by its path. Every `AGENT_ORG_*` variable is dropped and `AGENT_ORG_HOST` names a file that does not exist, so agent-org code the worker or its tests run (the
 //   clone's own `src/bin.ts`) refuses for want of a host file instead of falling back to `~/.agent-org/host.json` and the tracker key it names.
-// - THE BRIEF'S OWN COMMANDS: the worktree and pull-request commands the brief names are stand-ins that make a worktree of the local clone and record the pull request.
+// - THE BRIEF'S OWN COMMANDS: the worktree and pull-request commands the brief names are stand-ins that make a worktree of the local clone and record the pull request, and the pre-PR
+//   review's (A11-440) runs `ticket:review-local`'s logic against the eval's ticket folder (`local-review.ts`), whose reviewer is the eval's own, read-only.
 // A stand-in `tailscale` is first on `PATH` too: a test in agent-org's suite runs the real one and switches the board's serves off (the house rules, until A11-279).
 import { chmodSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -23,7 +24,7 @@ export const PULL_BODY_FILE = "pull-request.md";
 export const EVAL_PULL_URL = "https://eval.invalid/pull/1";
 
 /** The stand-ins' names: the brief's worktree and pull-request commands, and the programs that would reach a code host, the tracker or the board's network. */
-export const STAND_INS = Object.freeze({ worktree: "eval-worktree", prOpen: "eval-pr-open", gh: "gh", agentOrg: "agent-org", tailscale: "tailscale" });
+export const STAND_INS = Object.freeze({ worktree: "eval-worktree", prOpen: "eval-pr-open", reviewLocal: "eval-review-local", gh: "gh", agentOrg: "agent-org", tailscale: "tailscale" });
 
 /** `text` as one single-quoted shell word. PURE. */
 export const shellWord = (text: string): string => `'${text.replace(/'/g, `'\\''`)}'`;
@@ -55,16 +56,25 @@ function worktreeStandIn(record: string, clones: Readonly<Record<string, string>
     `echo "worktree for $1: $tree (branch ${branch.replace(/[`$"\\]/g, "")}). Work and commit only there."`].join("\n");
 }
 
+/** The pre-PR review's command (A11-440): the call logged, then `reviewer`, the eval's own program, with the worker's arguments after it. PURE. */
+const reviewLocalStandIn = (record: string, reviewer: readonly string[]): string => [logLine(record, STAND_INS.reviewLocal), `exec ${reviewer.map(shellWord).join(" ")} "$@"`].join("\n");
+
 /** rwxr-xr-x: a stand-in is run by name from `PATH`. */
 const EXECUTABLE = 0o755;
 
-/** Write the stand-ins into `dir`, each executable. Returns `dir`, which goes first on the worker's `PATH`. */
-export function writeStandIns(dir: string, { record, clones, folder, branch }: { record: string; clones: Readonly<Record<string, string>>; folder: string; branch: string }): string {
+/**
+ * Write the stand-ins into `dir`, each executable. Returns `dir`, which goes first on the worker's `PATH`. `reviewer` is the program and arguments the pre-PR review's stand-in runs, the
+ * worker's own arguments appended.
+ */
+export function writeStandIns(dir: string, { record, clones, folder, branch, reviewer }: {
+  record: string; clones: Readonly<Record<string, string>>; folder: string; branch: string; reviewer: readonly string[];
+}): string {
   mkdirSync(dir, { recursive: true });
   mkdirSync(record, { recursive: true });
   const scripts: Record<string, string> = {
     [STAND_INS.worktree]: worktreeStandIn(record, clones, folder, branch),
     [STAND_INS.prOpen]: pullRequestLines(record, STAND_INS.prOpen).join("\n"),
+    [STAND_INS.reviewLocal]: reviewLocalStandIn(record, reviewer),
     [STAND_INS.gh]: ghStandIn(record),
     [STAND_INS.agentOrg]: refusing(record, STAND_INS.agentOrg),
     [STAND_INS.tailscale]: [logLine(record, STAND_INS.tailscale), "exit 0"].join("\n"),

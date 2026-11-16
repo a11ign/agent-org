@@ -12,8 +12,9 @@ import { join } from "node:path";
 import { sandboxGitEnv } from "./lib/git-env.ts";
 import { tmpDir } from "./lib/tmp-fixture.ts";
 import { REVIEWER_EFFORT, REVIEWER_MODEL } from "./review-eval.ts";
-import { compareMain, evaluateTicket, main, report, setFile, ticketReviewPrompt, type RunEvalDeps, type StoreOptions, type TicketResult } from "./run-eval.ts";
-import { runPath, type StoredRun } from "./run-eval/store.ts";
+import { barMain, compareMain, evaluateTicket, main, report, setFile, ticketReviewPrompt, type RunEvalDeps, type StoreOptions, type TicketResult } from "./run-eval.ts";
+import { LOCAL_REVIEW_TOKENS_FILE } from "./run-eval/local-review.ts";
+import { runPath, storeRun, type StoredRun } from "./run-eval/store.ts";
 import { SCHEMA } from "./ticket-mode/config-schema.ts";
 import { ATTEMPTS_FILE, PULL_BODY_FILE, type Git } from "./run-eval/sandbox.ts";
 import { type EvalEntry } from "./run-eval/set.ts";
@@ -37,6 +38,9 @@ const WORKS = (files: Record<string, string>) => [
   "git add --all", "git -c user.name=w -c user.email=w@example.invalid commit --quiet -m work", "git push --quiet origin HEAD",
   "printf 'Closes A11-1\\n' > ../body.md", "gh pr create --title 'fix: the thing' --body-file ../body.md >/dev/null",
 ].join(" && ");
+
+/** The pre-PR review's program: it appends a review of 1,234 tokens to the record its stand-in names, as `scripts/eval-review-local.ts` does through `countingReview`, and is convinced. */
+const FAKE_REVIEWER = ["sh", "-c", `while [ $# -gt 0 ]; do [ "$1" = --record ] && record="$2"; shift; done; printf 'started\\n1234\\n' >> "$record/${LOCAL_REVIEW_TOKENS_FILE}"`, "fake-reviewer"];
 
 /** A source repository with the base and the merged answer, and fakes for everything the eval reads and runs. `over` replaces any of them. */
 function world(over: Partial<RunEvalDeps> & { worker?: string } = {}) {
@@ -65,7 +69,8 @@ function world(over: Partial<RunEvalDeps> & { worker?: string } = {}) {
     },
     test: async (opts) => (calls.tests.push(opts), true),
     review: async (opts) => (calls.reviews.push(opts), "Looks right.\nVERDICT: convinced\n"),
-    host: { plugins: [], drafts: false, prReview: null, lessons: [], keywords: DEFAULT_KEYWORDS, binDir: "/home/x/.local/bin" },
+    reviewer: FAKE_REVIEWER,
+    host: { plugins: [], drafts: false, prReview: null, localReview: false, lessons: [], keywords: DEFAULT_KEYWORDS, binDir: "/home/x/.local/bin" },
     env: { PATH: process.env.PATH, HOME: process.env.HOME, GH_TOKEN: "must-not-reach-the-worker" },
     now: () => clock,
     ...over,
@@ -115,6 +120,17 @@ test("nothing leaves the machine: the push lands in the eval's local origin and 
   assert.equal(git(["log", "-1", "--format=%s", "refs/heads/admin/a11-1-fix"], join(result.dir, "origin.git")).trim(), "work");
   assert.equal(readFileSync(join(result.dir, "record", PULL_BODY_FILE), "utf8"), "# fix: the thing\n\nCloses A11-1\n");
   assert.match(readFileSync(join(result.dir, "record", ATTEMPTS_FILE), "utf8"), /^gh pr create /m);
+});
+
+test("with tickets.localReview on, the worker's pre-PR reviews are run by the eval's reviewer and counted with their tokens; a worker that runs none has none (A11-440)", async () => {
+  const twice = "eval-worktree agent-org >/dev/null && cd agent-org && eval-review-local && eval-review-local --base main";
+  const { root, deps, entry } = world({ worker: twice });
+  const on = await evaluateTicket(entry, { ...deps, host: { ...deps.host, localReview: true } }, OPTIONS(root));
+  assert.match(readFileSync(join(on.dir, "ticket", "brief.md"), "utf8"), /^5b\. .*eval-review-local/m);
+  assert.deepEqual(on.scores.localReviews, { count: 2, tokens: 2468 });
+  assert.match(readFileSync(join(on.dir, "record", ATTEMPTS_FILE), "utf8"), /^eval-review-local --base main$/m);
+  const off = await evaluateTicket(entry, world().deps, OPTIONS(root));
+  assert.deepEqual(off.scores.localReviews, { count: 0, tokens: 0 });
 });
 
 test("the reviewer is the reviewer eval's, asked with the ticket as the spec, the worker's diff and its pull request", async () => {
@@ -389,4 +405,32 @@ test("a worker that fails after printing its result is counted at its tokens, so
   let printed = "";
   assert.equal(await main(["--set", setOf(root, entry, 2)], deps, { ...DEFAULTS(root, { tokenCap: 500 }), out: (text) => (printed += text), workDir: root }), 1);
   assert.match(printed, /^stopped by the token cap: 1 of 2 tickets ran/m);
+});
+
+test("bar reads the stored off and on runs of tickets.localReview and the outcome log, prints the bar, and exits 0 when it is met, 1 when it is missed, 2 when refused (A11-440)", async () => {
+  const { root, deps, entry } = world({ worker: `${WORKS({ "a.ts": "one\ntwo\n" })} && eval-review-local` });
+  const set = setOf(root, entry, 1);
+  const resultsDir = join(root, "results");
+  assert.equal(await main(["--set", set, "--key", "tickets.localReview=on"], { ...deps, host: { ...deps.host, localReview: true } }, { ...DEFAULTS(root), out: () => {}, workDir: root }), 0);
+  const on = readStored(runPath(resultsDir, "set", CLEAN, { name: "tickets.localReview", on: true }));
+  storeRun(resultsDir, { ...on, key: { name: "tickets.localReview", on: false }, results: on.results.map((result) => ({ ...result, scores: { ...result.scores, verdict: "not convinced" } })) });
+  const outcomesFile = join(root, "outcomes.jsonl");
+  const outcome = (cacheRead: number) => ({ v: 1, run: "A11-9@1", ticket: "A11-9", model: "opus", effort: "medium", repos: [], labels: [], prs: [], at: 1, final: "ready-pr", needsYou: 0, wallMs: 1, tokens: {},
+    rounds: [1, cacheRead].map((read) => ({ startedAt: 0, endedAt: 1, outcome: "reviewed", tokens: { opus: { input: 0, output: 0, cacheRead: read, cacheWrite5m: 0, cacheWrite1h: 0 } } })) });
+  const bar = (argv: string[]) => {
+    let printed = "";
+    let said = "";
+    return { code: barMain(argv, { resultsDir, outcomesFile, out: (text) => (printed += text), err: (text) => (said += text) }), printed, said };
+  };
+  writeFileSync(outcomesFile, `${JSON.stringify(outcome(1234))}\n`);
+  const met = bar(["--set", "set", "0d450e9@tickets.localReview=off", "0d450e9@tickets.localReview=on"]);
+  assert.equal(met.code, 0, met.said);
+  assert.match(met.printed, /^first-pass verdict: 0 → 1 convinced of 1 \(\+1\): better$/m);
+  assert.match(met.printed, /^reviewer tokens of the pre-PR reviews: 1,234 in 1 reviews on 1 of 1 tickets: within the 1,234 of the rounds saved$/m, "the fake reviewer's 1,234 tokens, from the run");
+  writeFileSync(outcomesFile, `${JSON.stringify(outcome(1233))}\n`);
+  const missed = bar(["--set", "set", "0d450e9@tickets.localReview=off", "0d450e9@tickets.localReview=on"]);
+  assert.equal(missed.code, 1);
+  assert.match(missed.printed, /^reviewer tokens .*: 1 MORE than the 1,233 of the rounds saved$/m);
+  assert.match(bar(["--set", "set", "0d450e9@tickets.localReview=on", "0d450e9@tickets.localReview=off"]).said, /^REFUSED: the bar needs a run with tickets\.localReview=off/m);
+  assert.match(bar(["--set", "set", "0d450e9"]).said, /bar takes --set and two runs/);
 });
