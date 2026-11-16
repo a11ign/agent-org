@@ -1,7 +1,8 @@
 // @ts-check
 // module: the headless worker of an eval (A11-431) -- its brief (the CURRENT `briefText`), its settings, its command line and the tokens its run reports
 //
-// THE BRIEF IS THE ONE A BOARD WOULD WRITE TODAY, from `briefText` itself, with the host's notes, plugins, draft choice, pre-PR review skill and the tracker's keywords: measuring
+// THE BRIEF IS THE ONE A BOARD WOULD WRITE TODAY, from `briefText` itself, with the host's notes, plugins, draft choice, pre-PR review skill, the review of the local diff before the pull
+// request opens (`tickets.localReview`, A11-440, with its stand-in command) and the tracker's keywords: measuring
 // a change to the brief is the harness's reason for being, so it never keeps a copy. What differs is only what must, for nothing to leave the machine: the worktree and pull-request
 // commands are the eval's stand-ins (`sandbox.ts`), no connector is listed, and no design tool or screenshot is offered. The ticket's comments are left out: read after the
 // merge, they name the merged pull request, which is the answer. So is the board's own run state (blockers, stacks, earlier steps), which a first run of a ticket has none of.
@@ -12,9 +13,16 @@ import { type Keywords, type Ticket } from "../ticket-mode/source.ts";
 import { ticketReadOf } from "../ticket-mode/ticket-read.ts";
 import { firstPrompt, briefText, protectedPaths, workerFlags, workerSettings, type ParentTicket } from "../ticket-mode/worker-files.ts";
 import { type Tokens, tokensOf } from "../trace/tokens.ts";
+import { STAND_INS } from "./sandbox.ts";
 
-/** What the host says about how its workers behave, read from its host file. */
-export type HostBrief = Readonly<{ notes?: string; plugins: readonly string[]; drafts: boolean; prReview: string | null; keywords: Keywords; binDir: string }>;
+/**
+ * The switches of the host file that reach the eval's worker: the ones `HostBrief` carries into its brief or settings. `--key` may name only these (`key.ts`), since a switch the
+ * eval does not hand on would run a whole set and change nothing. A feature that ships off adds its key here when it carries it into `HostBrief`.
+ */
+export const EVAL_SWITCHES: readonly string[] = ["tickets.drafts", "tickets.localReview"];
+
+/** What the host says about how its workers behave, read from its host file. `localReview` is `tickets.localReview`: the brief asks for a review of the local diff before the pull request opens. */
+export type HostBrief = Readonly<{ notes?: string; plugins: readonly string[]; drafts: boolean; prReview: string | null; localReview: boolean; keywords: Keywords; binDir: string }>;
 
 /** Where the eval's worker works: its folder (the cwd), the ticket's directory (brief and attachments), the clones by name and the stand-ins' directory. */
 export type Place = Readonly<{ folder: string; ticketDir: string; clones: Readonly<Record<string, string>>; standIns: string }>;
@@ -25,7 +33,8 @@ export function evalBrief({ ticket, attachments, parent, place, host, repo, now 
 }): string {
   return briefText({
     ticket, folder: place.folder, ticketDir: place.ticketDir, attachments, parent, clones: place.clones, repo,
-    worktreeCommand: `${place.standIns}/eval-worktree`, prOpenCommand: `${place.standIns}/eval-pr-open`,
+    worktreeCommand: `${place.standIns}/${STAND_INS.worktree}`, prOpenCommand: `${place.standIns}/${STAND_INS.prOpen}`,
+    ...(host.localReview ? { localReviewCommand: `${place.standIns}/${STAND_INS.reviewLocal}` } : {}),
     ...(host.notes === undefined ? {} : { notes: host.notes }), connectors: [], drafts: host.drafts, designTools: false, capture: false, prReview: host.prReview, keywords: host.keywords,
     read: ticketReadOf(ticket, now),
   });

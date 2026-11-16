@@ -29,7 +29,8 @@ function cloned() {
   const answer = commit(source, "b.txt", "the merged answer\n");
   const place = { origin: join(root, "origin.git"), clone: join(root, "clone"), folder: join(root, "folder"), record: join(root, "record"), standIns: join(root, "bin"), ghConfig: join(root, "gh-config"), noHost: join(root, "no-host.json") };
   cloneAt(git, { source, sha: base, origin: place.origin, clone: place.clone });
-  writeStandIns(place.standIns, { record: place.record, clones: { "agent-org": place.clone }, folder: place.folder, branch: "admin/a11-1-x" });
+  const reviewer = ["sh", "-c", `printf '%s\\n' "$@" > ${shellWord(join(root, "reviewer-args"))}; exit 1`, "reviewer"];
+  writeStandIns(place.standIns, { record: place.record, clones: { "agent-org": place.clone }, folder: place.folder, branch: "admin/a11-1-x", reviewer });
   const env = offlineEnv({ ...process.env, GH_TOKEN: "secret" }, place);
   const sh = (command: string, cwd: string = root) => spawnSync("sh", ["-c", command], { cwd, env, encoding: "utf8" });
   return { root, source, base, answer, place, env, sh };
@@ -131,4 +132,12 @@ test("the offline environment drops credentials, git redirects and the board's v
 
 test("shellWord quotes a single quote", () => {
   assert.equal(execFileSync("sh", ["-c", `printf %s ${shellWord("it's $HOME")}`], { encoding: "utf8" }), "it's $HOME");
+});
+
+test("the pre-PR review's stand-in logs the call and runs the eval's reviewer program, the worker's arguments after it, with its exit code (A11-440)", () => {
+  const { root, place, sh } = cloned();
+  const ran = sh("eval-review-local --base 'a b'");
+  assert.equal(ran.status, 1, "the reviewer's exit code is the worker's answer: 1 is not convinced");
+  assert.deepEqual(readFileSync(join(root, "reviewer-args"), "utf8").split("\n").slice(0, -1), ["--base", "a b"]);
+  assert.match(readFileSync(join(place.record, ATTEMPTS_FILE), "utf8"), /^eval-review-local --base a b$/m);
 });

@@ -185,6 +185,15 @@ test("A11-432: a hand-back is read once, from its Needs-you event, and a cap is 
   assert.deepEqual(retroEvidence({ records: [run], runLog, since: NOW - 7 * DAY }).get("agent-org")!.map(({ source }) => source), ["needs-you", "cap", "cap", "finished:crashed"]);
 });
 
+test("A11-432: a question the answerer settled is read as a Needs-you cause, since the question was still asked (A11-438 logs only its answer)", () => {
+  const run = runOf(1, 1);
+  const at = run.rounds[0]!.startedAt! + 60_000;
+  const runLog: Record<string, RunEvent[]> = { "A11-1": [{ kind: "auto-answered", answer: "add a changeset for every published package", confidence: 0.95, sources: ["AGENTS.md"], at }] };
+  assert.deepEqual(retroEvidence({ records: [run], runLog, since: NOW - 7 * DAY }).get("agent-org"), [
+    { run: run.run, at, source: "needs-you:answered", text: "a question the answerer settled from what is written down: add a changeset for every published package" },
+  ]);
+});
+
 test("A11-432: a stray file in the lessons folder whose name is not a repository's stops no repository's retro", async () => {
   const b = boardWith({});
   writeLessons(b.dir, "agent-org", [lesson("old", "an old lesson", 31)]);

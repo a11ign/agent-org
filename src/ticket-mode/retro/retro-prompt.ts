@@ -5,13 +5,10 @@
 // a run it cites must be one of the items' runs, a new lesson must cite at least {@link RECURRING_MIN} of them (a lesson is a cause that RECURS, not one run's mistake), and a lesson that
 // re-confirms an old one must name that lesson's id and cite at least one run. Whatever fails a check is dropped, so a lesson on the board always names runs that happened.
 import type { RetroItem } from "./evidence.ts";
-import type { Lesson, Proposal } from "./lessons-store.ts";
+import { type Lesson, LESSON_TEXT_MAX, type Proposal } from "./lessons-store.ts";
 
 /** The fewest runs a new lesson cites. */
 export const RECURRING_MIN = 2;
-
-/** The longest a lesson's text is kept. */
-const LESSON_TEXT_MAX = 300;
 
 /** The prompt for `repo`'s retro: the instruction, its lessons so far and the items, one per line. PURE. */
 export function retroPrompt(repo: string, lessons: readonly Lesson[], items: readonly RetroItem[]): string {

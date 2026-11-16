@@ -6,7 +6,6 @@ import { COMMANDS } from "../commands.ts";
 import { tmpDir } from "../lib/tmp-fixture.ts";
 import { startHerdr, type MoveDeps } from "./herdr-move.ts";
 import type { HerdrPlace } from "./herdr-place.ts";
-import { retireGuards } from "./interim-guards.ts";
 import { main, ServiceRefusal, unitFor, type RunResult, type ServiceDeps } from "./service.ts";
 
 const done = (stdout = ""): RunResult => ({ status: 0, stdout, stderr: "" });
@@ -43,7 +42,6 @@ function mac({ from, afterStart = IN_UNIT, answers = {} }: Mac) {
   };
   const deps: MoveDeps = {
     services, liveRuns: () => 0, placeOf: () => current, wait: async () => undefined,
-    retire: () => retireGuards({ platform: "darwin", env: {}, home, exists: services.exists, remove: () => undefined, run, replacements: async () => ({ ghWrapperDeclared: true, herdrInOwnUnit: true }) }),
   };
   return { deps, services, calls, files, unit: unitFor("herdr", services) };
 }
@@ -104,12 +102,6 @@ test("a unit that cannot be written fails step 1 and says which folder to make w
   const unwritable: MoveDeps = { ...deps, services: { ...deps.services, write: () => { throw new Error("EACCES: permission denied"); } } };
   await assert.rejects(() => startHerdr({ move: true }, unwritable), (err: Error) => err.message.startsWith("step 1 of 4 (registering the unit) failed: EACCES: permission denied. Make ")
     && err.message.includes(unit.path.slice(0, unit.path.lastIndexOf("/"))));
-});
-
-test("guards whose retirement never settles time out with a message instead of ending the process", async () => {
-  const { deps } = mac({ from: { kind: "none" } });
-  const hanging: MoveDeps = { ...deps, limitMs: 50, retire: () => new Promise(() => undefined) };
-  await assert.rejects(() => startHerdr({ move: true }, hanging), (err: Error) => err instanceof ServiceRefusal && err.message === "`retiring the interim guards` did not finish within 0.05s");
 });
 
 test("a plain start of herdr prints no steps and does not wait for the server to answer", async () => {
