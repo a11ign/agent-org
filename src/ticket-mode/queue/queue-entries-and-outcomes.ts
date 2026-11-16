@@ -530,7 +530,12 @@ export type Queue = Readonly<{ entries: readonly Entry[]; max: number; paused: b
   /** What each ticket's pushes have cost in CI, by ticket key, as the board last read it (A11-261, `ci-spend/store.ts`). Kept beside the entries for the reason the run log is: a run that is dropped or retried keeps its ticket's total. Unset until something is read. */
   ciSpend?: Readonly<Record<string, TicketCi>>;
   /** How often a person had to step in, by UTC day: the runs that went to Needs you and the fixes a chairman session recorded, for the last 30 days (A11-257, `queue/interventions.ts`). Unset until one is counted. */
-  interventions?: Interventions }>;
+  interventions?: Interventions;
+  /**
+   * The Claude allowance as the board last saw it spent (A11-434): the message a run was refused with, and the reset it names. Until then no run starts, since it would be refused as well; it
+   * lapses at its reset by itself, and a later reset read from another run replaces it. Unset until a run is first refused.
+   */
+  allowance?: Readonly<{ text: string; until: number }> }>;
 
 /**
  * A ticket a new-ticket run created, as the board shows it (A11-135): its key, its address when the tracker has the ticket, and whether Pick's list

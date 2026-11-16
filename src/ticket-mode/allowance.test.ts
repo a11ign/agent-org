@@ -2,10 +2,8 @@
 // A11-434 (step 1 of 2): a worker out of Claude allowance is held as Waiting: allowance with its reset time, never ended as crashed, failed or for having no outcome
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdirSync, utimesSync, writeFileSync } from "node:fs";
+import { writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { poolFixture } from "./pool-fixture.ts";
-import { herdrName } from "./pool.ts";
 import { ticketDir } from "./ticket-paths.ts";
 import { reasonOf } from "./board-view/run-reason.ts";
 import { runStatus } from "./board-view/pull-status-and-notes.ts";
@@ -13,61 +11,7 @@ import { clockOf } from "./board-view/update-banner.ts";
 import { IDLE_RESUME_MS } from "./pool-resume.ts";
 import { holdAllowance, holdChanges, showsLimitMenu, spentOnLimitMenu } from "./allowance.ts";
 import { requeueForUpdate } from "./queue/queue-pins.ts";
-
-const MIN = 60_000;
-/** 13:00 UTC: the board's clock when the worker is refused. */
-const T0 = Date.UTC(2026, 10, 13, 13, 0, 0);
-/** 14:00 UTC, the reset the message names. */
-const RESET = Date.UTC(2026, 10, 13, 14, 0, 0);
-const SAID = "You've hit your session limit · resets 2pm (UTC)";
-/** The limit menu as Claude Code 2.1.299 drew it on the host (captured 2026-10-13), with this test's reset. */
-const MENU = [
-  `  ⎿  ${SAID}`, "", "   What do you want to do?", "", "   ❯ 1. Stop and wait for limit to reset", "     2. Wait here, then continue automatically shortly",
-  "     3. Switch to usage credits", "", "   Enter to confirm · Esc to cancel",
-].join("\n");
-
-/** One transcript line as Claude Code writes it: a reply of `role` saying `text` at `at`. */
-const line = (role: "user" | "assistant", text: string, at: number): string =>
-  JSON.stringify({ type: role, isSidechain: false, timestamp: new Date(at).toISOString(), message: { role, content: [{ type: "text", text }] } });
-
-/** NBF-1 started and seen working, on a clock the test moves, with a transcript the test writes to. */
-async function liveRun() {
-  let clock = T0 - 30 * MIN;
-  const made = poolFixture({ keys: ["NBF-1"], max: 1, now: () => clock });
-  await made.pool.tick();
-  const name = herdrName("NBF-1");
-  made.status.set(name, "working");
-  await made.pool.tick();
-  const dir = join(made.root, "transcripts", "-ticket-folder");
-  mkdirSync(dir, { recursive: true });
-  const transcript = join(dir, `session-${name}.jsonl`);
-  const lines: string[] = [line("user", "Read the brief and follow it.", clock)];
-  const say = (role: "user" | "assistant", text: string, at = clock) => {
-    lines.push(line(role, text, at));
-    writeFileSync(transcript, `${lines.join("\n")}\n`);
-    utimesSync(transcript, new Date(at), new Date(at));
-  };
-  say("assistant", "Reading the brief.");
-  const advance = async (ms: number) => { clock += ms; await made.pool.tick(); await new Promise<void>((resolve) => { setImmediate(resolve); }); };
-  const prompts = () => made.herdr.calls.filter((args) => args[3] === "prompt" || args[3] === "send-keys");
-  const status = (value: string) => made.status.set(name, value);
-  /** The transcript's tail as nothing can read it: a line cut or half-written, with no whole entry after the last one the board read. */
-  const garble = (text: string) => {
-    writeFileSync(transcript, text);
-    utimesSync(transcript, new Date(clock), new Date(clock));
-  };
-  return { ...made, name, say, garble, status, advance, prompts, now: () => clock, set: (at: number) => { clock = at; } };
-}
-
-/** NBF-1 refused at 13:00 with the reset at 14:00 as its last reply, its agent idle, and the board's next pass made. */
-async function refusedIdle() {
-  const run = await liveRun();
-  run.set(T0);
-  run.say("assistant", SAID);
-  run.status("idle");
-  await run.advance(MIN);
-  return run;
-}
+import { liveRun, MENU, MIN, refusedIdle, RESET, SAID, T0 } from "./allowance-fixture.ts";
 
 test("A11-434 AC1: a worker idle on the usage-limit message with a reset at 14:00 reads Waiting: allowance until 14:00, and is neither crashed nor failed", async () => {
   const run = await refusedIdle();
