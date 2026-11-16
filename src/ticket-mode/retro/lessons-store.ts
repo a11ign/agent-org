@@ -8,8 +8,11 @@
 // dropped by the next retro ({@link mergeLessons}), whether or not that retro read anything for its repository.
 //
 // AN UNREADABLE FILE IS AN ERROR, NOT EMPTY (A11-358): the retro would otherwise overwrite a person's lessons with none. A file that does not exist yet holds no lessons.
+//
+// A PERSON MAY EDIT OR DELETE A LESSON ON THE BOARD (step 2): {@link editLesson} changes its text and keeps its runs and dates, so a retro that finds it again re-confirms the person's words;
+// {@link deleteLesson} drops it, and the next brief carries none.
 
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 /** The most lessons one repository's file keeps: the most recently confirmed. */
@@ -36,6 +39,22 @@ export const lessonsDir = (stateDir: string): string => join(stateDir, "tickets"
 /** The lessons file of `repo`: its name kept readable, and a `/` (an `owner/name`) made safe for one file name. */
 export const lessonsPath = (stateDir: string, repo: string): string => join(lessonsDir(stateDir), `${encodeURIComponent(repo)}.json`);
 
+/** The repositories that have a lessons file, sorted. A file whose name is not one {@link lessonsPath} writes is no repository's. */
+export function reposWithLessons(stateDir: string): string[] {
+  const dir = lessonsDir(stateDir);
+  if (!existsSync(dir)) return [];
+  return readdirSync(dir).filter((name) => name.endsWith(".json")).flatMap((name) => repoOfFile(name.slice(0, -".json".length))).sort();
+}
+
+/** The repository a lessons file's name stands for, or none for a name that is not one `lessonsPath` writes: a stray file stops no repository's retro. PURE. */
+function repoOfFile(name: string): string[] {
+  try {
+    return [decodeURIComponent(name)];
+  } catch {
+    return [];
+  }
+}
+
 /** `repo`'s lessons, or none when it has no file yet. Throws naming the file when it is not a lessons file. */
 export function readLessons(stateDir: string, repo: string): readonly Lesson[] {
   const path = lessonsPath(stateDir, repo);
@@ -57,6 +76,51 @@ export function writeLessons(stateDir: string, repo: string, lessons: readonly L
   const file: LessonsFile = { v: 1, repo, lessons };
   writeFileSync(`${path}.tmp`, `${JSON.stringify(file, null, 2)}\n`);
   renameSync(`${path}.tmp`, path);
+}
+
+/** The longest a lesson's text is: one line a brief carries, not a document. The retro cuts a model's text to it, and a person's edit over it is refused. */
+export const LESSON_TEXT_MAX = 300;
+
+/** Why an edit or a delete was refused: the lesson or its repository is not there, or the text is not one a lesson may hold. The route answers it as the page's sentence. */
+export class LessonRefusal extends Error {}
+
+/** `text` as a lesson holds it: one line, trimmed. Throws a {@link LessonRefusal} for an empty text or one over {@link LESSON_TEXT_MAX}. PURE. */
+function lessonTextOf(text: string): string {
+  const line = text.replace(/\s+/g, " ").trim();
+  if (line === "") throw new LessonRefusal("a lesson needs some text; delete it to drop it");
+  if (line.length > LESSON_TEXT_MAX) throw new LessonRefusal(`a lesson is one line of at most ${LESSON_TEXT_MAX} characters, not ${line.length}`);
+  return line;
+}
+
+/** `repo`'s lessons for a change, or a {@link LessonRefusal} naming why its file cannot be read: a person's edit is never written over a file the board cannot read. */
+function readableLessons(stateDir: string, repo: string): readonly Lesson[] {
+  try {
+    return readLessons(stateDir, repo);
+  } catch (error) {
+    throw new LessonRefusal(`${repo}'s lessons cannot be changed: ${(error as Error).message}`);
+  }
+}
+
+/** `repo`'s lessons with lesson `id` changed by `change`, written. Throws a {@link LessonRefusal} when the repository has no such lesson. */
+function changeLesson(stateDir: string, repo: string, id: string, change: (lesson: Lesson) => Lesson | null): readonly Lesson[] {
+  const lessons = readableLessons(stateDir, repo);
+  const found = lessons.find((lesson) => lesson.id === id);
+  if (found === undefined) throw new LessonRefusal(`${repo} has no lesson ${id}: it may have expired, or been deleted`);
+  const changed = change(found);
+  const next = lessons.flatMap((lesson) => (lesson.id !== id ? [lesson] : changed === null ? [] : [changed]));
+  writeLessons(stateDir, repo, next);
+  return next;
+}
+
+/** A person's edit of lesson `id` of `repo`: its text becomes `text`, made one line; its runs and dates are kept. Answers the repository's lessons after it. */
+export function editLesson(stateDir: string, repo: string, id: string, text: string): readonly Lesson[] {
+  const line = lessonTextOf(text);
+  return changeLesson(stateDir, repo, id, (lesson) => ({ ...lesson, text: line }));
+}
+
+/** A person's delete of lesson `id` of `repo`. Answers the repository's lessons after it. */
+export function deleteLesson(stateDir: string, repo: string, id: string): readonly Lesson[] {
+  return changeLesson(stateDir, repo, id, () => null);
 }
 
 /**

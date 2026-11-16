@@ -62,6 +62,7 @@ import { sectionsNeeded } from "./open-decisions.ts";
 import { boardDependencySweep } from "./dependency-updates/board.ts";
 import { idleBlockerSweep } from "./idle-blockers.ts";
 import { askClaude, retroSweep } from "./retro/retro-job.ts";
+import { lessonsRoute } from "./retro/lessons-route.ts";
 import { realExecAsync } from "../plugins/real-seams.ts";
 import { afterMergeRoute } from "./after-merge/route.ts";
 import { sessionAnswerRoute } from "./session-answers.ts";
@@ -636,6 +637,7 @@ async function routeApi(board: Board, method: string, path: string, body: Json, 
     ?? (await queueActionRoute(board, method, path, body))
     ?? readinessAnswer(board, method, path, body)
     ?? afterMergeRoute({ stateDir: board.settings.stateDir, now: board.now }, method, path, body)
+    ?? lessonsRoute({ stateDir: board.settings.stateDir, on: board.settings.lessons === true }, method, path, body)
     ?? sessionAsksRoute({ stateDir: board.settings.stateDir, now: board.now, queue: board.store.get }, method, path, query)
     ?? sessionAnswerRoute({ stateDir: board.settings.stateDir, now: board.now, queue: board.store.get }, method, path, body)
     ?? [404, { error: `no route ${method} ${path}` }];

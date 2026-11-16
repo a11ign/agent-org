@@ -56,7 +56,7 @@ export function mayAnswer(settings: AutoAnswerSettings | undefined, entry: Entry
 const hasAgentToTell = (entry: Entry): boolean => entry.talk !== true && entry.batch === undefined && entry.workspace !== undefined;
 
 /** Whether a stop under `escalation` may be answered automatically: it names no item of the list, or one of {@link ANSWERABLE_ITEMS}. PURE. */
-const isAnswerableItem = (escalation: string | undefined): boolean => escalationItem(escalation) === undefined || ANSWERABLE_ITEMS.has(escalation ?? "");
+export const isAnswerableItem = (escalation: string | undefined): boolean => escalationItem(escalation) === undefined || ANSWERABLE_ITEMS.has(escalation ?? "");
 
 /** `text` cut to `max` characters, saying so when it was cut. PURE. */
 const cut = (text: string, max: number): string => (text.length <= max ? text : `${text.slice(0, max)}\n[... cut at ${max} characters]`);
@@ -68,7 +68,7 @@ const cut = (text: string, max: number): string => (text.length <= max ? text : 
 export class UnreadableSource extends Error {}
 
 /** The first line of an error, for a message. PURE. */
-const firstLine = (err: unknown): string => String((err as Error)?.message ?? err).split("\n")[0];
+export const firstLine = (err: unknown): string => String((err as Error)?.message ?? err).split("\n")[0];
 
 /** The markdown files of a folder, by name; none when the folder is not there. Throws {@link UnreadableSource} when it is there and cannot be listed. */
 function markdownIn(dir: string): readonly string[] {
@@ -147,7 +147,7 @@ export function answerPrompt(question: string, sources: readonly Source[]): stri
 }
 
 /** The JSON object in a reply: the reply itself, or the first `{` to the last `}`, which drops a fence or a sentence around it. Null when there is none. PURE. */
-function objectIn(text: string): unknown {
+export function objectIn(text: string): unknown {
   const from = text.indexOf("{");
   const to = text.lastIndexOf("}");
   if (from === -1 || to < from) return null;

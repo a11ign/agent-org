@@ -6,7 +6,7 @@
 // a later run that has not ended a round yet) waits for the record that covers it, and is never given to an earlier run. An event no record covers is not read: a lesson must cite its runs.
 //
 // WHAT IS READ is what the board already keeps, so the retro makes no request of the tracker or the code host:
-// - a Needs-you event's reason, and a run's `finished` reason when it ended on anything but a pull request, a check or a hand-back (whose Needs-you event says it);
+// - a Needs-you event's reason, a question the answerer settled instead of a person (A11-438: the question was still asked, and only its answer is logged), and a run's `finished` reason when it ended on anything but a pull request, a check or a hand-back (whose Needs-you event says it);
 // - a round started by review feedback, red checks, a conflict or the CI budget, with the first line of what started it;
 // - the reviewer's `changes-requested` verdict, and a re-review's reasons when it was still not convinced;
 // - the cap's routing to the planner and the planner's Decision, and the stand-off's steps, with their detail.
@@ -38,6 +38,7 @@ const CAP_STEPS: ReadonlySet<string> = new Set(["planner", "decided"]);
 export function itemOf(event: RunEvent): Readonly<{ source: string; text: string }> | null {
   switch (event.kind) {
     case "needs-you": return { source: "needs-you", text: event.reason };
+    case "auto-answered": return { source: "needs-you:answered", text: `a question the answerer settled from what is written down: ${event.answer}` };
     case "round": return FIX_ROUNDS.has(event.cause) && event.reason !== null ? { source: `round:${event.cause}`, text: event.reason } : null;
     case "verdict": return event.review === "changes-requested" ? { source: "review", text: `the reviewer requested changes on ${event.url}` } : null;
     case "rereview": return event.verdict === "not-convinced" ? { source: "rereview", text: event.reasons } : null;

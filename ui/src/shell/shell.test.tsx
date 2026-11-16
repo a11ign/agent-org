@@ -57,7 +57,7 @@ const sidebarNav = (): HTMLElement => {
   return found;
 };
 const mainNav = () => within(sidebarNav());
-/** The sidebar's own link named `name`: Tickets, Runs and Outcomes in its Main navigation, Settings at its foot. */
+/** The sidebar's own link named `name`: Tickets, Runs, Outcomes and Lessons in its Main navigation, Settings at its foot. */
 const sidebarLink = (name: string | RegExp): HTMLElement => {
   const found = within(sidebar()).getAllByRole("link", { name }).filter((link) => !inTopBar(link));
   if (found.length !== 1) throw new Error(`${found.length} sidebar links named ${String(name)}`);
@@ -202,7 +202,7 @@ describe("the connection pill", () => {
 
 describe("the main navigation", () => {
   const pages: readonly (readonly [Page, readonly string[]])[] = [
-    ["tickets", ["Tickets"]], ["runs", ["Runs"]], ["run", ["Runs"]], ["outcomes", ["Outcomes"]],
+    ["tickets", ["Tickets"]], ["runs", ["Runs"]], ["run", ["Runs"]], ["outcomes", ["Outcomes"]], ["lessons", ["Lessons"]],
     ["models", ["Models", "Settings"]], ["workers", ["Workers", "Settings"]], ["machine", ["Machine", "Settings"]], ["plugins", ["Plugins", "Settings"]],
   ];
 
@@ -214,11 +214,12 @@ describe("the main navigation", () => {
     expect((await currentItems()).sort()).toEqual([...items].sort());
   });
 
-  it("links Tickets, Runs, Outcomes and Settings to their routes", async () => {
+  it("links Tickets, Runs, Outcomes, Lessons and Settings to their routes", async () => {
     await shellOn("tickets");
     expect(sidebarLink(/Tickets/).getAttribute("href")).toBe("/tickets");
     expect(sidebarLink(/Runs/).getAttribute("href")).toBe("/runs");
     expect(sidebarLink("Outcomes").getAttribute("href")).toBe("/outcomes");
+    expect(sidebarLink("Lessons").getAttribute("href")).toBe("/lessons");
     expect(sidebarLink("Settings").getAttribute("href")).toBe("/settings/models");
   });
 
@@ -335,11 +336,11 @@ describe("projects and goals", () => {
 });
 
 describe("the sidebar's order", () => {
-  it("runs the mark and its bell, the switcher, the pill, Tickets, Runs, Outcomes, Projects, Goals, then Settings", async () => {
+  it("runs the mark and its bell, the switcher, the pill, Tickets, Runs, Outcomes, Lessons, Projects, Goals, then Settings", async () => {
     await shellOn("tickets", { fallback: { tickets: [ticket({ key: "A11-1", goals: ["Fleet"] })] } });
     await within(sidebar()).findByRole("button", { name: /Fleet/ });
     const focusable = [...sidebar().querySelectorAll<HTMLElement>("select, a, button")].filter((element) => !inTopBar(element)).map((element) => element.tagName === "SELECT" ? "select" : element.getAttribute("aria-label") ?? element.textContent);
-    expect(focusable).toEqual(["Notifications, 0", "select", "Tickets1", "Runs", "Outcomes", "a11ign1", "All goals1", "Fleet1", "Settings"]);
+    expect(focusable).toEqual(["Notifications, 0", "select", "Tickets1", "Runs", "Outcomes", "Lessons", "a11ign1", "All goals1", "Fleet1", "Settings"]);
   });
 
   it("is an aside named Atomaut that holds the Main navigation", async () => {
