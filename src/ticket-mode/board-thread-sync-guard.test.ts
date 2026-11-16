@@ -35,7 +35,6 @@ const ALLOWED: Readonly<Record<string, readonly Allowed[]>> = {
     reason: "the macOS keychain's `security`, read once as the Linear key is, before the instance listens; this host runs Linux, where the key is a file" }],
   "src/ticket-mode/hook.ts": [{ call: "execFileSync(process.execPath", loop: OWN_PROCESS, perHour: 0,
     reason: "`ticket:hook`, the Stop and PreToolUse hook every worker runs under: Claude Code starts it as a process per hook call, and it asks the board's `ticket:pull-now` for a pull request's head" }],
-  "src/ticket-mode/pair-command.ts": [{ call: "spawnSync(file", loop: OWN_PROCESS, perHour: 0, reason: "`ticket:pair`, a command a person runs once to pair a chat; the instance imports none of it" }],
   "src/ticket-mode/review-command.ts": [{ call: "herdrRun(a, 30_000)", loop: OWN_PROCESS, perHour: 0, reason: "`ticket:review`, a command run by hand or by a script; the instance's reviewers are the pool's (`pool-reviewers.ts`)" }],
   "src/ticket-mode/ui-server.ts": [{ call: "execFileSync(\"open\", [url])", loop: "the page service's start, once, on macOS only", perHour: 0,
     reason: "`open` the browser as the page service starts listening; `request-thread-guard.test.ts` lists the same call, and this host runs Linux" }],
@@ -95,6 +94,6 @@ test("every listed call has a loop, a reason and a rate, and the rates together 
 
 test("a one-off command or another process is listed as costing the board thread nothing", () => {
   const ownProcess = Object.entries(ALLOWED).flatMap(([file, listed]) => listed.filter(({ loop }) => loop === OWN_PROCESS).map(() => file));
-  assert.deepEqual(ownProcess.toSorted(), ["plugins/github/command-exec.ts", "src/ticket-mode/hook.ts", "src/ticket-mode/pair-command.ts", "src/ticket-mode/review-command.ts"]);
+  assert.deepEqual(ownProcess.toSorted(), ["plugins/github/command-exec.ts", "src/ticket-mode/hook.ts", "src/ticket-mode/review-command.ts"]);
   for (const file of ownProcess) assert.ok(ALLOWED[file].every(({ perHour }) => perHour === 0));
 });
