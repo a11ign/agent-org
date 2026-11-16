@@ -1,5 +1,5 @@
 // @ts-check
-// module: the pull request's check and merge-queue states as one pure state machine (A11-437, steps 1 and 2 of 3) -- what the board does next about the red and the cancelled checks of a pull request at its head, and about the merge queue's removals of it, from the record it holds and what it read: wait (and why), read, rerun, start a round, ask the arm bot, hold it or name a person. It reads no file, network or clock: the caller does what a step names and feeds the result back
+// module: the pull request's check, merge-queue and settle states as one pure state machine (A11-437) -- what the board does next about the red and the cancelled checks of a pull request at its head, about the merge queue's removals of it, and about a run its pull requests settle, from the record it holds and what it read: wait (and why), read, rerun, start a round, ask the arm bot, hold it, complete the ticket or name a person. It reads no file, network or clock: the caller does what a step names and feeds the result back
 //
 // THE RERUN BOUNDS. A red check is rerun at one head for three reasons: before a worker is asked, when the code failed it (A11-300); when the worker's reply after a round says the failure is not its change's (A11-300); and when its log shows the
 // infrastructure failing (A11-154). Red again after the rerun for its reason, it is named for a person. The record of a head keeps only its last answer, so an infrastructure rerun can come again after the rerun a reply asked for, but a round's
@@ -9,12 +9,17 @@
 // THE MERGE QUEUE'S BOUNDS (step 2). A removal from the merge queue is answered once for a head (A11-264): the failed jobs of its `merge_group` run are rerun at most {@link QUEUE_RERUNS_PER_HEAD} time before a worker is asked (A11-371), the arm bot is asked to arm the pull request
 // again at most {@link MAX_REARMS} times (A11-295), at most one round is started, and the {@link HOLD_AFTER}th removal for failed checks with no push between holds it from the arm bot. `queueStep` decides each of these; `pool-merge-queue.ts` makes the reads, the rerun, the asks and
 // the label calls a step names, and briefs the round. `pr-state-machine-queue.test.ts` feeds random sequences of removals, pushes, approvals, reruns and refusals to it and checks the same three properties.
+//
+// THE SETTLE STATES (step 3). A run's pull requests settle it once every one has merged or closed: complete with one merged, a person asked with all closed unmerged, and a wait, with its reason, while one is open or unread (A11-173). `settleStep` decides it, and
+// `reviewAtHead` reads a head's review for readiness (A11-179), which the cancelled gate turns on (A11-342); `pool-settle.ts` acts on both. `pr-state-machine-settle.test.ts` feeds random sequences to it and checks the same three properties.
 import type { CiRun, PullFeedback, PullQueue, QueueFailure, QueueFailureJob, QueueRemoval } from "../plugins/contracts/code-host.ts";
-import type { CheckHead } from "./board-view/view-types-and-filters.ts";
+import { type CheckHead, openPulls, type PullHead, type ViewEntry } from "./board-view/view-types-and-filters.ts";
 import type { FlakeCandidate, RerunRecord } from "./board-view/check-rerun-record.ts";
 import type { QueueHead, QueueRetry } from "./board-view/queue-head.ts";
 import { MAX_CANCELLED_RUNS } from "./board-view/cancelled-rerun-words.ts";
 import { failedTestOf } from "./failure-words.ts";
+import { settledByPulls } from "./board-view/pull-settled.ts";
+import type { PullState } from "./source.ts";
 
 /**
  * A failing check with what its job's log says of it: the lines to quote, and why it is the infrastructure's and not the code's, when it is. `refusals` are the log's lines that say the check refused
@@ -679,4 +684,39 @@ export function queueStep(pull: QueuePull, event: QueueEvent): QueueStep {
     case "armed": return onArmed(pull, event);
     case "held": return onHeld(pull, event);
   }
+}
+
+// ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+// The settle states (A11-173, A11-179): step 3 of 3
+// ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+/**
+ * What a review round's `done` does with its ticket, from {@link settleStep}: `complete` it now, since every pull request of the run merged or closed and one merged; `ask` a person, since every one closed unmerged and nothing was built;
+ * or `wait` for the merge of the pull requests still open, or not yet read, and `reason` says which.
+ */
+export type SettleStep = Readonly<{ do: "complete" }> | Readonly<{ do: "wait" | "ask"; reason: string }>;
+
+/**
+ * THE SETTLE OF A RUN BY ITS PULL REQUESTS (A11-173). `entry` is the run, whose own pull requests are judged; `states` is what the tracker read of them, by address. Every one merged or closed, with one merged, completes the ticket; every one closed
+ * unmerged asks a person; else the run waits for the ones still open or unread, which the reason names. PURE: it reads no file, network or clock.
+ */
+export function settleStep(entry: ViewEntry, states: Readonly<Record<string, PullState>>): SettleStep {
+  const read = { ...entry, pullStates: states };
+  const settled = settledByPulls(read);
+  if (settled === "completed") return { do: "complete" };
+  if (settled === "cancelled") return { do: "ask", reason: "its pull requests were closed without merging" };
+  const open = openPulls(read).map(({ url }) => url);
+  return { do: "wait", reason: open.length === 0 ? "it has no pull request to settle it" : `${open.join(", ")} not merged or closed yet: the ticket completes when they merge` };
+}
+
+/**
+ * What a read says of a head's review for readiness (A11-179), or undefined when the code host did not say: `none` when no review sits at the head, whatever GitHub's decision says, `approved` when the newest verdict on the head approves it
+ * and GitHub's review decision is approved or needs none, `changes-requested` when a verdict is there and either asks for changes, and `none` otherwise, which is also a branch whose decision still asks for a review. GitHub's decision
+ * follows the pull request and not the commit (A11-340): it stays `changes-requested` after a push to a head nobody has reviewed, so it says nothing of a head without a verdict. PURE.
+ */
+export function reviewAtHead(read: Pick<PullFeedback, "verdictAtHead" | "reviewDecision">): PullHead["review"] {
+  if (read.verdictAtHead === undefined || read.reviewDecision === undefined) return undefined;
+  if (read.verdictAtHead === null) return "none";
+  if (read.reviewDecision === "changes-requested" || read.verdictAtHead === "changes-requested") return "changes-requested";
+  return read.verdictAtHead === "approved" && (read.reviewDecision === "approved" || read.reviewDecision === null) ? "approved" : "none";
 }
