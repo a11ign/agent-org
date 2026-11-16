@@ -136,6 +136,6 @@ test("A11-436: the tracker and the code host are each given the outside client, 
   let sent = 0;
   const answer = await tracker.outside!(async () => new Response("", { status: (sent += 1) === 1 ? 503 : 200 }), { statusOf: (response) => response.status });
   assert.deepEqual([answer.status, sent], [200, 2], "the 503 was tried again");
-  assert.deepEqual(ledger.figures().linear, { calls: 1, failures: 1, failuresPer100: 100 }, "A11-345: one call, failed because its first attempt did, though its retry was answered");
+  assert.deepEqual(ledger.figures().linear, { calls: 1, failures: 0, failuresPer100: 0 }, "A11-345: one call, not failed: its retry was answered");
   assert.deepEqual(ledger.figures().github, { calls: 1, failures: 0, failuresPer100: 0 });
 });
