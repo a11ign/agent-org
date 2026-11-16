@@ -139,3 +139,18 @@ describe("Publish, driven in Chromium", () => {
     await failed.context.close();
   });
 });
+
+describe("Publish on a phone, in Chromium", () => {
+  it("stands the Publish selected bar over the tab bar at 390px (A11-427)", async () => {
+    const list = await open(selectOf(), RUNS, 390);
+    await list.page.locator(".run-row").first().waitFor();
+    for (const key of TICKABLE.slice(0, 2)) await list.page.getByRole("checkbox", { name: `Select ${key} to publish` }).check();
+    const bar = await list.page.locator(".publish-bar").boundingBox();
+    const tabs = await list.page.locator(".tabs").boundingBox();
+    expect(await list.page.locator(".publish-bar").evaluate((element) => getComputedStyle(element).position)).toBe("fixed");
+    expect((bar?.y ?? 0) + (bar?.height ?? 0)).toBeLessThanOrEqual(tabs?.y ?? 0);
+    const height = list.page.viewportSize()?.height ?? 0;
+    expect(height - ((bar?.y ?? 0) + (bar?.height ?? 0))).toBe(76);
+    await list.context.close();
+  });
+});

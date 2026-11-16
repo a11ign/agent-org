@@ -6,7 +6,10 @@
 // reader refuses.
 //
 // THE ANSWER IS `pluginHealth`'s: the same account doctor prints, so a failed plugin's reason and fix are doctor's word for word. It adds the `base` of each file a change would write,
-// which the next action sends back so a file that changed since is refused. NO SECRET IS IN IT: a secret is a command that sets it.
+// which the next action sends back so a file that changed since is refused. NO SECRET IS IN IT: a secret is a command that sets it, or a write-only field with the place it is stored.
+//
+// A SECRET IS TAKEN, NEVER GIVEN (A11-445). `secret` stores a value typed on the page where the plugin reads it (`secrets.ts`), then runs the checks at once and answers the plugin's own
+// rows, so the page says whether the value works. The answer names the place and never the value: every refusal and every check row is scrubbed of it before it leaves.
 //
 // THE CLAUDE CODE PLUGINS (`tickets.plugins`) ARE IN THE ANSWER TOO (A11-201), read from the host file as it is now, so a save that changed the list is seen at once. They are the page's second tab, and
 // with the agent-org plugins they make the `attention` count: the plugins whose checks fail or whose health is unknown, from this one read.
@@ -19,6 +22,9 @@
 // meanwhile says `checking`. Everything else (loading, the Claude plugins, the bases, the note) is read fresh on every read, as before: it is cheap, and an action must see the files as they are.
 // Each plugin's checks run in a child process of their own (`check-child.ts`), all at once: they run programs synchronously, which in this process would hold every other request still.
 import { readFileSync } from "node:fs";
+import { spawn } from "node:child_process";
+import { homedir } from "node:os";
+import { agentOrgHome } from "../install/paths.ts";
 import { type CheckScope, foundInChild, pageDeps } from "../plugins/check-child.ts";
 import type { PluginCliDeps } from "../plugins/cli.ts";
 import { type ActionDone, actionRequestOf, runAction } from "../plugins/page-actions.ts";
@@ -38,6 +44,7 @@ import { baseOf, type EditFile } from "./settings-edit.ts";
 import type { Json } from "./local-http.ts";
 import { parseTicketSettings, type TicketSettings } from "./settings.ts";
 import { ticketFolder } from "./ticket-paths.ts";
+import { type SecretDeps, SecretRefusal, type SecretRequest, secretRequestOf, type Stored, storeSecret, withoutValue } from "./secrets.ts";
 
 /** What the section reads and runs through, each replaceable by a test so no plugin is imported and no program is run. */
 export type PluginsSeam = Readonly<{
@@ -57,6 +64,8 @@ export type PluginsSeam = Readonly<{
   now?: () => number;
   /** Where the board says a plugin row's change (A11-274): the board's log. A test's. */
   log?: (line: string) => void;
+  /** Where a secret typed on the page is stored and how (A11-445): this machine's home, platform, user and `security`, unless a test names its own. */
+  secrets?: Partial<Pick<SecretDeps, "home" | "agentOrgHome" | "platform" | "user" | "uid" | "security">>;
 }>;
 
 /**
@@ -67,6 +76,44 @@ export type PluginsSeam = Readonly<{
 export type PluginsAnswer = PluginHealth & Readonly<{
   claude: ClaudePlugins; attention: number; note: string | null; bases: Readonly<Partial<Record<EditFile, string>>>; checkedAt: string | null; checking: boolean;
 }>;
+
+/** What storing a secret answers: what was stored where, and the plugin's own check rows run on it (null when the plugin is not enabled, so none ran), with when they finished. */
+export type SecretDone = Stored & Readonly<{ checks: readonly PluginCheck[] | null; checkedAt: string | null }>;
+
+/** How long `security` may take: a locked Keychain that waits on a prompt nobody sees is stopped, and the page says why. */
+const SECURITY_MS = 30_000;
+
+/** `security -i` with `input` on its standard input: the value is never an argument of a process. Asynchronous, so the instance answers other requests meanwhile. */
+const runSecurity: SecretDeps["security"] = (input) => new Promise((done) => {
+  const child = spawn("security", ["-i"], { stdio: ["pipe", "pipe", "pipe"], timeout: SECURITY_MS });
+  let stdout = "";
+  let stderr = "";
+  child.stdout.on("data", (chunk: Buffer) => { stdout += chunk.toString("utf8"); });
+  child.stderr.on("data", (chunk: Buffer) => { stderr += chunk.toString("utf8"); });
+  child.on("error", (error) => done({ status: null, stdout, stderr: error.message }));
+  child.on("close", (status, signal) => done({ status, stdout, stderr: signal === null ? stderr : `it did not answer within ${SECURITY_MS / 1000} s (is the Keychain locked?)` }));
+  child.stdin.end(input);
+});
+
+/** What a secret is stored through: this machine's home, platform, user and `security`, unless the seam names a test's own. */
+function secretDepsOf(hostPath: string, catalog: Catalog, seam: PluginsSeam): SecretDeps {
+  const own = seam.secrets ?? {};
+  return { hostPath, projectPath: seam.projectPath, catalog, outgoing: seam.outgoing, home: own.home ?? homedir(), agentOrgHome: own.agentOrgHome ?? agentOrgHome(),
+    platform: own.platform ?? process.platform, user: own.user ?? process.env.USER, uid: own.uid ?? process.getuid?.() ?? -1, security: own.security ?? runSecurity };
+}
+
+/** Stores the secret; a refusal, whatever said it, leaves with the value scrubbed out. */
+async function storeScrubbed(request: SecretRequest, deps: SecretDeps): Promise<Stored> {
+  try {
+    const stored = await storeSecret(request, deps);
+    return { ...stored, said: withoutValue(request.value)(stored.said) };
+  } catch (error) {
+    throw new SecretRefusal(withoutValue(request.value)(messageOf(error)));
+  }
+}
+
+/** A check row with the value scrubbed out of what it says, since a plugin's check may quote what it read. */
+const scrubbedRow = (row: PluginCheck, scrub: (text: string) => string): PluginCheck => ({ ...row, detail: scrub(row.detail), ...(typeof row.fix === "string" ? { fix: scrub(row.fix) } : {}) });
 
 /** How long the last checks are answered before a read starts them again. A page left open does not run them more than once a minute. */
 export const FRESH_MS = 60_000;
@@ -173,11 +220,12 @@ export function pluginsApi(options: Readonly<{ hostPath: string; settings: Ticke
    * Runs the checks on the host file as it is now, and keeps what they found. A run that fails keeps the last checks: the read that loads the plugins says why. Each row that starts failing, says something new, or
    * passes again is said once on the board's log (A11-274).
    */
-  async function runChecks(): Promise<void> {
+  async function runChecks(scrub: (text: string) => string = (text) => text): Promise<void> {
     const text = readText(hostPath);
     const started = asks;
     try {
-      const checked = await checksOn(text);
+      const found = await checksOn(text);
+      const checked = { ...found, checks: Object.fromEntries(Object.entries(found.checks).map(([name, rows]) => [name, rows.map((row) => scrubbedRow(row, scrub))])) };
       held = { checked, at: now(), text, asks: started };
       sayRowChanges(settings.stateDir, checked.checks, seam.log ?? boardLog);
     } catch {
@@ -186,8 +234,8 @@ export function pluginsApi(options: Readonly<{ hostPath: string; settings: Ticke
   }
 
   /** Starts the checks unless they are running: one run at a time, and a caller meanwhile shares it. */
-  function check(): Promise<void> {
-    running ??= runChecks().finally(() => { running = null; });
+  function check(scrub?: (text: string) => string): Promise<void> {
+    running ??= runChecks(scrub).finally(() => { running = null; });
     return running;
   }
 
@@ -226,8 +274,23 @@ export function pluginsApi(options: Readonly<{ hostPath: string; settings: Ticke
     return done;
   }
 
+  /**
+   * Stores a secret the page was given (A11-445), then runs the checks and answers the plugin's own rows. REFUSES, storing nothing, what `secrets.ts` refuses; every sentence that leaves,
+   * refusal or check row, has had the value scrubbed out of it.
+   */
+  async function secret(body: Json): Promise<SecretDone> {
+    const request = secretRequestOf(body);
+    const stored = await storeScrubbed(request, secretDepsOf(hostPath, catalog, seam));
+    // Checks that started before the value was stored ran on the old one: these are run after it.
+    // The run after a store keeps, logs and answers its rows with the value scrubbed out, since a plugin's check may quote what it read.
+    await running;
+    await check(withoutValue(request.value));
+    const rows = held?.checked.checks[request.name];
+    return { ...stored, checks: rows === undefined ? null : [...rows], checkedAt: held === null ? null : new Date(held.at).toISOString() };
+  }
+
   if (options.warm === true) void check();
-  return { read, act, check };
+  return { read, act, check, secret };
 }
 
 export type PluginsApi = ReturnType<typeof pluginsApi>;

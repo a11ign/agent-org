@@ -15,6 +15,7 @@ import { waitsOn } from "./board-view/pull-status-and-notes.ts";
 import { keysWithStackAbove } from "./board-view/stack-wait.ts";
 import { MAX_WRITER_RUNS, replace, type Entry, type Queue, type WriterPhase, type WriterRun, type WriterTicket } from "./queue/queue-entries-and-outcomes.ts";
 import { placementOf } from "./writer-placement.ts";
+import { notQueued, type AfterWriting } from "./queue/queue-after-writing.ts";
 import { isCheckRun } from "./after-merge/verify.ts";
 import { isCiHeld } from "./ci-spend/hold.ts";
 import { startReadHold } from "./queue/start-reads.ts";
@@ -25,14 +26,14 @@ import type { ToolPin } from "./queue/queue-pins.ts";
 export const recordClosedByBoard = (queue: Queue, key: string): Queue => replace(queue, key, (entry) => ({ ...entry, closedByBoard: true }));
 
 /**
- * The queued entries to start now, in queue order: none while the queue is paused or the host is loaded past its cores (`wake.ts`'s `hostLoadRefusal` rule, where
+ * The queued entries to start now, in queue order: none while the queue is paused, the host is loaded past its cores (`wake.ts`'s `hostLoadRefusal` rule, where
  * exactly equal does not refuse), and otherwise as many as the free slots allow. An entry still waiting on a blocker, or on a path another run holds
  * ({@link overlapWait}), is passed over, and holds no slot. So is one whose plan could not be downloaded (`pathsFailure`): it takes no slot another
  * run could use (A11-125). And so is a review round or talk session that a working agent's session holds back (`sessionWait`, A11-154). A batch is one run, so its tickets take one slot between them, live or starting.
  * An entry this call starts holds its paths against the entries after it, as a live run would, so overlapping runs never start in the same pass: the later one waits for the first to push a branch, and is stacked on it in a later pass.
  * OVERLAP MEANS STACK, NOT WAIT (A11-374): a queued run that overlaps a run it can stack on is not passed over. It is returned with the run it stacks on as its `overlapStack`, and starts on that run's branch.
  * A run whose blockers or plan paths are not known holds back like the rest, and takes no slot (A11-364): `startReadHold` says which (never read; or read longer ago than `BLOCKERS_MAX_AGE_MS` before `now`), so a run left unread never
- * takes a slot from one that can start. The pool gives `now`; without it nothing about what was read is judged, and a run is held back for the other reasons alone.
+ * takes a slot from one that can start. So is every run but a talk session while the Claude allowance is spent until a reset still ahead of `now` ({@link allowanceHolds}, A11-434). The pool gives `now`; without it nothing about what was read is judged, and a run is held back for the other reasons alone.
  * A STACK IS A PRIORITY (A11-370): a queued run whose pull request has another stacked on it ({@link keysWithStackAbove}) starts before the other queued runs of its model, since that run is waiting for it. The queue order holds among the runs that are equal in this.
  */
 export function nextStarts(queue: Queue, load: number, cores: number, now?: number): Entry[] {
@@ -42,7 +43,7 @@ export function nextStarts(queue: Queue, load: number, cores: number, now?: numb
   const started: Entry[] = [];
   const stacks = new Map<string, Entry["overlapStack"]>();
   for (const entry of stackedFirst(queue.entries)) {
-    if (entry.phase !== "queued" || isHeldBack(entry, queue.entries, now)) continue;
+    if (!startable(entry, queue, now)) continue;
     if (!runs.has(runOf(entry)) && runs.size >= free) continue;
     const holders = [...queue.entries, ...started.map(asStarting)];
     if (overlapWait(entry, holders) !== null) continue;
@@ -78,6 +79,13 @@ function stackedFirst(entries: readonly Entry[]): readonly Entry[] {
 const isHeldBack = (entry: Entry, entries: readonly Entry[], now?: number): boolean =>
   entry.pathsFailure !== undefined || (now !== undefined && startReadHold(entry, now) !== null) || entry.sessionWait !== undefined || isCiHeld(entry) || waitsOn(entry, entries).length > 0;
 
+/**
+ * Whether a queued entry may start on what holds it alone: nothing holds it back, and the spent Claude allowance does not hold it (A11-434). A talk session is a person at the run's terminal, who
+ * can see the limit and act on it, so the allowance holds every start but that one. PURE.
+ */
+const startable = (entry: Entry, queue: Queue, now: number | undefined): boolean =>
+  entry.phase === "queued" && !isHeldBack(entry, queue.entries, now) && (entry.talk === true || !allowanceHolds(queue, now));
+
 /** The entry as it is once a start is recorded: starting, so it holds what a live run holds. */
 const asStarting = (entry: Entry): Entry => ({ ...entry, phase: "starting" });
 
@@ -91,7 +99,7 @@ export function loadQueue(path: string, max: number): Queue {
   const parsed = JSON.parse(readFileSync(path, "utf8")) as Omit<Queue, "writers"> & { writers?: readonly LegacyRun[] };
   return { entries: parsed.entries ?? [], max: parsed.max ?? max, paused: parsed.paused ?? true, ...(parsed.publish ? { publish: parsed.publish } : {}),
     ...(parsed.writers ? { writers: parsed.writers.map(writerAsRead) } : {}), ...(parsed.runLog ? { runLog: parsed.runLog } : {}), ...(parsed.ciSpend ? { ciSpend: parsed.ciSpend } : {}),
-    ...(parsed.interventions ? { interventions: parsed.interventions } : {}) };
+    ...(parsed.interventions ? { interventions: parsed.interventions } : {}), ...(parsed.allowance ? { allowance: parsed.allowance } : {}) };
 }
 
 /** Replace the file whole: write beside it, then rename over it. */
@@ -155,7 +163,7 @@ export function writerAsRead(run: LegacyRun): WriterRun {
  * Add a new-ticket request, queued, with the model and effort it runs on. At most {@link MAX_WRITER_RUNS} are unfinished at once: a fourth is refused,
  * naming why, so a person clears one first. PURE.
  */
-export function queueWriter(queue: Queue, request: Pick<WriterRun, "id" | "request" | "mode" | "placement" | "form" | "model" | "effort"> & Partial<Pick<WriterRun, "ticket" | "startedFrom" | "team" | "checks">>, now: number): Queue {
+export function queueWriter(queue: Queue, request: Pick<WriterRun, "id" | "request" | "mode" | "placement" | "form" | "model" | "effort"> & Partial<Pick<WriterRun, "ticket" | "startedFrom" | "team" | "checks" | "queueAfter">>, now: number): Queue {
   // The board's own runs for its After-merge checks (A11-302) are not new-ticket requests: they neither count toward the cap nor are held by it.
   const open = (queue.writers ?? []).filter((run) => run.phase !== "finished" && !isCheckRun(run.mode)).length;
   if (!isCheckRun(request.mode) && open >= MAX_WRITER_RUNS) throw new Error(`${MAX_WRITER_RUNS} new-ticket requests are unfinished already: finish or stop one before you add another`);
@@ -164,10 +172,37 @@ export function queueWriter(queue: Queue, request: Pick<WriterRun, "id" | "reque
 }
 
 /** The writer run that starts now: the first queued one, when a worker slot is free. A person's request waits for no Pause: they just asked for it. The board's own check runs (A11-302) do wait for it. */
-export function writerToStart(queue: Queue): WriterRun | undefined {
+export function writerToStart(queue: Queue, now?: number): WriterRun | undefined {
   if (slotsHeld(queue) >= queue.max) return undefined;
-  return (queue.writers ?? []).find((run) => run.phase === "queued" && !(queue.paused && isCheckRun(run.mode)));
+  // A check run waits on what holds the queue's runs, a pause or a spent allowance (A11-434); a request a person made in the form is theirs to start, as it is while paused.
+  return (queue.writers ?? []).find((run) => run.phase === "queued" && !((queue.paused || allowanceHolds(queue, now)) && isCheckRun(run.mode)));
 }
+
+/**
+ * How long after the reset a message names the board still treats the allowance as spent: the reset is named to the minute, and a run started or told to carry on a moment early is refused
+ * again with the same words, which then name the next day's reset (A11-434).
+ */
+export const ALLOWANCE_GRACE_MS = 2 * 60_000;
+
+/** Whether the allowance is still spent at `now` on a hold that names the reset `until`: until {@link ALLOWANCE_GRACE_MS} after it. PURE. */
+export const stillSpent = (until: number, now: number): boolean => now < until + ALLOWANCE_GRACE_MS;
+
+/**
+ * Whether the spent Claude allowance holds starts at `now` (A11-434): the board saw a run refused with a reset still ahead. Without `now` it holds nothing, as a caller with no clock judges
+ * nothing by time. PURE.
+ */
+export const allowanceHolds = (queue: Queue, now?: number): boolean => now !== undefined && queue.allowance !== undefined && stillSpent(queue.allowance.until, now);
+
+/** The queue with no hold on starts: a run held on the allowance answered again, so the allowance is back before its reset (credits, or an early reset). PURE. */
+export const releaseStarts = (queue: Queue): Queue => {
+  if (queue.allowance === undefined) return queue;
+  const { allowance: _spent, ...rest } = queue;
+  return rest;
+};
+
+/** The queue with the allowance seen spent until `spent.until`, unless it already holds starts as long or longer: one run's earlier reset never shortens another's. PURE. */
+export const holdStarts = (queue: Queue, spent: Readonly<{ text: string; until: number }>): Queue =>
+  queue.allowance !== undefined && queue.allowance.until >= spent.until ? queue : { ...queue, allowance: { text: spent.text, until: spent.until } };
 
 export const markWriterStarting = (queue: Queue, id: string, now: number): Queue =>
   replaceWriter(queue, id, (run) => ({ ...run, phase: "starting", startedAt: now }));
@@ -199,10 +234,11 @@ export const writerResumed = (queue: Queue, id: string, now: number): Queue =>
 
 /**
  * The writer run ended (A11-135): it finished, with the tickets it created, shown as links, and why it failed when it did. A ticket made before a failure
- * stays made and is shown with it. PURE.
+ * stays made and is shown with it. A run that asked for its tickets to be queued records how that went (A11-420). PURE.
  */
-export function writerEnded(queue: Queue, id: string, ended: Readonly<{ tickets: readonly WriterTicket[]; failure?: string }>, now: number): Queue {
-  return replaceWriter(queue, id, (run) => ({ ...notWaiting(run), phase: "finished", finishedAt: now, tickets: ended.tickets, failure: ended.failure }));
+export function writerEnded(queue: Queue, id: string, ended: Readonly<{ tickets: readonly WriterTicket[]; failure?: string; afterWriting?: AfterWriting }>, now: number): Queue {
+  return replaceWriter(queue, id, (run) => ({ ...notWaiting(run), phase: "finished", finishedAt: now, tickets: ended.tickets, failure: ended.failure,
+    ...(ended.afterWriting === undefined ? {} : { afterWriting: ended.afterWriting }) }));
 }
 
 /** The writer run failed: it holds no slot, and the tickets it had made are kept as they are. */
@@ -210,9 +246,10 @@ export function writerFailed(queue: Queue, id: string, failure: string, now: num
   return replaceWriter(queue, id, (run) => ({ ...notWaiting(run), phase: "finished", finishedAt: now, failure }));
 }
 
-/** The person stopped the writer run. Its workspace is closed by the caller, and the tickets it already made stay. */
+/** The person stopped the writer run. Its workspace is closed by the caller, and the tickets it already made stay, unqueued (A11-420). */
 export const stopWriter = (queue: Queue, id: string, now: number, stopped: Readonly<{ tickets: readonly WriterTicket[]; problem: string | null }> = { tickets: [], problem: null }): Queue =>
-  replaceWriter(queue, id, (run) => (run.phase === "finished" ? run : { ...notWaiting(run), phase: "finished", finishedAt: now, tickets: stopped.tickets, failure: joined("stopped on the board", stopped.problem) }));
+  replaceWriter(queue, id, (run) => (run.phase === "finished" ? run : { ...notWaiting(run), phase: "finished", finishedAt: now, tickets: stopped.tickets, failure: joined("stopped on the board", stopped.problem),
+    ...(run.queueAfter === undefined ? {} : { afterWriting: notQueued("the request was stopped on the board") }) }));
 
 /** The failure text from its parts, with the empty ones left out, or undefined when none is left. PURE. */
 export const joined = (...parts: readonly (string | null)[]): string | undefined => {

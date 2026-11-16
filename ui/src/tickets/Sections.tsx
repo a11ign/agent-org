@@ -19,7 +19,9 @@ function SectionHead({ section, open, context }: Readonly<{ section: Section; op
       <button type="button" className="fold-button" aria-label={`${open ? "Collapse" : "Expand"} ${status}`} aria-expanded={open} onClick={() => context.toggleSection(status)}>
         <FoldChevron open={open} />
       </button>
-      <input type="checkbox" aria-label={`Select all shown in ${status}`} checked={all} disabled={pickable.length === 0 || context.row.paused} onChange={(event) => (event.target.checked ? context.row.pick(pickable) : context.row.unpick(pickable))} />
+      <label className="row-check">
+        <input type="checkbox" aria-label={`Select all shown in ${status}`} checked={all} disabled={pickable.length === 0 || context.row.paused} onChange={(event) => (event.target.checked ? context.row.pick(pickable) : context.row.unpick(pickable))} />
+      </label>
       <StatusIcon status={status} />
       <span className="section-name">{status}</span>
       <span className="section-count">{total}</span>

@@ -1,5 +1,5 @@
 import { writerRun } from "../new-ticket/new-ticket-fixtures.ts";
-import { agoOf, arrivedOf, bellLabelOf, clearLabelOf, countsOf, emptyOf, filtered, notificationsOf, underWayOf, writerNotificationOf } from "./notifications-model.ts";
+import { agoOf, arrivedOf, bellLabelOf, clearLabelOf, countsOf, emptyOf, filtered, notificationsOf, NO_QUEUE, queueingOf, underWayOf, writerNotificationOf } from "./notifications-model.ts";
 
 const NOW = 1_000_000_000_000;
 const MIN = 60_000;
@@ -65,5 +65,16 @@ describe("arrivals", () => {
     const before = underWayOf([writerRun({ id: "a" }), writerRun({ id: "b", phase: "queued", status: "queued" }), done("c", 1)]);
     expect([...before]).toEqual(["a", "b"]);
     expect(arrivedOf(before, [done("a", 0), writerRun({ id: "b" }), done("c", 1), done("d", 0)])).toEqual(["a"]);
+  });
+});
+
+describe("A11-420: a request's queueing, read from the live queue", () => {
+  const run = { queueAfter: { model: "sonnet", effort: "high", plan: true }, afterWriting: { queued: 2 }, tickets: [{ key: "A11-1", url: null, inPick: null }, { key: "A11-2", url: null, inPick: null }] } as const;
+  it("says nothing before the queue is read, even for a run that recorded it queued them", () => {
+    expect(queueingOf(run, NO_QUEUE)).toBeNull();
+  });
+  it("is queued only once the queue holds every ticket", () => {
+    expect(queueingOf(run, { keys: new Set(["A11-1", "A11-2"]), planner: true })).toEqual({ queued: true, text: "2 tickets queued with sonnet · high · plan first." });
+    expect(queueingOf(run, { keys: new Set(["A11-1"]), planner: true })).toEqual({ queued: false, reason: "Queued when the request finished, but A11-2 is no longer on the queue.", keys: ["A11-2"], choice: run.queueAfter });
   });
 });

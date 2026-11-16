@@ -143,3 +143,69 @@ describe("the eight boards fit at 1440px and at 390px", () => {
     for (const screen of SCREENS) await captured(board, screen);
   });
 });
+
+/*
+ * Queue after writing (A11-420): on a touch screen 390 px wide, "After writing"'s two choices, the Queue pill and a notification's "Queue them" are each at least 44 by 44 px, with a
+ * visible focus ring, and the page does not scroll sideways.
+ */
+describe("Queue after writing on a touch screen 390px wide", () => {
+  const QUEUE_AFTER = { model: "sonnet", effort: "high", plan: true };
+  const NOT_QUEUED = { ...RUNS.done, queueAfter: QUEUE_AFTER, afterWriting: { notQueued: "Written, but not queued: could not add them to the queue: fetch failed. They are in the backlog." } } as Run;
+
+  /** The page on a 390 px touch screen. */
+  async function onTouch(writing: Writing): Promise<Readonly<{ page: Page; context: BrowserContext }>> {
+    const stand = writingStand(writing);
+    const context = await browser.newContext({ viewport: { width: 390, height: 844 }, deviceScaleFactor: 1, hasTouch: true, isMobile: true });
+    await context.addInitScript(() => localStorage.setItem("ticket-mode.open", '["Backlog"]'));
+    await serveInstance(context, { stand });
+    const page = await context.newPage();
+    await page.goto(`${site.origin}${TICKETS}`);
+    await page.locator(".row").first().waitFor();
+    return { page, context };
+  }
+
+  /** Each target's size, and whether focusing it from the keyboard draws an outline, one after the other, since each moves the focus. */
+  async function measured(page: Page, selectors: readonly string[]) {
+    const seen = [];
+    for (const selector of selectors) {
+      const target = page.locator(selector).first();
+      const box = await target.boundingBox();
+      // The focus is moved onto it with Tab, as a keyboard moves it, which is what draws the ring: at most 40 presses.
+      for (let press = 0; press < 40 && !(await target.evaluate((element) => element === document.activeElement)); press += 1) await page.keyboard.press("Tab");
+      const ring = await target.evaluate((element) => { const style = getComputedStyle(element); return style.outlineStyle !== "none" && Number.parseFloat(style.outlineWidth) > 0; });
+      seen.push({ selector, width: Math.round(box?.width ?? 0) >= 44, height: Math.round(box?.height ?? 0) >= 44, ring });
+    }
+    return seen;
+  }
+
+  const noSideScroll = (page: Page) => page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth);
+
+  it("the segmented control and the Queue pill", async () => {
+    const { page, context } = await onTouch({});
+    try {
+      await openDialog(page);
+      await dialog(page).getByRole("radio", { name: "Queue them" }).tap();
+      const targets = ['[aria-label="After writing"] [role=radio] >> nth=0', '[aria-label="After writing"] [role=radio] >> nth=1', ".nt-queue-pill"];
+      for (const target of await measured(page, targets)) expect(target).toEqual({ selector: target.selector, width: true, height: true, ring: true });
+      expect(await noSideScroll(page)).toBe(true);
+      mkdirSync(CAPTURES, { recursive: true });
+      writeFileSync(join(CAPTURES, "new-ticket-queue-after-writing-390x844.png"), await page.screenshot({ fullPage: true }));
+    } finally {
+      await context.close();
+    }
+  });
+
+  it("a notification's Queue them", async () => {
+    const { page, context } = await onTouch({ runs: [NOT_QUEUED] });
+    try {
+      await page.getByRole("button", { name: /^Notifications, 1$/ }).tap();
+      const [target] = await measured(page, [".notification-queue-them"]);
+      expect(target).toEqual({ selector: ".notification-queue-them", width: true, height: true, ring: true });
+      expect(await noSideScroll(page)).toBe(true);
+      mkdirSync(CAPTURES, { recursive: true });
+      writeFileSync(join(CAPTURES, "new-ticket-not-queued-390x844.png"), await page.screenshot({ fullPage: true }));
+    } finally {
+      await context.close();
+    }
+  });
+});

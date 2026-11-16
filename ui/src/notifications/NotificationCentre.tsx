@@ -5,8 +5,10 @@ import { ALL_FINISHED } from "../new-ticket/use-writer-runs.ts";
 import { BellIcon } from "../shell/icons.tsx";
 import { useShell } from "../shell/ShellProvider.tsx";
 import {
-  agoOf, bellLabelOf, clearLabelOf, countsOf, emptyOf, FILTERS, filtered, notificationsOf, type FiledTicket, type Notification, type NotificationFilter,
+  agoOf, bellLabelOf, clearLabelOf, countsOf, emptyOf, FILTERS, filtered, notificationsOf, type FiledTicket, type Notification, type NotificationFilter, type Queueing,
+  type QueueReading,
 } from "./notifications-model.ts";
+import type { ConfigView, QueueView } from "../api/types.ts";
 import { useArrivals } from "./use-arrivals.ts";
 
 /** The time the ages are counted to, read again every half minute while the panel is open. */
@@ -21,21 +23,50 @@ function useNow(): number {
   return now;
 }
 
-/** A ticket the request filed: its key and a one-line title, linked to the tracker when the board has its address. A ticket the board could not read back shows its key alone. */
-function FiledRow({ ticket }: Readonly<{ ticket: FiledTicket }>) {
+/**
+ * A ticket the request filed: its key and a one-line title, linked to the tracker when the board has its address, and marked Queued while the queue holds it (A11-420). A ticket the
+ * board could not read back shows its key alone.
+ */
+function FiledRow({ ticket, queued }: Readonly<{ ticket: FiledTicket; queued: boolean }>) {
   const href = ticketHrefOf(ticket);
   const content = (
     <>
       <span className="notification-ticket-key">{ticket.key}</span>
       {ticket.title === undefined ? null : <span className="notification-ticket-title" title={ticket.title}>{ticket.title}</span>}
+      {queued ? <span className="notification-ticket-queued">Queued</span> : null}
     </>
   );
   return href === "" ? <div className="notification-ticket">{content}</div> : <a className="notification-ticket" href={href} target="_blank" rel="noreferrer">{content}</a>;
 }
 
+/**
+ * How the queueing a request asked for went (A11-420): what its tickets were queued on, or the amber note with the run's reason and "Queue them", which sends the keys the queue does not
+ * hold yet to `POST /api/queue` on the request's stamped choice. The note goes once the queue holds them all. A refusal is said in the note, in the server's words.
+ */
+function QueueingNote({ queueing, busy }: Readonly<{ queueing: Queueing; busy: boolean }>) {
+  const { client, queue } = useShell();
+  const [sending, setSending] = useState(false);
+  const [refusal, setRefusal] = useState<string | null>(null);
+  if (queueing.queued) return <div className="notification-queued">{queueing.text}</div>;
+  const queueThem = async () => {
+    setSending(true);
+    setRefusal(null);
+    const answer = await client.enqueue(queueing.keys, queueing.choice);
+    setSending(false);
+    if (!answer.ok) return setRefusal(answer.refusal);
+    queue.refresh();
+  };
+  return (
+    <div className="notification-not-queued">
+      <span className="notification-not-queued-text">{queueing.reason}{refusal === null ? null : <span role="alert"> Not queued: {refusal}</span>}</span>
+      <button type="button" className="notification-queue-them" disabled={busy || sending} aria-busy={sending} onClick={() => void queueThem()}>Queue them</button>
+    </div>
+  );
+}
+
 type ItemProps = Readonly<{ item: Notification; now: number; busy: boolean; onClear: (id: string) => void }>;
 
-/** One notification: how it ended, who wrote it and when, the request, why it failed, and the tickets it filed. */
+/** One notification: how it ended, who wrote it and when, the request, why it failed, the tickets it filed, and how their queueing went (A11-420). */
 function NotificationItem({ item, now, busy, onClear }: ItemProps) {
   const failed = item.outcome === "failed";
   return (
@@ -56,19 +87,24 @@ function NotificationItem({ item, now, busy, onClear }: ItemProps) {
       {item.tickets.length === 0 ? null : (
         <div className="notification-made">
           <div className="notification-made-title">Filed by this request</div>
-          {item.tickets.map((ticket) => <FiledRow key={ticket.key} ticket={ticket} />)}
+          {item.tickets.map((ticket) => <FiledRow key={ticket.key} ticket={ticket} queued={item.queuedKeys.has(ticket.key)} />)}
         </div>
       )}
+      {item.queueing === null ? null : <QueueingNote queueing={item.queueing} busy={busy} />}
     </li>
   );
 }
 
 type PanelProps = Readonly<{
   ref: Ref<HTMLDivElement>; items: readonly Notification[]; busy: boolean; acting: ReadonlySet<string>; refusal: string | null; onClear: (id: string) => void; onClearAll: () => void; onHideRefusal: () => void;
+  onClose: () => void;
 }>;
 
-/** The panel: its title and Clear all, the filters with their counts, and the list, or what to say when there is nothing to list. */
-function Panel({ ref, items, busy, acting, refusal, onClear, onClearAll, onHideRefusal }: PanelProps) {
+/**
+ * The panel: its title and Clear all, the filters with their counts, and the list, or what to say when there is nothing to list. On a phone, where it fills the screen over the bell, it has a Close
+ * button of its own (A11-427); it is not drawn at a wider screen, where the bell beside the panel closes it.
+ */
+function Panel({ ref, items, busy, acting, refusal, onClear, onClearAll, onHideRefusal, onClose }: PanelProps) {
   const [filter, setFilter] = useState<NotificationFilter>("all");
   const now = useNow();
   const counts = countsOf(items);
@@ -80,6 +116,7 @@ function Panel({ ref, items, busy, acting, refusal, onClear, onClearAll, onHideR
         <span className="notifications-title">Notifications</span>
         <div className="notification-spacer" />
         <button type="button" className="notifications-clear-all" disabled={items.length === 0 || busy || acting.has(ALL_FINISHED)} onClick={onClearAll}>Clear all</button>
+        <button type="button" className="notifications-close" aria-label="Close notifications" onClick={onClose}><CloseIcon /></button>
       </div>
       <div className="notifications-filters">
         <div role="group" aria-label="Filter notifications" className="notifications-tabs">
@@ -109,6 +146,11 @@ function Panel({ ref, items, busy, acting, refusal, onClear, onClearAll, onHideR
   );
 }
 
+/** What the notifications read of the live queue (A11-420): the keys it holds, none before it is read, and whether the board plans. */
+function queueReadingOf(queue: QueueView | null, config: ConfigView | null): QueueReading {
+  return { keys: queue === null ? null : new Set(queue.entries.map((entry) => entry.ticket.key)), planner: config?.planner === true };
+}
+
 const isEscape = (event: KeyboardEvent): boolean => event.key === "Escape" && !event.defaultPrevented;
 /** A control that takes Escape for itself, as the ticket search does. */
 const keepsEscape = (target: EventTarget | null): boolean => target instanceof HTMLElement && target.matches("input, textarea, select, [contenteditable]");
@@ -118,13 +160,13 @@ const keepsEscape = (target: EventTarget | null): boolean => target instanceof H
  * A request that finishes while the page is open opens the panel, without taking the focus from where the person is. Escape closes it and puts the focus on the bell. The panel is anchored to the sidebar (`shell.css`).
  */
 export function NotificationCentre() {
-  const { writers, unreachable } = useShell();
+  const { writers, unreachable, queue, config } = useShell();
   const [open, setOpen] = useState(false);
   const bell = useRef<HTMLButtonElement>(null);
   const panel = useRef<HTMLDivElement>(null);
   const openPanel = useCallback(() => setOpen(true), []);
   const fresh = useArrivals(writers.runs, openPanel);
-  const items = notificationsOf(writers.runs, fresh);
+  const items = notificationsOf(writers.runs, fresh, queueReadingOf(queue.data, config));
   // A paused connection, or runs that are the tab's kept copy, wait for the instance's own answer before anything is cleared.
   const paused = unreachable !== null || writers.cached;
 
@@ -141,13 +183,17 @@ export function NotificationCentre() {
     return () => document.removeEventListener("keydown", close);
   }, [open]);
 
+  const close = () => {
+    setOpen(false);
+    bell.current?.focus();
+  };
   return (
     <>
       <button ref={bell} type="button" className="bell" aria-label={bellLabelOf(items.length)} aria-haspopup="dialog" aria-expanded={open} title="Notifications" onClick={() => setOpen(!open)}>
         <BellIcon />
         {items.length === 0 ? null : <span className="bell-badge" aria-hidden="true">{items.length}</span>}
       </button>
-      {open ? <Panel ref={panel} items={items} busy={paused} acting={writers.acting} refusal={writers.refusal} onClear={writers.dismiss} onClearAll={writers.dismissFinished} onHideRefusal={writers.dismissRefusal} /> : null}
+      {open ? <Panel ref={panel} items={items} busy={paused} acting={writers.acting} refusal={writers.refusal} onClear={writers.dismiss} onClearAll={writers.dismissFinished} onHideRefusal={writers.dismissRefusal} onClose={close} /> : null}
     </>
   );
 }

@@ -132,6 +132,16 @@ test("a ticket of a batch leaves it when it starts alone, when its plan is attac
   assert.deepEqual([retried.batch, retried.plan], [undefined, planChoice], "a retried ticket of a batch is planned again, alone");
 });
 
+test("a retried review round goes on with its run's outcome record, and a retried first run starts a fresh one (A11-430)", () => {
+  const replaceEntry = (queue: Queue, fields: Partial<Queue["entries"][number]>): Queue => ({ ...queue, entries: queue.entries.map((entry) => ({ ...entry, ...fields })) });
+  const outcomeRun = { since: 2, rounds: [{ startedAt: 2, endedAt: 3, outcome: "ready-pr" }] };
+  const started = markRunning(markStarting(enqueue(emptyQueue(1), [ticket("A")], choice, 1), "A", 2), "A", "w1", "w1:p1");
+  const first = finish(started, "A", { kind: "crashed", reason: "gone" }, 3, { session: "s1", outcomeRun });
+  assert.equal(retry(first, "A", 4).entries[0].outcomeRun, undefined, "a fresh worker is a fresh run");
+  const review = finish(replaceEntry(started, { review: [{ repo: "r", url: "https://github.com/x/r/pull/1" }] }), "A", { kind: "crashed", reason: "gone" }, 3, { session: "s1", outcomeRun });
+  assert.deepEqual(retry(review, "A", 4).entries[0].outcomeRun, outcomeRun, "the round resumes the same session, so its record goes on and its earlier turns are not counted again");
+});
+
 test("the repositories a worker made worktrees in are recorded on its entry", () => {
   const queue = recordRepos(enqueue(emptyQueue(1), [ticket("A")], choice, 1), "A", ["nbl-ui-netbox", "nbl-ui-platform-libs"]);
   assert.deepEqual(queue.entries[0].repos, ["nbl-ui-netbox", "nbl-ui-platform-libs"], "a ticket can land in several");
@@ -1048,6 +1058,17 @@ test("a stopped run keeps the tickets it made, and a finished run dismisses once
   assert.equal(writerOf(queue, "w1")?.finishedAt, 4, "a finished run is not changed by a stop");
   queue = dismissWriter(queue, "w1");
   assert.deepEqual(queue.writers, []);
+});
+
+test("A11-420: a run stamped queueAfter keeps its stamp, records how its queueing went as it ends, and a stopped one records that it was not queued", () => {
+  const after = { model: "sonnet", effort: "high", plan: true };
+  const running = markWriterRunning(markWriterStarting(queueWriter(emptyQueue(1), { ...request, queueAfter: after }, 1), "w1", 2), "w1", "ws", "p");
+  assert.deepEqual(writerOf(running, "w1")?.queueAfter, after);
+  const ended = writerOf(writerEnded(running, "w1", { tickets: [filed("NBF-4")], afterWriting: { queued: 1 } }, 3), "w1");
+  assert.deepEqual([ended?.queueAfter, ended?.afterWriting], [after, { queued: 1 }]);
+  assert.deepEqual(writerOf(stopWriter(running, "w1", 4), "w1")?.afterWriting, { notQueued: "Written, but not queued: the request was stopped on the board. They are in the backlog." });
+  const plain = markWriterRunning(markWriterStarting(queueWriter(emptyQueue(1), request, 1), "w1", 2), "w1", "ws", "p");
+  assert.equal(writerOf(stopWriter(plain, "w1", 4), "w1")?.afterWriting, undefined, "a run that keeps its tickets in the backlog records nothing");
 });
 
 test("dismissFinishedWriters removes every finished new-ticket request in one step and leaves runs under way and the board's check runs", () => {

@@ -14,8 +14,9 @@
 // A FAILED PLUGIN CARRIES DOCTOR'S WORDS. The reason and the fix are the ones doctor's row says, so the page's red row and `agent-org doctor` agree word for word.
 //
 // THE CONTROLS A PLUGIN OFFERS ARE THE CLI'S PLANS (`manage.ts`), asked and not written: a control a plan refuses is offered with the refusal's sentence, so the page says why a button is
-// off in the CLI's own words. A plugin that needs a secret is installed from the CLI or onboard, never by a button that could not give it one: the page shows the install command, then
-// the command that sets each secret. A secret is never in an entry: only the command that sets it.
+// off in the CLI's own words. A plugin that needs a secret is installed by a button only when the page can take each secret it needs (A11-445): each is then a write-only field, with
+// where it will be stored. A plugin with a secret set only by its command is installed from the CLI or onboard, never by a button that could not give it one. A secret is never
+// in an entry: only the command that sets it, and the place a field stores it.
 import type { SchemaEntry } from "../ticket-mode/config-schema.ts";
 import { isActive, type BlockReport, type Providers } from "../ticket-mode/providers.ts";
 import { blockOf, CONCERN_LABEL, CONCERNS, type Concern, REQUIRED_CONCERNS } from "./concerns.ts";
@@ -24,6 +25,7 @@ import { messagingReport, type Plan, planDisable, planEnable, planInstallOrSwitc
 import type { Catalog, CatalogPlugin, PluginCheck } from "./manifest.ts";
 import { pluginsOfConcern } from "./registry.ts";
 import { enableRefusal } from "./rules.ts";
+import { heldValue, isPlace, pointerOf, secretPlace } from "./secret-place.ts";
 import { readsConcernContract, unreadMajorRefusal } from "./version.ts";
 import { type MessagingState, whereOf } from "./view.ts";
 
@@ -35,8 +37,14 @@ export type ControlName = "install" | "enable" | "disable" | "uninstall" | "conf
 /** Why a plugin is failed and the one thing to do, in doctor's words. */
 export type Failure = Readonly<{ why: string; fix: string }>;
 
-/** The command that sets one secret setting of a plugin, filled from the setting's value, and the setting it is for. */
-export type SecretCommand = Readonly<{ setting: string; command: string }>;
+/**
+ * Where a secret the page takes is stored (A11-445): the file or Keychain service in the words a person reads (`the file ~/.config/agent-org/linear.key`), and the schema key a save also
+ * points at it when the file names no place yet, or null.
+ */
+export type SecretField = Readonly<{ place: string; sets: string | null }>;
+
+/** The command that sets one secret setting of a plugin, filled from the setting's value, the setting it is for, and its write-only field, or null when the page does not take it. */
+export type SecretCommand = Readonly<{ setting: string; command: string; field: SecretField | null }>;
 
 /** What a control does when asked: the sentence that confirms it first, when it needs one. */
 export type Controls = Readonly<{
@@ -109,14 +117,14 @@ export type HealthInput = Readonly<{
   messagingFailure?: Failure | null;
   /** agent-org's release, as `vX.Y.Z`. */
   version: string;
+  /** The machine's platform, which decides whether a Keychain secret is taken on the page (A11-445). This process's when left out. */
+  platform?: string;
 }>;
 
 const UNREAD_FIX = "update agent-org, or update the plugin to a contract major agent-org reads";
 const REFUSED_PACKAGE_FIX = "fix the plugin's package.json, or remove the plugin";
 const LOADER_FIX = "update agent-org, or the plugin";
 const ENABLE_FIX = "fix the check it summarises";
-
-const isObject = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
 
 /** A value as one word of a shell command: bare when it holds only characters a shell leaves alone (a path with `~` stays one a shell expands), else in single quotes, so a space or a metacharacter in it is text. */
 const shellWord = (value: string): string => (/^[A-Za-z0-9_@%+=:,./~-]+$/.test(value) ? value : `'${value.replace(/'/g, "'\\''")}'`);
@@ -130,18 +138,22 @@ export function fillCommand(template: string, value: unknown): string {
   return template.replace(/\{value(?:\|([^}]*))?\}/g, (_match, fallback: string | undefined) => held ?? fallback ?? "<value>");
 }
 
-/** The value a setting of a plugin holds in the block: a dotted name (`key.path`) is read inside the setting before the dot. A name with a `<placeholder>` is not one setting, so it has none. */
-function heldValue(name: string, report: BlockReport): unknown {
-  if (name.includes("<")) return undefined;
-  const [first, ...inside] = name.split(".");
-  return inside.reduce<unknown>((value, part) => (isObject(value) ? value[part] : undefined), report.settings[first]?.value);
-}
+/** Whether two dotted settings are parts of one setting (`key.path` and `key.keychain`): alternative places of the same secret. */
+const sameParent = (one: string, other: string): boolean => one.includes(".") && one.slice(0, one.lastIndexOf(".")) === other.slice(0, other.lastIndexOf("."));
 
 const isSecret = (entry: SchemaEntry): boolean => entry.secret !== undefined && typeof entry.setCommand === "string";
 
-function secretsOf(plugin: CatalogPlugin, report: BlockReport): readonly SecretCommand[] {
+/** The write-only field of a secret, or null when the page does not take it. */
+function fieldOf(plugin: CatalogPlugin, setting: string, report: BlockReport, platform: string): SecretField | null {
+  const found = secretPlace(plugin, setting, report, platform);
+  if (!isPlace(found)) return null;
+  const place = found.kind === "path" ? `the file ${found.place}` : `the Keychain service ${found.place}`;
+  return { place, sets: found.held ? null : pointerOf(plugin, setting, found.place).key };
+}
+
+function secretsOf(plugin: CatalogPlugin, report: BlockReport, platform: string): readonly SecretCommand[] {
   return Object.entries(plugin.settings).filter(([, entry]) => isSecret(entry))
-    .map(([setting, entry]) => ({ setting, command: fillCommand(entry.setCommand!, report.provider === plugin.name ? heldValue(setting, report) : undefined) }));
+    .map(([setting, entry]) => ({ setting, command: fillCommand(entry.setCommand!, report.provider === plugin.name ? heldValue(setting, report) : undefined), field: fieldOf(plugin, setting, report, platform) }));
 }
 
 function reportOf(concern: Concern, { providers, messaging }: PlanContext): BlockReport {
@@ -172,6 +184,7 @@ function failureOf(plugin: CatalogPlugin, input: HealthInput, checks: readonly P
   return refusal === undefined ? null : loaderFailure(refusal.why, checks);
 }
 
+/** `secrets`: whether the plugin needs a secret the page cannot take, so it is installed from the CLI. */
 function controlsOf(plugin: CatalogPlugin, flags: Readonly<{ installed: boolean; enabled: boolean; secrets: boolean }>, context: PlanContext): Controls {
   const { name } = plugin;
   const offered: ControlName[] = [];
@@ -207,10 +220,13 @@ function entryOf(plugin: CatalogPlugin, input: HealthInput, context: PlanContext
   // The messaging key the reader or the loader refused fails the plugin it names, in the words doctor's row has.
   const refusedKey = plugin.concern === "messaging" && enabled ? input.messagingFailure : null;
   const failure = refusedKey ?? failureOf(plugin, input, checks);
-  const secrets = secretsOf(plugin, report);
+  const secrets = secretsOf(plugin, report, input.platform ?? process.platform);
+  // The page installs a plugin only when it can give it every secret it needs (A11-445): a secret with no field, and no sibling with one (the Linear key's Keychain service off a Mac has
+  // `key.path`), is set on the host, so such a plugin is installed from the CLI or onboard.
+  const commandOnly = secrets.some((secret) => secret.field === null && !secrets.some((other) => other.field !== null && sameParent(other.setting, secret.setting)));
   const state: HealthState = failure !== null ? "failed" : enabled ? "enabled" : named ? "disabled" : "not installed";
   return { name: plugin.name, concern: plugin.concern, version: input.version, contract: plugin.contract, where: whereOf(plugin), description: plugin.description, state, installed, enabled,
-    checks, failure, controls: controlsOf(plugin, { installed, enabled, secrets: secrets.length > 0 }, context), installCommand: `agent-org plugin install ${plugin.name}`, secrets, settingKeys: Object.values(plugin.settings).map((entry) => entry.key) };
+    checks, failure, controls: controlsOf(plugin, { installed, enabled, secrets: commandOnly }, context), installCommand: `agent-org plugin install ${plugin.name}`, secrets, settingKeys: Object.values(plugin.settings).map((entry) => entry.key) };
 }
 
 /** The empty state of a concern with no plugin running: the required ones cannot run the board, the optional ones say "None". Each gives the command that fixes it, one per plugin. */

@@ -11,6 +11,7 @@ import { type RunPlace } from "./pool-paths.ts";
 import { talkSession } from "./pool-prepare.ts";
 import { resumePrompt, resumeRun } from "./pool-resume.ts";
 import { end } from "./pool-settle.ts";
+import { retryClosedRun } from "./pool-crash-retry.ts";
 import { crashed, log, messageOf, runMembers, runPlace, updateEach } from "./pool-state.ts";
 import { settleStart, start } from "./pool-start.ts";
 import { markRunning } from "./queue/queue-transitions.ts";
@@ -35,7 +36,7 @@ const recordRestored = (workspace: string, pane: string, note: ResumeNote) => (q
 /**
  * Start a run again with its environment: close its workspace, start Claude in a new one with `--resume` and the resume prompt, and record the new workspace and pane with the note "environment restored". A run with no
  * session to resume, or whose workspace herdr will not close, is not killed: it is sent the resume prompt where it is, and its card says its environment is missing. A start that fails after the close ends the run `crashed`,
- * so a person sees it. The run is never started a second time beside the first.
+ * with the board's retry scheduled when the failure is transient, as a failed first start has it (A11-436), so only a failure that is not transient waits for a person. The run is never started a second time beside the first.
  */
 async function reseatRun(ctx: PoolContext, entry: Entry, note: ResumeNote): Promise<void> {
   const who = entry.batch ?? entry.ticket.key;
@@ -60,7 +61,10 @@ async function reseatRun(ctx: PoolContext, entry: Entry, note: ResumeNote): Prom
     started = await start(ctx, entry, place.folder, place.dir, session, resumePrompt(entry));
   } catch (err) {
     log(`${who}: its workspace ${workspace} was closed, but Claude could not be started again in it (${messageOf(err).split("\n")[0]})`);
-    return end(ctx, entry, crashed(err));
+    const members = runMembers(ctx, entry).map((member) => member.ticket.key);
+    end(ctx, entry, crashed(err));
+    // Its workspace is closed, so the board's retry opens the only one (A11-436): a herdr that never answered does not leave the run for a person.
+    return retryClosedRun(ctx, members, err);
   }
   // A person who stopped the run while it started has the last word: the workspace just opened is closed and the run stays stopped.
   if (ctx.store.get().entries.find((e) => e.ticket.key === entry.ticket.key)?.phase !== "running") return void closeWorkspaceLater(ctx, started.workspace);

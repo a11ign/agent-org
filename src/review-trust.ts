@@ -32,6 +32,14 @@ export type ReviewTrust = typeof INSIDE | typeof OUTSIDE;
 export const AUTOMATION_WRITER_LOGIN = /^(?:app\/)?octo-sts(?:\[bot\])?$/i;
 
 /**
+ * THE LOGIN GITHUB'S COPILOT CODING AGENT OPENS A PULL REQUEST AS (`app/copilot-swe-agent`, `copilot-swe-agent[bot]`). The chairman ruled its
+ * pull requests the org's own (a11ign/agent-org#2023): Copilot only works on an issue a member with write access assigns it, and it pushes to
+ * a branch of the org's repository, never a fork, so `reviewTrustOf`'s fork test still applies to it. Without this, the tickets' reviewer
+ * refuses its pull requests, and the member who assigned the work may not approve them on GitHub, so they could never merge hands-off.
+ */
+export const COPILOT_AGENT_LOGIN = /^(?:app\/)?copilot-swe-agent(?:\[bot\])?$/i;
+
+/**
  * The `gh` config directory the reviewer instances act as (`a11ign-bot`). Its login is a declared identity: a pull request the reviewer
  * itself opened is the org's own work. It is `/home/agent/reviewer/gh` on the host, as `wake.ts` names it.
  */
@@ -48,7 +56,7 @@ export type DeclaredIdentities = { exact: readonly string[]; pattern: readonly R
  * THE IDENTITIES THE HOST DECLARES, from the three places they are written down:
  *   - the `github.identity` roles of `host.json` in `github-apps` mode, each App's `slug` as `<slug>[bot]` (or `app/<slug>`);
  *   - the `user-accounts` logins the workers, leads and reviewer `gh` config directories hold (`hosts.yml`, read by {@link declaredGhAccount});
- *   - the bot and chairman logins the gate already trusts by name (octo-sts, dependabot and renovate, `CHAIRMAN_LOGINS`).
+ *   - the bot and chairman logins the gate already trusts by name (octo-sts, dependabot and renovate, the Copilot coding agent, `CHAIRMAN_LOGINS`).
  *
  * A HOST WITH NO READABLE DECLARATION gets the constants and the reviewer's own account and nothing more. That is the fail-closed
  * direction: an account the host did not name is OUTSIDE, which costs a read-only review, and never INSIDE by accident.
@@ -58,7 +66,7 @@ export type DeclaredIdentities = { exact: readonly string[]; pattern: readonly R
  */
 export function declaredIdentities({ host = declaredHost(), configDirs = [] }: { host?: HostConfig | null; configDirs?: readonly string[]; } = {}): DeclaredIdentities {
   const exact: string[] = [...CHAIRMAN_LOGINS];
-  const pattern: RegExp[] = [DEPENDENCY_BOT_LOGIN, AUTOMATION_WRITER_LOGIN];
+  const pattern: RegExp[] = [DEPENDENCY_BOT_LOGIN, AUTOMATION_WRITER_LOGIN, COPILOT_AGENT_LOGIN];
   const dirs = [...configDirs, REVIEWER_GH_CONFIG_DIR];
   if (host !== null) {
     // The roles' `gh` config directories are `<dir>/gh`, as the wrapper and `declaredGhAccount` read them; the bare `<dir>` holds no

@@ -33,8 +33,8 @@ export const keeping = (view: WriterBoard["view"]): InstanceAnswers["post"] => (
 type Wrap = (base: ReturnType<typeof standFetch>) => Fetch;
 
 /** A page of the shell, with a ticket search to hold the focus, over a board whose writer lists `runs`. `view` is what the board answers next. */
-export async function pageIn(page: Page, runs: readonly Run[] = [], more: Parameters<typeof writerBoard>[1] = (view) => ({ post: keeping(view) }), wrap: Wrap = (fetchWith) => fetchWith) {
-  const board = writerBoard(runs, more);
+export async function pageIn(page: Page, runs: readonly Run[] = [], more: Parameters<typeof writerBoard>[1] = (view) => ({ post: keeping(view) }), wrap: Wrap = (fetchWith) => fetchWith, config?: Parameters<typeof writerBoard>[2]) {
+  const board = writerBoard(runs, more, config);
   const base = standFetch(standOn(board));
   const view = render(
     <ShellProvider fetchWith={wrap(base)}>
@@ -49,8 +49,8 @@ export async function pageIn(page: Page, runs: readonly Run[] = [], more: Parame
 }
 
 /** The page with its panel open, once the bell counts the finished requests the board lists. */
-export async function panelOver(runs: readonly Run[], more?: Parameters<typeof writerBoard>[1], page: Page = "tickets", wrap?: Wrap) {
-  const opened = await pageIn(page, runs, more, wrap);
+export async function panelOver(runs: readonly Run[], more?: Parameters<typeof writerBoard>[1], page: Page = "tickets", wrap?: Wrap, config?: Parameters<typeof writerBoard>[2]) {
+  const opened = await pageIn(page, runs, more, wrap, config);
   const count = runs.filter((run) => run.phase === "finished").length;
   await waitFor(() => expect(screen.getByRole("button", { name: `Notifications, ${count}` })).toBeTruthy());
   fireEvent.click(screen.getByRole("button", { name: `Notifications, ${count}` }));

@@ -7,7 +7,8 @@ import { CALL_FAILURES_WARN_PER_100, healthFlags, LOOP_P99_WARN_MS } from "./hea
 
 const quiet: HealthFigures = {
   at: 0, uptimeMs: 0, loop: { lastMinute: { p50Ms: 1, p99Ms: 9 }, lastHour: { p50Ms: 1, p99Ms: 40 } }, syncHolds: { lastHour: 0, holdMs: 100 },
-  calls: { linear: { calls: 100, failures: 1, failuresPer100: 1 }, github: { calls: 0, failures: 0, failuresPer100: 0 } },
+  calls: { linear: { calls: 100, failures: 1, failuresPer100: 1 }, github: { calls: 0, failures: 0, failuresPer100: 0 }, herdr: { calls: 0, failures: 0, failuresPer100: 0 } },
+  outsideCalls: { calls: 100, failures: 1, failuresPer100: 1 },
   runs: { sinceLastStartMs: null, startable: 0, freeSlots: 3, starting: 0, oldestStartingMs: null, holding: null },
   fill: { sinceLastCompletedMs: null, lastEarlyReturn: null, held: [] },
 };
@@ -26,7 +27,7 @@ test("a loop over the limit in either window is flagged once, naming the windows
 });
 
 test("each service over 1% is flagged on its own", () => {
-  const sick: HealthFigures = { ...quiet, calls: { linear: { calls: 50, failures: 5, failuresPer100: 10 }, github: { calls: 200, failures: 3, failuresPer100: 1.5 } } };
+  const sick: HealthFigures = { ...quiet, calls: { linear: { calls: 50, failures: 5, failuresPer100: 10 }, github: { calls: 200, failures: 3, failuresPer100: 1.5 }, herdr: { calls: 0, failures: 0, failuresPer100: 0 } } };
   assert.deepEqual(healthFlags(sick, null).map(({ figure, text }) => [figure, text]), [["calls", "Linear calls fail 10 in 100 (5 of 50 in the last hour), over 1"], ["calls", "GitHub calls fail 1.5 in 100 (3 of 200 in the last hour), over 1"]]);
 });
 

@@ -328,7 +328,7 @@ async function pairBrowser(request: IncomingMessage, response: ServerResponse, p
     return sendJson(response, 400, { error: String((err as Error)?.message ?? err) });
   }
   if (!pairing.redeem(body.code)) return sendJson(response, 401, { error: "That code is wrong, used or out of date. Run agent-org ticket:pair for a new one." });
-  sendJson(response, 200, { paired: true }, { "Set-Cookie": `${COOKIE}=${sessions.open()}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${SESSION_SECONDS}` });
+  sendJson(response, 200, { paired: true }, { "Set-Cookie": `${COOKIE}=${sessions.open()}; HttpOnly; SameSite=Lax; Path=/; Max-Age=${SESSION_SECONDS}` });
 }
 
 /** The `Host` and `Origin` values the exposure answers to for a request. The name is asked only for a `Host` that is not this server's loopback, so a hostile one costs no call. */
@@ -400,6 +400,9 @@ export function createUi(deps: UiDeps) {
     const url = new URL(request.url ?? "/", `http://127.0.0.1:${port}`);
     const by = pairedBy(request, key, sessions);
     if (by === null) return pairBrowser(request, response, url.pathname, { port, pairing, sessions });
+    // A browser that is already paired can still be shown the pairing page: a browser that leaves the session cookie off a page load but sends it
+    // with the page's own request (iPad Chrome did). Its Pair is answered as paired, spending no code, so the page reloads itself onto the board.
+    if (request.method === "POST" && url.pathname === "/pair") return sendJson(response, 200, { paired: true });
     // A code pairs a new browser, so only the key makes one. A browser's session, which can reach another port's server, cannot.
     if (request.method === "POST" && url.pathname === "/api/pair-code") {
       if (by !== "key") return sendJson(response, 403, { error: "a pairing code is made with the board key: run agent-org ticket:pair" });

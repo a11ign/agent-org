@@ -81,6 +81,7 @@
     "!plugins/**/*.test.ts",
     "host",
     "LICENSE",
-    "README.md"
+    "README.md",
+    "docs/guide"
   ]
 }

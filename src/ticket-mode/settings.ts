@@ -21,6 +21,7 @@
 import { DEFAULT_TIMEOUT_SECONDS, MAX_TIMEOUT_SECONDS, type Preflight } from "./preflight.ts";
 import { defaultBinDir } from "./worker-files.ts";
 import { DEFAULT_CI_BUDGET_MINUTES } from "./ci-spend/budget.ts";
+import { pricesOf } from "./outcomes/prices-config.ts";
 import { isActive, PROVIDER_BLOCKS, PUBLISHER_SHAPE, resolveProviders, type BlockReport, type Providers, type Setting } from "./providers.ts";
 import type { Catalog } from "../plugins/manifest.ts";
 import { defaultCatalog, isTrackerConnector, pluginNamed } from "../plugins/registry.ts";
@@ -99,6 +100,11 @@ export type TicketSettings = Readonly<{
    * a worker then declines such a check as "unattended worker, no design tool access". A machine fact, like `connectors`, so it stays in the host file.
    */
   designTools: boolean;
+  /**
+   * Whether the board files a fix ticket for a check that holds a pull request as red on main with no owner, queues it, and brings the held pull requests up to date with main once it merges (A11-428). True by default;
+   * false keeps the hold as it was before: the card names only an owner a `Blocked-by:` line or the check's refusal names. Optional, so a settings object made by hand (a test's) leaves it off.
+   */
+  fixRedMain?: boolean;
   /**
    * Whether this machine can capture the board for a worker (`ticket:capture`): both Chromium builds start, so the worker brief asks for a capture of a page a
    * change alters, and the pull request shows it. False by default: a worker is then not told to capture. Onboard sets it when both builds start.
@@ -421,6 +427,13 @@ function designToolsOf(value: unknown): boolean {
   return value;
 }
 
+/** `tickets.fixRedMain`: false for the board not to file fix tickets for checks red on main (A11-428). Absent is true. Any other value is refused by name. */
+function fixRedMainOf(value: unknown): boolean {
+  if (value === undefined) return true;
+  if (typeof value !== "boolean") throw new TicketSettingsRefusal("tickets.fixRedMain", `must be true or false, not ${JSON.stringify(value)}`);
+  return value;
+}
+
 /** `tickets.capture`: true when this machine can capture the board for a worker. Absent is false. Any other value is refused by name. */
 function captureOf(value: unknown): boolean {
   if (value === undefined) return false;
@@ -542,6 +555,16 @@ function instanceOf(value: unknown, machine: string): string {
  * @param home the user's home directory, for the default state directory
  * @param machine the machine's host name, which `tickets.instance` defaults to
  */
+/** The instance's loopback port and the page's, from the exposure block. REFUSES naming the field when either is not a port, or they are equal. */
+function portsOf(exposure: BlockReport): Readonly<{ port: number; uiPort: number }> {
+  const port = settingOf(exposure, "port");
+  const uiPort = settingOf(exposure, "uiPort");
+  const portNumber = positiveInteger(port.value, port.at, 4747);
+  const uiPortNumber = positiveInteger(uiPort.value, uiPort.at, 4748);
+  if (uiPortNumber === portNumber) throw new TicketSettingsRefusal(uiPort.at, `must differ from ${port.at}, which is ${portNumber} too`);
+  return { port: portNumber, uiPort: uiPortNumber };
+}
+
 export function parseTicketSettings(host: unknown, home: string = homedir(), machine: string = hostname(), catalog: Catalog = defaultCatalog()): TicketSettings {
   if (!isObject(host)) throw new TicketSettingsRefusal("(root)", "must be a JSON object");
   const clones = host.clones;
@@ -559,11 +582,9 @@ export function parseTicketSettings(host: unknown, home: string = homedir(), mac
   const providers = resolveProviders(host, catalog);
   refuseRelativeSecretPaths(providers, catalog);
   const { tracker, codeHost, publish, reviewer, exposure } = providers.blocks;
-  const port = settingOf(exposure, "port");
-  const uiPort = settingOf(exposure, "uiPort");
-  const portNumber = positiveInteger(port.value, port.at, 4747);
-  const uiPortNumber = positiveInteger(uiPort.value, uiPort.at, 4748);
-  if (uiPortNumber === portNumber) throw new TicketSettingsRefusal(uiPort.at, `must differ from ${port.at}, which is ${portNumber} too`);
+  const { port: portNumber, uiPort: uiPortNumber } = portsOf(exposure);
+  // A wrong price table refuses the start, naming its field. The table is not kept: `/api/outcomes` reads the host file again on each request, so a change is in force at the next read (A11-430).
+  pricesOf(tickets.prices);
   const stack = settingOf(codeHost, "stack");
   if (stack.value !== undefined && typeof stack.value !== "boolean") throw new TicketSettingsRefusal(stack.at, `must be true or false, not ${JSON.stringify(stack.value)}`);
   const trackerConnectors = settingOf(tracker, "connectors");
@@ -599,6 +620,7 @@ export function parseTicketSettings(host: unknown, home: string = homedir(), mac
     publish: publisherOf(publish),
     drafts: draftsOf(tickets.drafts),
     designTools: designToolsOf(tickets.designTools),
+    fixRedMain: fixRedMainOf(tickets.fixRedMain),
     capture: captureOf(tickets.capture),
     prReview: prReviewOf(tickets.prReview),
     reviewer: isActive(reviewer) ? reviewer.provider : null,

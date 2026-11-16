@@ -1,18 +1,24 @@
 import type { ReactNode } from "react";
 import { connectionLabel } from "../../../src/ticket-mode/board-view.ts";
 import { NotificationCentre } from "../notifications/NotificationCentre.tsx";
-import { Mark, RunsIcon, SettingsIcon, TicketsIcon } from "./icons.tsx";
-import { isSettingsPage, runsHref, settingsHref, ticketsHref, type Page } from "./routes.ts";
+import { TicketSearch } from "../search/TicketSearch.tsx";
+import { Mark, OutcomesIcon, RunsIcon, SettingsIcon, TicketsIcon } from "./icons.tsx";
+import { isSettingsPage, outcomesHref, runsHref, settingsHref, ticketsHref, type Page } from "./routes.ts";
 import { loopLine } from "./loop-line.ts";
 import { pillOf } from "./shell-model.ts";
 import { useShell } from "./ShellProvider.tsx";
+import { TopBarStart } from "./TopBar.tsx";
 import { useLoopHealth } from "./use-loop-health.ts";
 
-/** The instance switcher: every connection by the backend's own label (`connectionLabel`), drawn with one connection as well. Choosing one moves the whole UI to it. */
+/**
+ * The instance switcher: every connection by the backend's own label (`connectionLabel`), drawn with one connection as well. Choosing one moves the whole UI to it. At 1024px and below it is the top bar's
+ * instance chip, whose dot is the connection pill's colour (the pill itself is then read, not drawn).
+ */
 function InstanceSwitcher() {
-  const { connections, connection, switchConnection } = useShell();
+  const { connections, connection, switchConnection, queue, update } = useShell();
   return (
     <label className="switcher">
+      <span className={`switcher-dot switcher-dot-${pillOf(queue.state, update).tone}`} aria-hidden="true" />
       <span className="visually-hidden">Instance</span>
       <select value={connection?.name ?? ""} disabled={connections.length === 0} onChange={(event) => switchConnection(event.target.value)}>
         {connections.map((candidate) => (
@@ -68,7 +74,7 @@ function NavLink({ href, current, icon, label, trailing }: NavLinkProps) {
   );
 }
 
-/** Tickets with its count, and Runs with the number of runs running. Both are blank while their read is loading, and the Runs badge is hidden at 0. */
+/** Tickets with its count, Runs with the number of runs running, and Outcomes (A11-430). The counts are blank while their read is loading, and the Runs badge is hidden at 0. */
 function MainNav({ page }: Readonly<{ page: Page }>) {
   const { ticketCount, runningRuns } = useShell();
   const running = runningRuns === null || runningRuns === 0 ? null : (
@@ -78,21 +84,26 @@ function MainNav({ page }: Readonly<{ page: Page }>) {
     </span>
   );
   return (
-    <nav aria-label="Main" className="sidebar-section">
+    <nav aria-label="Main" className="sidebar-section main-nav">
       <NavLink href={ticketsHref} current={page === "tickets"} icon={<TicketsIcon />} label="Tickets" trailing={<span className="nav-count">{ticketCount ?? ""}</span>} />
       <NavLink href={runsHref} current={page === "runs" || page === "run"} icon={<RunsIcon />} label="Runs" trailing={running} />
+      <NavLink href={outcomesHref} current={page === "outcomes"} icon={<OutcomesIcon />} label="Outcomes" />
     </nav>
   );
 }
 
 /**
- * The sidebar of every main page: the mark, the instance switcher and the connection pill, Tickets and Runs, the page's own middle section (`children`), and Settings at the
+ * The sidebar of every main page: the mark, the instance switcher and the connection pill, the Search tickets button where the tracker can search (A11-387), Tickets and Runs, the page's own middle section (`children`), and Settings at the
  * bottom. This is the boards' DOM order, which is the keyboard's focus order.
+ *
+ * At 1024px and below the same element is the sticky top bar (A11-427, `shell.css`): the top bar's mark and tabs, drawn only there, then the bell, the instance chip and the search icon, which are this
+ * sidebar's own controls. The page's middle section is then a strip under the bar (the Settings sections, the Runs statuses) or is left out (the projects and goals, which the Tickets page offers as chips).
  */
 export function Sidebar({ page, children }: Readonly<{ page: Page; children?: ReactNode }>) {
   const { connectionsReady } = useShell();
   return (
     <aside aria-label="Atomaut" className="sidebar">
+      <TopBarStart page={page} />
       <div className="sidebar-head">
         <div className="brand">
           <Mark />
@@ -103,6 +114,7 @@ export function Sidebar({ page, children }: Readonly<{ page: Page; children?: Re
         <InstanceSwitcher />
         <ConnectionPill />
         {connectionsReady ? <LoopLine /> : null}
+        <TicketSearch page={page} />
       </div>
       <MainNav page={page} />
       {children}
