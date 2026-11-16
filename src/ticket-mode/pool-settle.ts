@@ -613,7 +613,8 @@ async function attachPlan(ctx: PoolContext, entry: Entry): Promise<void> {
   try {
     // Not through `attachFiles`: its extra step would queue the ticket again only after this pass has filled its slots.
     const found = planFiles(planDir, checksFor(runPlace(ctx, entry).dir, key, entry.findingsGiven, entry.briefedAgainst, entry.ticket, closedWorkOf(ticketDir(settings, key))));
-    if ("refusal" in found) return found.afterMerge === undefined || !canSendBack(entry) ? end(ctx, entry, { kind: "needs-human", reason: found.refusal }) : sendBack(ctx, entry, [formatRefusalOf(entry, found.refusal, found.afterMerge.moves)]);
+    // `await`, not a bare return: the run stays in `attaching` until the send-back's herdr prompt is answered, so no pass settles the same `planned` meanwhile (A11-433).
+    if ("refusal" in found) return found.afterMerge === undefined || !canSendBack(entry) ? end(ctx, entry, { kind: "needs-human", reason: found.refusal }) : await sendBack(ctx, entry, [formatRefusalOf(entry, found.refusal, found.afterMerge.moves)]);
     if (source.attachPlan === undefined) return end(ctx, entry, { kind: "needs-human", reason: `this tracker takes no plans: attach the files in ${planDir} by hand` });
     const moving = { key, moves: found.moves, briefed: entry.briefedAgainst };
     // A plan that moves nothing awaits nothing before its attach, so the slot it frees is filled in this same pass.
@@ -678,7 +679,8 @@ async function attachBatch(ctx: PoolContext, entry: Entry): Promise<void> {
   try {
     // A member whose section the board refuses sends the whole run back before any member is attached, so the planner's next `planned` does not attach a plan twice (A11-288).
     const refused = canSendBack(entry) ? members.flatMap((member) => formatRefusalIn(ctx, member, join(planDir, member.ticket.key)) ?? []) : [];
-    if (refused.length > 0) return sendBack(ctx, entry, refused);
+    // Awaited inside the `attaching` hold, as in `attachPlan`.
+    if (refused.length > 0) return await sendBack(ctx, entry, refused);
     const handedBack = new Map<string, Outcome>();
     for (const { ticket: { key } } of members) {
       const outcome = await planOneOfBatch(ctx, key, join(planDir, key));

@@ -9,6 +9,7 @@ the only place the repository runs `tailscale`), and `telegram` (messaging: the 
 | Plugin | Concern | What it is |
 | --- | --- | --- |
 | `linear` | tracker | Linear: where tickets are kept and read |
+| `github-issues` | tracker | GitHub Issues: the issues of one repository as the tickets, through GitHub's REST API with a token; the second tracker (A11-447), and how Linear's states, labels and sub-issues map is in its `README.md` |
 | `github` | code host | GitHub: pull requests, reviews and checks (their logs and reruns), the review claim, the verdict door the reviewers post with (`reviewer/pr-review-verdict.sh` and its installer), and the routing `gh` wrapper of an org host (`wrapper/gh`, its renderer, the App-token minter and the rows and onboard step that check and set them up), and, for row mode, the optional `rows` group (`rows/`: the GitHub adapter of the ticket port and the reads and writes of rows, pull requests, checks, the merge queue and the board, what arming a pull request, guarding its merge and running the merge queue ask of GitHub, and what the work gate reads and writes of rows, pull requests, checks and runs, with the process its executor starts; contract 1.9) |
 | `local` | exposure | serves nothing: the board listens on `127.0.0.1`; refuses `serve` by name |
 | `tailscale` | exposure | `tailscale serve` for the page and the terminal, never Funnel; a path open to the internet for the event receiver (contract 1.1) |

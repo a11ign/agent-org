@@ -19,7 +19,7 @@ export const publishFolder = (settings: TicketSettings): string => join(settings
 
 /**
  * Where a run lives: the herdr name of its workspace (its label), the folder holding its brief and outcome, the folder its agent starts in, and the pane its agent is in once the run has one. herdr 0.9.3 lists
- * Claude agents with no name, so the agent is reached by its pane (`agentTarget`, A11-279), never by the name.
+ * Claude agents with no name, so the agent is reached by its pane (`agentTargetAsync`, A11-279), never by the name.
  */
 export type RunPlace = Readonly<{ name: string; dir: string; folder: string; pane?: string }>;
 
