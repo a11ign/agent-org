@@ -928,19 +928,19 @@ test("A11-345: a call whose four attempts all fail while the host has no network
   assert.deepEqual(ledger.figures().linear, { calls: 171, failures: 1, failuresPer100: 0.6 }, "170 answered and one failed: under the 1% the reliability watch holds");
 });
 
-test("A11-345: a call that fails once and is answered on its retry is one failed call: the failure a retry covers still shows", async () => {
+test("A11-345, fifth reopen: a call that fails once on a stale connection and is answered on its retry is no failed call in the board's tracker figure", async () => {
   const ledger = createCallLedger(() => 1_000);
   const flaky = dropping(1, staleSocket(), FOUND).fetch;
   await boardSource(flaky, { ledger }).read("NBF-1");
-  assert.deepEqual(ledger.figures().linear, { calls: 1, failures: 1, failuresPer100: 100 });
+  assert.deepEqual(ledger.figures().linear, { calls: 1, failures: 0, failuresPer100: 0 });
 });
 
-test("A11-345: a call answered with a 503 and then a 200 is one failed call too", async () => {
+test("A11-345, fifth reopen: a call answered with a 503 and then a 200 is no failed call either", async () => {
   const ledger = createCallLedger(() => 1_000);
   let answered = 0;
   const unwell = (async () => new Response(JSON.stringify(FOUND), { status: (answered += 1) === 1 ? 503 : 200 })) as typeof globalThis.fetch;
   await boardSource(unwell, { ledger }).read("NBF-1");
-  assert.deepEqual(ledger.figures().linear, { calls: 1, failures: 1, failuresPer100: 100 });
+  assert.deepEqual(ledger.figures().linear, { calls: 1, failures: 0, failuresPer100: 0 });
 });
 
 test("A11-359: a plan's download is tried again as a query is, so a plan read in fill does not fail on one dead connection", async () => {

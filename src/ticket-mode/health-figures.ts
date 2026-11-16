@@ -75,7 +75,7 @@ export type HealthFigures = Readonly<{
   syncHolds: Readonly<{ lastHour: number; holdMs: number }>;
   /** Each service's calls over the last hour: Linear, GitHub and herdr. */
   calls: CallFigures;
-  /** The one failure figure (A11-436): every call to an outside service over the last hour, each counted once however often it was tried, and how many failed. */
+  /** The one failure figure (A11-436): every call to an outside service over the last hour, each counted once however often it was tried, and how many failed for good. */
   outsideCalls: CallFigure;
   runs: RunFigures;
   fill: FillFigures;
