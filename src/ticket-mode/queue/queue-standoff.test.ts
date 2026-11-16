@@ -77,7 +77,7 @@ test("A11-290: a stand-off ends with no person when the pull request moves to a 
   assert.deepEqual(moved.interventions, { "1970-01-01": { needsYou: 0, fixes: 0, standoffs: 1 } }, "counted on the day it settled, beside the interventions");
   assert.deepEqual(settleStandoff(moved, "A11-270", 300).interventions, moved.interventions, "a second read finds no stand-off to settle");
   const today = interventionsView(moved, 300).days.at(-1);
-  assert.deepEqual(today, { date: "1970-01-01", needsYou: 0, fixes: 0, total: 0, standoffs: 1 }, "the health number shows it, and it is no intervention: the total stays 0");
+  assert.deepEqual(today, { date: "1970-01-01", needsYou: 0, fixes: 0, total: 0, standoffs: 1, autoAnswers: 0, personAnswers: 0 }, "the health number shows it, and it is no intervention: the total stays 0");
 });
 
 test("A11-290: a stand-off round that ends on anything but reviewed has ended its route, so a later round of the run is no stand-off round", () => {

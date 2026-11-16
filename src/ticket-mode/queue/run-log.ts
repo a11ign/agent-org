@@ -6,7 +6,7 @@
 //
 // EACH TRANSITION THAT RECORDS ONE LOGS IT ON A CHANGE IT ALREADY DETECTS, through {@link logEvent}, and a transition that is not given a time logs nothing, so the pure transitions the board and the tests share keep their
 // old signatures. Every call the pool and the server make gives it.
-import { countNeedsYou } from "./interventions.ts";
+import { countAutoAnswer, countNeedsYou, countPersonAnswer } from "./interventions.ts";
 import type { Queue } from "./queue-entries-and-outcomes.ts";
 
 /** The most events kept for one ticket: its last ones. */
@@ -73,6 +73,8 @@ type EventBody =
   /** What the board's own push found when a worker handed back on a lost push access (A11-346): it `passed` (`detail` names the repositories, and the worker was told access is fine) or `failed` twice (`detail` is git's error, the `remote:` lines among it). */
   | Readonly<{ kind: "push-check"; step: "passed" | "failed"; detail: string }>
   | Readonly<{ kind: "answered"; by: AnsweredBy }>
+  /** The answerer answered the run's question from what is written down, instead of parking it for a person (A11-438): the answer's first line, its confidence (0 to 1) and the sources it cited, by label. */
+  | Readonly<{ kind: "auto-answered"; answer: string; confidence: number; sources: readonly string[] }>
   | Readonly<{ kind: "published"; link: string | null }>
   | Readonly<{ kind: "merged"; url: string }>
   /** `base` is the branch the pull request merges into, or null when the host did not say. */
@@ -112,14 +114,25 @@ export const logOf = (queue: Queue, key: string): readonly RunEvent[] => queue.r
 export const logHas = (queue: Queue, key: string, matches: (event: RunEvent) => boolean): boolean => logOf(queue, key).some(matches);
 
 /**
- * Append `body` to ticket `key`'s log, at `at`, count a Needs-you event as one person-intervention that day (A11-257), and keep the log's last {@link RUN_LOG_MAX} events and the logs of the {@link GONE_LOGS_MAX} tickets that ended most recently. With no `at` it logs nothing:
+ * Append `body` to ticket `key`'s log, at `at`, count a Needs-you event as one person-intervention that day (A11-257) and an answer by who gave it (A11-438), and keep the log's last {@link RUN_LOG_MAX} events and the logs of the {@link GONE_LOGS_MAX} tickets that ended most recently. With no `at` it logs nothing:
  * a caller that has no clock is a pure helper's, which records no time. PURE.
  */
 export function logEvent(queue: Queue, key: string, at: number | undefined, body: EventBody): Queue {
   if (at === undefined) return queue;
   const kept = [...logOf(queue, key), { ...body, at }].slice(-RUN_LOG_MAX);
   const logged = { ...queue, runLog: withoutOldGone(queue, { ...queue.runLog, [key]: kept }) };
-  return body.kind === "needs-you" && !repeats(queue, key, { ...body, at }) ? countNeedsYou(logged, at) : logged;
+  if (repeats(queue, key, { ...body, at })) return logged;
+  return countedOf(body)?.(logged, at) ?? logged;
+}
+
+/**
+ * How an event counts in the day's tally, or undefined when it does not: a Needs-you card is a person-intervention (A11-257), and a question answered by the answerer, or by a person through the answer route, is counted
+ * apart by who answered it (A11-438). PURE.
+ */
+function countedOf(body: EventBody): ((queue: Queue, at: number) => Queue) | undefined {
+  if (body.kind === "needs-you") return countNeedsYou;
+  if (body.kind === "auto-answered") return countAutoAnswer;
+  return body.kind === "answered" && body.by === "answer" ? countPersonAnswer : undefined;
 }
 
 /** Whether `event` is the one ticket `key`'s log ends with, the same at the same time: logged twice, it is one person-intervention. */
