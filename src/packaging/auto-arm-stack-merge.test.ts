@@ -228,6 +228,13 @@ test("#2048: any other refusal is still shown, and nothing is unstacked", () => 
   assert.match(onlyPost(out), /not mergeable/);
 });
 
+test("#2057: a pull request whose base the board moved to main is armed: `arm` runs on `edited`, and only for an edit that changed the base", () => {
+  const workflow = parseYaml(readFileSync(WORKFLOW, "utf8")) as { on: { pull_request_target: { types: string[] } }, jobs: Record<string, { if?: string }> };
+  assert.ok(workflow.on.pull_request_target.types.includes("edited"), "a retarget is an `edited` event");
+  const condition = workflow.jobs.arm!.if ?? "";
+  assert.match(condition, /github\.event\.action != 'edited' \|\| github\.event\.changes\.base != null/, "a title or body edit arms nothing new");
+});
+
 for (const [label, exit, word] of [["pending (gh exits 8)", 8, "pending"], ["red (gh exits 1)", 1, "red"]] as const) {
   test(`stacked, required checks ${label}: no stack merge, no comment, exit 0`, () => {
     const out = runStacked({ "pr checks": { exit } });

@@ -47,7 +47,9 @@ name: auto-arm
 on:
   pull_request_target:
     branches: [main]
-    types: [opened, ready_for_review, reopened, synchronize]
+    # `edited` for a BASE change only (the `arm` job's `if:`): the board moves a stacked pull request's base to `main` once the one below it merges (`stack-retarget.ts`), and one left
+    # alone by an unstack (A11-450: a single member above is not stacked again) is then armed by nothing else; #2057 sat approved and green until armed by hand, 2026-11-16.
+    types: [opened, ready_for_review, reopened, synchronize, edited]
   pull_request_review:
     types: [submitted]
   # agent-org#1573: the outside home's two scheduled jobs. A cron is not a promise (GitHub disables scheduled workflows after 60 days without repository activity, and this repository is never idle that
@@ -65,7 +67,7 @@ jobs:
   arm:
     # The event name is checked first, as `github.event.pull_request` is null on any other event and `null == false` is TRUE in an Actions expression.
     # A fork's pull request gets no secrets and a read-only token, so arming it would only fail; a fork's change is armed by a maintainer.
-    if: github.event_name == 'pull_request_target' && github.event.pull_request.draft == false && github.event.pull_request.head.repo.full_name == github.repository
+    if: github.event_name == 'pull_request_target' && github.event.pull_request.draft == false && github.event.pull_request.head.repo.full_name == github.repository && (github.event.action != 'edited' || github.event.changes.base != null)
     # The job's own `GITHUB_TOKEN` holds only the OIDC request Octo STS needs; the writes come from the minted token, whose grant is `auto-arm.sts.yaml`'s.
     permissions:
       id-token: write

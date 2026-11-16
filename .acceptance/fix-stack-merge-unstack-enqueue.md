@@ -1,4 +1,4 @@
-`arm-approved` answers GitHub's refusal of the stack merge to an App ("Enqueuer is not authorized to merge", #2048) by taking the pull request, the bottom open member, out of its stack, arming it alone with auto-merge, and stacking the open members above it again. Any other refusal is shown as before.
+`arm-approved` answers GitHub's refusal of the stack merge to an App ("Enqueuer is not authorized to merge", #2048) by taking the pull request, the bottom open member, out of its stack, arming it alone with auto-merge, and stacking the open members above it again. Any other refusal is shown as before. `arm` also runs on an `edited` event that changed the base, so a pull request the board moved onto `main` (one left alone by an unstack, #2057) is armed.
 
 Acceptance:
 ```bash
