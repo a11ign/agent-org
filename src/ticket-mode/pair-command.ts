@@ -10,7 +10,7 @@
 // the plugin reads the directories, token and port the service runs with, and its output (the code, the QR for the tailnet address) is kept. A
 // person types no path. The terminal's code is printed only when the terminal is served for this instance, or when `--terminal` asks for it. Whether it is served, and under what
 // name, is the exposure plugin's to say (A11-162).
-import { spawnSync } from "node:child_process";
+import { spawn } from "node:child_process";
 import { existsSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -79,12 +79,12 @@ export function terminalPair(settings: TicketSettings, port: number, deps: Termi
   return terminalPairProgram({ env: deps.env, home: deps.home, session: settings.herdrSession, port, root, bun, path });
 }
 
-/** What `runPair` writes, and what it runs. The command's own uses are `process` and `spawnSync`; a test passes its own. */
+/** What `runPair` writes, and what it runs. The command's own uses are `process` and `runOnThisTerminal`; a test passes its own. */
 export type PairDeps = Readonly<{
   board: () => Promise<{ code: string; minutes: number }>;
   terminal: () => TerminalDeps;
-  /** Runs the plugin's program with its output on this terminal, and answers its exit status. */
-  run: (program: TerminalProgram) => number;
+  /** Runs the plugin's program with its output on this terminal, and answers its exit status once it has exited. */
+  run: (program: TerminalProgram) => Promise<number>;
   /** What the exposure says of this board. Asked once, and only the name is read from the machine, and only when the exposure serves the terminal. */
   exposed: () => Promise<Exposed>;
   out: (text: string) => void;
@@ -132,7 +132,7 @@ export async function runPair(mode: PairMode, settings: TicketSettings, deps: Pa
     deps.err(`ticket:pair: ${program}\n`);
     return 1;
   }
-  if (deps.run(program) !== 0) {
+  if ((await deps.run(program)) !== 0) {
     deps.err("ticket:pair: the worker terminal gave no pairing code: start it with `agent-org start terminal`, then run `agent-org ticket:pair --terminal` again\n");
     return 1;
   }
@@ -149,6 +149,22 @@ export function exposedBy(exposure: Exposure): () => Promise<Exposed> {
   };
 }
 
+/**
+ * Runs `program` with its output on this terminal, and answers its exit status once it has exited: 1 when a signal ended it, and 1 when it
+ * could not start, which is said on `err`. The spawn is async (A11-433), so the event loop of whatever process awaits it keeps turning while the plugin runs.
+ */
+export function runOnThisTerminal(program: TerminalProgram, err: (text: string) => void = (text) => process.stderr.write(text)): Promise<number> {
+  const [file, ...args] = program.argv;
+  return new Promise((resolve) => {
+    const child = spawn(file, args, { cwd: program.workingDirectory, env: { ...process.env, ...program.environment }, stdio: "inherit" });
+    child.once("error", (error) => {
+      err(`ticket:pair: ${error.message}\n`);
+      resolve(1);
+    });
+    child.once("close", (status) => resolve(status ?? 1));
+  });
+}
+
 /** The real dependencies: this process's environment and home, the plugin run with its output on this terminal, and the exposure's say. */
 export function defaultPairDeps(settings: TicketSettings, exposure: Exposure): PairDeps {
   return {
@@ -159,12 +175,7 @@ export function defaultPairDeps(settings: TicketSettings, exposure: Exposure): P
       read: readOrNull,
       exists: existsSync,
     }),
-    run: (program) => {
-      const [file, ...args] = program.argv;
-      const result = spawnSync(file, args, { cwd: program.workingDirectory, env: { ...process.env, ...program.environment }, stdio: "inherit" });
-      if (result.error) process.stderr.write(`ticket:pair: ${result.error.message}\n`);
-      return result.status ?? 1;
-    },
+    run: (program) => runOnThisTerminal(program),
     exposed: exposedBy(exposure),
     out: (text) => process.stdout.write(text),
     err: (text) => process.stderr.write(text),

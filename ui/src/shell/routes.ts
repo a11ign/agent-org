@@ -1,6 +1,6 @@
 // module: the routes the shell serves -- their addresses, their labels, and which page a path is
 //
-// THE ADDRESSES ARE THE TICKET'S: `/tickets`, `/runs`, `/runs/<key>` and `/settings/<models|workers|machine|plugins>`, served from the site's root since A11-202 (they were under `/next`, which now
+// THE ADDRESSES ARE THE TICKET'S: `/tickets`, `/runs`, `/runs/<key>`, `/outcomes` (A11-430) and `/settings/<models|workers|machine|plugins>`, served from the site's root since A11-202 (they were under `/next`, which now
 // redirects here). `ui/test/package.test.ts` holds `BASE` to the Astro config's `base`, so the two cannot drift. Every link is a plain address, as on the boards, so moving between pages is a page load.
 
 /** Where the build is served, as a prefix of every address: empty, the site's root. Astro's `base` is `BASE || "/"`. */
@@ -16,11 +16,14 @@ export const SETTINGS_SECTIONS = [
 
 export type SettingsSection = (typeof SETTINGS_SECTIONS)[number]["id"];
 
-/** The page a route shows: Tickets, Runs, one run, or a section of Settings. */
-export type Page = "tickets" | "runs" | "run" | SettingsSection;
+/** The page a route shows: Tickets, Runs, one run, Outcomes, or a section of Settings. */
+export type Page = "tickets" | "runs" | "run" | "outcomes" | SettingsSection;
 
 export const ticketsHref = `${BASE}/tickets`;
 export const runsHref = `${BASE}/runs`;
+export const outcomesHref = `${BASE}/outcomes`;
+/** A run's own page, `/runs/<key>`. */
+export const runHref = (key: string): string => `${BASE}/runs/${encodeURIComponent(key)}`;
 /** The Settings link at the bottom of the sidebar goes to Models, the first section. */
 export const settingsHref = `${BASE}/settings/models`;
 export const settingsSectionHref = (section: SettingsSection): string => `${BASE}/settings/${section}`;
@@ -46,6 +49,7 @@ export const TITLES: Readonly<Record<Page, string>> = {
   tickets: "Atomaut: Tickets",
   runs: "Atomaut: Runs",
   run: "Atomaut: Run detail",
+  outcomes: "Atomaut: Outcomes",
   models: "Atomaut: Settings, Models",
   workers: "Atomaut: Settings, Workers",
   machine: "Atomaut: Settings, Machine",

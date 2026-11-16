@@ -12,7 +12,6 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { ChoicePart } from "./config-schema.ts";
-import { defaultSchema } from "../plugins/schema.ts";
 import { pluginProblems, type ProblemOptions } from "./plugins.ts";
 import { hostFactsOf } from "./plugin-contract.ts";
 import { ticketFolder } from "./ticket-paths.ts";
@@ -20,6 +19,7 @@ import { HOST_FILE_ENV, type TicketSettings } from "./settings.ts";
 import { hostLevelRefusal, isTicketOnly, type Json, projectRefusal, refusalOf, ticketsRefusal } from "./settings-verdict.ts";
 import { isObject } from "./json-value.ts";
 import { settingsView, type Section, type View } from "./settings-view.ts";
+import { defaultSchema, keysOfOtherPlugins } from "../plugins/schema.ts";
 
 /** The models and efforts the board offers, which a saved choice is held to. */
 export const MODELS = ["opus", "sonnet", "haiku"];
@@ -161,6 +161,8 @@ function viewOver(options: SettingsReadOptions, sections: Sections): View {
     plugins: plugins.states,
     contract: plugins.rows,
     exists: existsSync,
+    // A11-447: the tracker rows only the tracker this host does not name declares are not in use here.
+    otherPlugins: keysOfOtherPlugins("tracker", options.settings.providers.blocks.tracker.provider),
   });
 }
 

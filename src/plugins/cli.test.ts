@@ -320,7 +320,7 @@ test("a host file the reader refuses cannot be changed, and the command says why
   const host = scratch(JSON.stringify({ clones: { app: "/tmp/app" }, tickets: { providers: { tracker: { provider: "jira" } } } }));
   const { status, err } = await host.run("list");
   assert.equal(status, 1);
-  assert.match(err, /the host file is refused, so no plugin can be changed: ticket mode: `tickets\.providers\.tracker\.provider` in the host file must be one of "linear", not "jira"/);
+  assert.match(err, /the host file is refused, so no plugin can be changed: ticket mode: `tickets\.providers\.tracker\.provider` in the host file must be one of "github-issues", "linear", not "jira"/);
 });
 
 test("a command that is not one, and one with no plugin name, are usage errors and change nothing", async () => {
