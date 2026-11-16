@@ -20,7 +20,6 @@ import { recordIgnoredChairmanLabels } from "../failure-recorders.ts";
 import { readJsonObject } from "../claim-stall/stall-causes-and-claim-readings.ts";
 import { writeJsonObject } from "../claim-stall.ts";
 import { ownerOfPr } from "./pr-orders/pr-gate-readings.ts";
-// eslint-disable-next-line clean-code/no-duplication -- import list: the rule matches statement shape, and imports are not duplicated logic
 import { classAndKeyOf as orgHealthClassAndKey } from "./org-health-suppression.ts";
 import { TABLE_ROW as STANDING_ROW } from "../board-truth-audit.ts";
 import { claimStallsNow, closedClaimsNow } from "./claim-stall-tick.ts";

@@ -89,7 +89,6 @@ function recording(value: unknown, path: string, into: Set<string>): unknown {
   const at = (name: string) => (path === "" ? name : `${path}.${name}`);
   const isKey = (name: string | symbol): name is string => typeof name !== "symbol" && !isIndex(name) && !NOT_A_KEY.has(name);
   return new Proxy(value, {
-    // eslint-disable-next-line clean-code/names-describe-side-effects -- the Proxy trap's own name, which the reader's access calls
     get(target, name, receiver) {
       const child = Reflect.get(target, name, receiver);
       if (typeof name === "symbol" || NOT_A_KEY.has(name)) return child;
@@ -97,12 +96,10 @@ function recording(value: unknown, path: string, into: Set<string>): unknown {
       into.add(at(name));
       return recording(child, at(name), into);
     },
-    // eslint-disable-next-line clean-code/names-describe-side-effects -- the Proxy trap's own name, which the reader's access calls
     has(target, name) {
       if (isKey(name)) into.add(at(name));
       return Reflect.has(target, name);
     },
-    // eslint-disable-next-line clean-code/names-describe-side-effects -- the Proxy trap's own name, which the reader's access calls
     getOwnPropertyDescriptor(target, name) {
       if (isKey(name)) into.add(at(name));
       return Reflect.getOwnPropertyDescriptor(target, name);

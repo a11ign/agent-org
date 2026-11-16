@@ -25,7 +25,6 @@ import { outcomeExamples } from "./outcome.ts";
 import { closingWordsOf } from "./ticket-references.ts";
 import { ESCALATION_RULE } from "./escalation.ts";
 import { DISPUTE_PHRASES } from "./standoff-dispute.ts";
-// eslint-disable-next-line clean-code/no-duplication -- import list: the rule matches statement shape, and imports are not duplicated logic
 import { MOVE_RULE } from "./after-merge-move.ts";
 import { BLOCKED_BY_RULE } from "./plan-blockers.ts";
 import { AFTER_MERGE_CHECKS_RULE } from "./after-merge/plan-section.ts";

@@ -12,12 +12,10 @@ import type { Reply } from "../plugins/contracts/code-host.ts";
 import { pullsOf } from "./board-view/view-types-and-filters.ts";
 import { type PoolContext } from "./pool-context.ts";
 import { log, messageOf, runPlace, update } from "./pool-state.ts";
-// eslint-disable-next-line clean-code/no-duplication -- import list: the rule matches statement shape, and imports are not duplicated logic
 import { planDecisions } from "./pool-ticket-text.ts";
 import { type Entry } from "./queue/queue-entries-and-outcomes.ts";
 import { type PlannerDecision } from "./queue/standoff-types.ts";
 import { plannerDecided, recordRereview, standoffRound, workerRoundEnded } from "./queue/queue-standoff.ts";
-// eslint-disable-next-line clean-code/no-duplication -- import list: the rule matches statement shape, and imports are not duplicated logic
 import { logHas } from "./queue/run-log.ts";
 import { REVIEWER_LOGIN, standingBlock, type ReviewerPort, type ReviewState } from "./reviewer-port.ts";
 import { decisionsOf } from "./ticket-decisions.ts";

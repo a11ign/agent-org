@@ -31,9 +31,10 @@ const KEYED_PACKAGE = /eslint|^jiti$|^typescript$/;
 
 /**
  * The files whose text is part of the key: the config, the lockfile, and the data the config reads. `eslint.config.ts` reads `blocking-calls.baseline.json` for the files its blocking-call
- * ban leaves out (A11-433), so a file dropped from that list must be linted again although neither it nor the config changed.
+ * ban leaves out (A11-433), so a file dropped from that list must be linted again although neither it nor the config changed. `eslint-suppressions.json` is ESLint's bulk
+ * suppressions, the reports the tree had when the clean-code-book configs were adopted: a report it no longer covers must fail the next run.
  */
-const CONFIG_INPUTS = ["eslint.config.ts", "pnpm-lock.yaml", "blocking-calls.baseline.json"] as const;
+const CONFIG_INPUTS = ["eslint.config.ts", "pnpm-lock.yaml", "blocking-calls.baseline.json", "eslint-suppressions.json"] as const;
 
 const readTextOrMissing = (path: string): string => (existsSync(path) ? readFileSync(path, "utf8") : "<missing>");
 

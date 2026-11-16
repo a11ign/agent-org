@@ -10,7 +10,6 @@ import { createPool, type QueueStore } from "./pool.ts";
 import { fakeHerdr } from "./pool-fixture.ts";
 import { waitNote } from "./board-view/pull-status-and-notes.ts";
 import { enqueue, type Entry, type Queue } from "./queue/queue-entries-and-outcomes.ts";
-// eslint-disable-next-line clean-code/no-duplication -- import list: the rule matches statement shape, and imports are not duplicated logic
 import { pauseQueue, resumeQueue } from "./queue/queue-transitions.ts";
 import { BLOCKERS_MAX_AGE_MS, READ_RETRY_MS } from "./queue/start-reads.ts";
 import { emptyQueue } from "./queue.ts";

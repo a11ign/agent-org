@@ -15,7 +15,6 @@ import { agentTargetAsync } from "./pool-resume.ts";
 import { closesOut, closesSettled, closeWorkspaceLater } from "./pool-close.ts";
 import { plannedStepsOf } from "./pool-plan-steps.ts";
 import { recordPlannedSteps, type RunWorker } from "./queue/queue-run-detail.ts";
-// eslint-disable-next-line clean-code/no-duplication -- import list: the rule matches statement shape, and imports are not duplicated logic
 import { hostname } from "node:os";
 import { agentStartArgs, closedNoteAsync, openPaneAsync, readAgentsAsync } from "../herdr-agents.ts";
 import { defaultStartServer, herdrRefusal, herdrServiceOf } from "./pool-herdr.ts";
@@ -23,7 +22,6 @@ import { defaultServiceDeps } from "../install/service.ts";
 import { finish, markPublishRunning, markPublishStarting, markRunning, markStarting, planDone, publishFailed, publishStarts, recordBlockers, recordHeads, recordPaths, recordPathsFailure, recordProjectRepos, recordStackBase, slotsHeld } from "./queue/queue-transitions.ts";
 import { READ_RETRY_MS, retryTime, SAID_ONCE, startReadHold } from "./queue/start-reads.ts";
 import { type Blocker, type Ticket, type TicketSource } from "./source.ts";
-// eslint-disable-next-line clean-code/no-duplication -- import list: the rule matches statement shape, and imports are not duplicated logic
 import { repoOfProject } from "./project-repo.ts";
 import { afterMerge, conflictFeedback, mergeBaseIn, remoteHead, stackBaseIn } from "./stack-rebase.ts";
 import { isParked, repoOf, waitNote } from "./board-view/pull-status-and-notes.ts";
@@ -34,25 +32,20 @@ import { followOverlaps, recordStacks } from "./pool-overlap.ts";
 import { basename, join } from "node:path";
 import { ticketDir } from "./ticket-paths.ts";
 import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
-// eslint-disable-next-line clean-code/no-duplication -- import list: the rule matches statement shape, and imports are not duplicated logic
 import { markOutcomeStale, PLAN_FILE_BYTES } from "./pool-outcome.ts";
-// eslint-disable-next-line clean-code/no-duplication -- import list: the rule matches statement shape, and imports are not duplicated logic
 import { parsePaths } from "./overlap.ts";
 import { stepPathsOf } from "./plan-step-sections.ts";
 import { availableParallelism, loadavg } from "node:os";
 import { talk, talkFailed } from "./queue/talk.ts";
 import { allowanceHolds, markWriterRunning, markWriterStarting, nextStarts, recordWriterPin, writerFailed, writerOf, writerToStart } from "./queue.ts";
-// eslint-disable-next-line clean-code/no-duplication -- import list: the rule matches statement shape, and imports are not duplicated logic
 import { toolPinOf } from "./pool-pin.ts";
 import { recordPublishPin, recordToolPin } from "./queue/queue-pins.ts";
 import { isDraining } from "./pool-drain.ts";
 import { heldRuns, noteFillCompleted, noteFillEarly, noteFillHeld, noteFillHolding, noteRunStarted } from "./pool-figures.ts";
-// eslint-disable-next-line clean-code/no-duplication -- import list: the rule matches statement shape, and imports are not duplicated logic
 import { clearRunDir, current, prepare, prepareBatch, talkSession, writeBoardRunFiles, writeRunFiles } from "./pool-prepare.ts";
 import { hasPlan, openPulls } from "./board-view/view-types-and-filters.ts";
 import { pickTeamOf } from "./pick-scope.ts";
 import { type PoolContext } from "./pool-context.ts";
-// eslint-disable-next-line clean-code/no-duplication -- import list: the rule matches statement shape, and imports are not duplicated logic
 import { trackerWritingOf } from "../plugins/registry.ts";
 import { checkRunBrief } from "./pool-check-runs.ts";
 import { isCheckRun, VERIFIER_EFFORT, VERIFIER_MODEL } from "./after-merge/verify.ts";

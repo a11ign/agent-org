@@ -8,7 +8,6 @@ import { tmpDir } from "../lib/tmp-fixture.ts";
 import { poolFixture } from "./pool-fixture.ts";
 import { herdrName } from "./pool.ts";
 import { runEnvOf } from "./run-env.ts";
-// eslint-disable-next-line clean-code/no-duplication -- import list: the rule matches statement shape, and imports are not duplicated logic
 import { MAX_REMOVALS_PER_PASS, makeRunTmp, runTmpDir, runTmpName, SWEEP_GRACE_MS, sweepRunTmp } from "./run-isolation.ts";
 import { newLegacySweepState } from "./legacy-tmp.ts";
 import { ticketDir } from "./ticket-paths.ts";

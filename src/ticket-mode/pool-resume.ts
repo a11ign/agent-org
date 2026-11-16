@@ -25,7 +25,6 @@ import { type RunPlace } from "./pool-paths.ts";
 import { log, runMembers, runPlace, updateEach } from "./pool-state.ts";
 import { end } from "./pool-settle.ts";
 import { outcomeWritten, parseOutcome } from "./pool-outcome.ts";
-// eslint-disable-next-line clean-code/no-duplication -- import list: the rule matches statement shape, and imports are not duplicated logic
 import { untoldDecline } from "./pool-decline.ts";
 import { OUTCOME_FILE } from "./worker-files.ts";
 import { replace, type Entry, type Queue, type ResumeNote } from "./queue/queue-entries-and-outcomes.ts";

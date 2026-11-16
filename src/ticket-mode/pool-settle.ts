@@ -46,14 +46,12 @@ import { type RoundEnd, roundEndsOf } from "./outcomes/round-end.ts";
 import type { OutcomeRun } from "./outcomes/outcome-record.ts";
 import { appendOutcomeSaying } from "./outcomes/append-record.ts";
 import { isParked } from "./board-view/pull-status-and-notes.ts";
-// eslint-disable-next-line clean-code/no-duplication -- import list: the rule matches statement shape, and imports are not duplicated logic
 import { stepNamed } from "./board-view/plan-steps.ts";
 import { HERDR_CALL_MS, herdrRefusal } from "./pool-herdr.ts";
 import { reroute } from "./queue/queue-reroute.ts";
 import { cloneOnDemand, cloneOrNull, movable, organisationOf, wrongRepoTarget } from "./pool-org-repos.ts";
 import { namedIn } from "./org-repos.ts";
 import { checkoutsOf, checkPush, claimsLostPush, isWorkersOwnRun, reasonWithGitError, wakeWorker } from "./pool-push-check.ts";
-// eslint-disable-next-line clean-code/no-duplication -- import list: the rule matches statement shape, and imports are not duplicated logic
 import { type PoolContext } from "./pool-context.ts";
 import { readFeedbackOf } from "./read-feedback.ts";
 import { recordPlannerDecision, recordWorkerRoundEnded, settlePlannerRound } from "./pool-standoff.ts";

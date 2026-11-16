@@ -14,7 +14,6 @@ import { MAX_ASK_CHARS } from "./wait-on/wait-parse.ts";
 import { OUTCOME_FILE } from "./worker-files.ts";
 import { markOutcomeStale } from "./pool-outcome.ts";
 import { type PoolContext } from "./pool-context.ts";
-// eslint-disable-next-line clean-code/no-duplication -- import list: the rule matches statement shape, and imports are not duplicated logic
 import { log, runMembers, runPlace, sameRun, updateEach } from "./pool-state.ts";
 import { sendToAgentAsync } from "./pool-resume.ts";
 import { noteWorking } from "./queue/queue-transitions.ts";

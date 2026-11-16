@@ -9,7 +9,6 @@ import { modelsConfig, settingsFetch, standOf as settingsOf } from "../../test/s
 import { writerRun } from "../new-ticket/new-ticket-fixtures.ts";
 import { ShellFrame } from "./ShellFrame.tsx";
 import { ShellProvider } from "./ShellProvider.tsx";
-// eslint-disable-next-line clean-code/no-duplication -- import list: the rule matches statement shape, and imports are not duplicated logic
 import { TicketsPage } from "../tickets/TicketsPage.tsx";
 import { answers, BACKLOG, standOf as ticketsStand } from "../tickets/tickets-harness.tsx";
 import { RunsApp } from "../runs/RunsApp.tsx";
