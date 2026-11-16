@@ -3,7 +3,8 @@
 // EVERY RESPONSIVE SCREEN READS THIS ONE INSTANCE, so the tablet and phone captures of the pages can be set side by side. It is built from the page tickets' own stands: the Tickets board's tickets, the
 // Runs board's named runs with two that failed, the notifications board's finished requests, and the Settings and Plugins boards' files.
 import type { BrowserContext } from "playwright-core";
-import type { QueueView, Suggestion } from "../../src/api/types.ts";
+import type { QueueView } from "../../src/api/types.ts";
+import type { Suggestion } from "../../src/tickets/use-suggestion.ts";
 import { HERE, PERSONAL, type InstanceAnswers, type Stand } from "../fixtures.ts";
 import { serveInstance } from "../instance-routes.ts";
 import { RUNS, writingStand, type Run } from "../new-ticket/new-ticket-stand.ts";

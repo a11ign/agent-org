@@ -16,7 +16,7 @@ import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { delimiter, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { stopChild } from "../src/lib/stop-child.ts";
+import { signalGroup, stopGroup } from "../src/lib/stop-child.ts";
 import { captureHost, HERDR_STUB } from "../src/ticket-mode/capture.ts";
 import type { HealthView, RequestHealthView } from "../src/ticket-mode/health-route.ts";
 import type { LoopReading } from "../src/ticket-mode/loop-delay.ts";
@@ -160,7 +160,11 @@ type Result = Readonly<{ routes: readonly RouteTimes[]; health: Health | null; r
 export type Throwaway = Readonly<{ port: number; key: string; dir: string; env: NodeJS.ProcessEnv; ghLog: string; herdrLog: string; ghDoneLog: string; releaseGh: () => void;
   /** Begins the held call of the board thread (`holdsBoardThread` only): it ends when `releaseGh()` opens the gate, or after a few seconds. */
   holdBoardThread: () => void;
-  /** Stops the instance and resolves once it has EXITED, so nothing it writes lands after the caller's cleanup (a test's private TMPDIR check). SIGKILL after STOP_GRACE_MS. */
+  /**
+   * Stops the instance and resolves once it, and every process of its process group, has EXITED, so nothing it writes lands after the caller's cleanup (a test's private TMPDIR check): SIGTERM,
+   * SIGKILL after STOP_GRACE_MS, then SIGKILL to what is left of the group (A11-449), which is said on stderr when it is still there. A plugin's checks run in groups of their own
+   * (`check-child.ts`), which the instance kills as it exits.
+   */
   stop: () => Promise<void> }>;
 
 /**
@@ -170,6 +174,32 @@ export type Throwaway = Readonly<{ port: number; key: string; dir: string; env: 
  */
 /** How long a stopped throwaway instance has to exit on SIGTERM before it is killed. */
 const STOP_GRACE_MS = 10_000;
+/** The signals that end a caller by default, and that reached the instance too while it shared the caller's group and terminal. */
+const CALLER_ENDING_SIGNALS = ["SIGINT", "SIGTERM", "SIGHUP"] as const;
+
+/**
+ * Keeps the instance, which leads a group of its own, ending with its caller, as it did in the caller's group: a signal that ends the caller (a person's Ctrl-C, a closed terminal, a
+ * runner's SIGTERM) is passed to the instance's group, which shuts down as it would have, and the caller then ends of it as it would have; a caller that exits without stopping the
+ * instance (a script that throws) sends its group SIGTERM. Answers how to stop following, which `stop` does. A SIGKILL of the caller reaches neither, as before.
+ */
+function followCaller(instance: ChildProcess): () => void {
+  const pgid = instance.pid;
+  if (pgid === undefined) return () => undefined;
+  const onExit = (): void => { signalGroup(pgid, "SIGTERM"); };
+  const handlers = CALLER_ENDING_SIGNALS.map((signal) => [signal, (): void => {
+    unfollow();
+    signalGroup(pgid, signal);
+    // No one else handles it: the caller ends of it, as it did before this handler was there.
+    if (process.listenerCount(signal) === 0) process.kill(process.pid, signal);
+  }] as const);
+  function unfollow(): void {
+    process.removeListener("exit", onExit);
+    for (const [signal, handler] of handlers) process.removeListener(signal, handler);
+  }
+  process.once("exit", onExit);
+  for (const [signal, handler] of handlers) process.once(signal, handler);
+  return unfollow;
+}
 
 export async function startThrowawayInstance(dir: string, { gated = false, holdsBoardThread = false }: Readonly<{ gated?: boolean; holdsBoardThread?: boolean }> = {}): Promise<Throwaway> {
   const [port, uiPort] = [await freePort(), await freePort()];
@@ -178,17 +208,26 @@ export async function startThrowawayInstance(dir: string, { gated = false, holds
   const { env, ghLog, herdrLog } = throwaway(dir, port, uiPort, gated ? { kind: "gate", gate, doneLog: ghDoneLog } : { kind: "sleep" }, holdsBoardThread ? boardHoldIn(dir) : null);
   const releaseGh = () => { if (gated || holdsBoardThread) writeFileSync(gate, ""); };
   const holdBoardThread = () => { writeFileSync(join(dir, "board-thread.start"), ""); };
-  const instance: ChildProcess = spawn(process.execPath, [join(CHECKOUT, "src", "bin.ts"), "ticket:serve"], { env, stdio: ["ignore", "ignore", "pipe"] });
+  // A group of its own (A11-449): what the instance starts (its `ticket:serve`, the stand-ins it calls and what they start) is in it, and `stop` waits for all of it, not for `bin.ts` alone.
+  const instance: ChildProcess = spawn(process.execPath, [join(CHECKOUT, "src", "bin.ts"), "ticket:serve"], { env, stdio: ["ignore", "ignore", "pipe"], detached: true });
+  const unfollow = followCaller(instance);
   let stderr = "";
   instance.stderr?.on("data", (chunk: Buffer) => { stderr += chunk.toString(); });
-  const stop = (): Promise<void> => { releaseGh(); return stopChild(instance, STOP_GRACE_MS); };
+  const stop = async (): Promise<void> => {
+    releaseGh();
+    unfollow();
+    if (!(await stopGroup(instance, STOP_GRACE_MS))) process.stderr.write(`loop-load: a process of the instance's group ${instance.pid} is still there after it was killed\n`);
+  };
   try {
     await waitFor("the instance answering", async () => (await timedRead(port, "/api/queue")).status === 200 || instance.exitCode !== null);
   } catch (err) {
     await stop();
     throw err;
   }
-  if (instance.exitCode !== null) throw new Error(`the instance exited ${instance.exitCode}: ${stderr.trim()}`);
+  if (instance.exitCode !== null) {
+    await stop();
+    throw new Error(`the instance exited ${instance.exitCode}: ${stderr.trim()}`);
+  }
   return { port, key: BOARD_KEY, dir, env, ghLog, herdrLog, ghDoneLog, releaseGh, holdBoardThread, stop };
 }
 

@@ -11,11 +11,13 @@
 import { open, stat } from "node:fs/promises";
 import { LIMIT_UNREADABLE_HOLD_MS, TRANSCRIPT_TAIL_BYTES, lastSaidInTail, spentIn, spentOnPane, type SpentAllowance } from "../account-limit-message.ts";
 import { replace, type Entry, type Queue } from "./queue/queue-entries-and-outcomes.ts";
+import { stillSpent } from "./queue.ts";
 import { findTranscript } from "./pool-transcripts.ts";
 import type { PoolContext } from "./pool-context.ts";
 import type { RunPlace } from "./pool-paths.ts";
-import { agentTargetAsync } from "./pool-resume.ts";
+import { agentTargetAsync, readScreen, sendToAgentAsync } from "./pool-resume.ts";
 import { HERDR_CALL_MS } from "./pool-herdr.ts";
+import { log } from "./pool-state.ts";
 
 /** A run held on a spent Claude allowance: the message, when the allowance returns (ms), and when the board first held the run (ms). */
 export type AllowanceHold = NonNullable<Entry["allowance"]>;
@@ -145,15 +147,20 @@ async function paneAllowance(ctx: PoolContext, entry: Entry, place: RunPlace): P
 
 /**
  * What a running run's worker's allowance is, on the status herdr reads for it (`seen`). A working agent is clear, and nothing is read for it. The transcript decides first; a
- * `blocked` agent whose transcript has not said it has its pane read for the limit menu, and a pane read that shows another dialog is clear.
+ * `blocked` agent whose transcript has not said it has its pane read for the limit menu, and a pane read that shows another dialog is clear. So does a `blocked` agent whose
+ * transcript's reset has passed: the message is then the last one said, not what holds the agent now, and a dialog on its pane is a person's to see, not hidden behind the
+ * hold (A11-434). It is judged on the message's own reset, not on the hold, so a hold dropped for the dialog is not taken again from the same message on the next pass.
  */
 export async function readAllowance(ctx: PoolContext, entry: Entry, place: RunPlace, seen: string): Promise<AllowanceRead> {
   if (seen === "working") return CLEAR;
   const said = await transcriptAllowance(ctx, entry);
-  if (said.state === "spent" || seen === "idle" || seen === "done") return said;
+  if (seen === "idle" || seen === "done" || saidStillSpent(said, ctx.now())) return said;
   const shown = await paneAllowance(ctx, entry, place);
   return shown.state === "unknown" ? said : shown;
 }
+
+/** Whether a read of the transcript says the allowance is spent, with its reset not yet passed by {@link ALLOWANCE_GRACE_MS}. PURE. */
+const saidStillSpent = (said: AllowanceRead, now: number): boolean => said.state === "spent" && stillSpent(said.spent.until, now);
 
 /** Whether holding `entry` on `spent` would change it: a run already held on the same message and reset, with no dialog marked, is left as it is, so a pass writes nothing for it. PURE. */
 export const holdChanges = (entry: Entry, spent: SpentAllowance): boolean =>
@@ -169,3 +176,56 @@ export const holdAllowance = (queue: Queue, key: string, spent: SpentAllowance, 
 /** The run `key` is no longer out of allowance: its hold is dropped. PURE. */
 export const releaseAllowance = (queue: Queue, key: string): Queue =>
   replace(queue, key, ({ allowance: _held, ...entry }) => entry);
+
+/** What the board tells a held run once its allowance is back (A11-434): carry on where the limit stopped it, and check a declared wait before declaring it again. */
+export const ALLOWANCE_BACK_PROMPT = "Your Claude allowance has reset, so the board is resuming you. The limit stopped your last turn, so the step you were on may not have run: "
+  + "check where your work stands, carry on from there, and check any wait you declared before you declare it again.";
+
+/** How long after the board resumed a held run it may resume it again: one refused again was resumed before its allowance was back, and is not prompted on every pass. */
+export const ALLOWANCE_RETRY_MS = 15 * 60_000;
+
+/** When the board last resumed each run out of allowance, by its herdr name and pool: kept apart from the hold, so a run that worked a moment and was refused again is not prompted at once. */
+const resumes = new WeakMap<PoolContext, Map<string, number>>();
+
+function resumesOf(ctx: PoolContext): Map<string, number> {
+  const held = resumes.get(ctx) ?? new Map<string, number>();
+  resumes.set(ctx, held);
+  return held;
+}
+
+/**
+ * Resume a run held on the allowance once its reset has passed (A11-434): its limit menu is cancelled, and it is told to carry on. Its hold stays until its agent is read working or its transcript
+ * clear, so a run refused again is held again on what it was refused with. A run with a person at its terminal (a talk session) is theirs to resume, and a run on a dialog other than the limit menu
+ * is left to the watch. The time is recorded before herdr is asked, so a pass that overlaps this one does not tell the run twice; a run that ended or was stopped while its pane was read is not told.
+ */
+export async function resumeAfterReset(ctx: PoolContext, entry: Entry, place: RunPlace, seen: string): Promise<void> {
+  const now = ctx.now();
+  if (entry.allowance === undefined || !dueForResume(entry, entry.allowance, seen, now, resumesOf(ctx).get(place.name))) return;
+  remember(resumesOf(ctx), place.name, now);
+  if (seen !== "idle" && seen !== "done" && !(await cancelLimitMenu(ctx, place))) return;
+  if (ctx.store.get().entries.find((e) => e.ticket.key === entry.ticket.key)?.phase !== "running") return;
+  const refused = await sendToAgentAsync(ctx, place, ALLOWANCE_BACK_PROMPT);
+  const who = entry.batch ?? entry.ticket.key;
+  log(refused === null ? `${who}: its Claude allowance was due back at ${new Date(entry.allowance.until).toISOString()}, so it was told to carry on` : `${who} could not be told its Claude allowance is back: ${refused}`);
+}
+
+/**
+ * Whether a held run is due to be told its allowance is back at `now`: its reset has passed by {@link ALLOWANCE_GRACE_MS}, no person is at its terminal, its agent is not working, and the board did not tell it within
+ * {@link ALLOWANCE_RETRY_MS} (`last`). PURE.
+ */
+function dueForResume(entry: Entry, hold: AllowanceHold, seen: string, now: number, last: number | undefined): boolean {
+  if (entry.talk === true || seen === "working" || stillSpent(hold.until, now)) return false;
+  return last === undefined || now - last >= ALLOWANCE_RETRY_MS;
+}
+
+/** Cancel the limit menu on a run's pane, as its own `Esc to cancel` line says, so a prompt reaches the agent. False when the pane shows no limit menu, or herdr would not take the key. */
+async function cancelLimitMenu(ctx: PoolContext, place: RunPlace): Promise<boolean> {
+  const screen = await readScreen(ctx, place);
+  if (screen === null || !showsLimitMenu(screen)) return false;
+  try {
+    await ctx.herdrCall(["--session", ctx.settings.herdrSession, "agent", "send-keys", await agentTargetAsync(ctx, place), "esc"], HERDR_CALL_MS);
+    return true;
+  } catch {
+    return false;
+  }
+}
