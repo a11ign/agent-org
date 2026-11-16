@@ -1,5 +1,0 @@
----
-"agent-org": patch
----
-
-The gate and the `gh` wrapper spend fewer GitHub calls per tick. (1) `readWithFirstWaveTogether` makes `issue list --label ready|backlog|needs:chairman` from the one 500-row open list when that list came back complete (fewer than 500 rows) and carries the fields the label read asked for, so a tracker's three or four `issue list` calls become one; a full page falls back to the per-label reads, so a row beyond the cut is still found. (2) `host/gh` revalidates a plain `gh api <path>` GET past its 20 s entry with `If-None-Match` (the tag held WITHOUT its `W/` prefix, which GitHub otherwise answers 200) and replays the stored body on a 304 with exit 0 and an empty stderr; the ledger records it as `etag`, which spends no point. A call the wrapper cannot cut a header block off byte for byte (`--paginate`, `-H`, `-f`, `--template`, a write, `graphql`) is left exactly as it was. The installed wrapper reads DIVERGED until `host:install` runs. a11ign/a11ign#4899.
