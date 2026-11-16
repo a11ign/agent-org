@@ -35,6 +35,9 @@ export const LOW_READINESS = 60;
 /** How many scores are asked of the model at once. */
 const READINESS_PARALLEL = 2;
 
+/** The highest score: a ticket ready to build. */
+const MAX_SCORE = 100;
+
 /** The most reasons a score keeps, and the longest each is kept. */
 const MAX_REASONS = 3;
 const REASON_CHARS = 200;
@@ -71,9 +74,33 @@ const isPlainObject = (value: unknown): value is Record<string, unknown> => type
 /** Whether `kept` is what the board writes: a plain object with an own `scores` that is a plain object. `{}` and `{ scores: null }` are not. PURE. */
 const holdsScores = (kept: unknown): kept is { scores: Record<string, unknown> } => isPlainObject(kept) && Object.hasOwn(kept, "scores") && isPlainObject(kept.scores);
 
+/** The fields a scored record has, and a failed one: a record has exactly one of these sets, and nothing else. */
+const SCORED_FIELDS = ["at", "hash", "reasons", "score"] as const;
+const FAILED_FIELDS = ["at", "failed", "hash"] as const;
+
+/** Whether `value` is a finite number from 0 to {@link MAX_SCORE}. PURE. */
+const isScore = (value: unknown): boolean => typeof value === "number" && Number.isFinite(value) && value >= 0 && value <= MAX_SCORE;
+
 /**
- * The kept scores, by ticket key. A missing file is none: nothing has been scored yet. A file that is there but cannot be read, or does not hold `{ scores: {...} }` (see {@link holdsScores}), FAILS CLOSED: it is
- * answered `unreadable`, so the scorer neither asks the model again for scores it may already hold nor writes over the file (A11-443 review of #2062).
+ * What is wrong with `record` as the board writes a {@link ReadinessRecord}, as the field at fault, or null when nothing is: a plain object with a non-empty string `hash`, a finite `at`, and
+ * either a `score` from 0 to {@link MAX_SCORE} with `reasons` a list of strings, or a string `failed`; and no other field. PURE.
+ */
+export function recordFault(record: unknown): string | null {
+  if (!isPlainObject(record)) return "the record is not an object";
+  const fields = Object.keys(record).sort().join(",");
+  if (fields !== SCORED_FIELDS.join(",") && fields !== FAILED_FIELDS.join(",")) return `its fields are {${fields}}, not {${SCORED_FIELDS.join(",")}} or {${FAILED_FIELDS.join(",")}}`;
+  if (typeof record.hash !== "string" || record.hash === "") return "hash is not a non-empty string";
+  if (typeof record.at !== "number" || !Number.isFinite(record.at)) return "at is not a finite number";
+  if ("failed" in record) return typeof record.failed === "string" ? null : "failed is not a string";
+  if (!isScore(record.score)) return `score is not a number from 0 to ${MAX_SCORE}`;
+  if (!Array.isArray(record.reasons)) return "reasons is not a list";
+  return record.reasons.every((reason) => typeof reason === "string") ? null : "reasons holds something that is not a string";
+}
+
+/**
+ * The kept scores, by ticket key. A missing file is none: nothing has been scored yet. A file that is there but cannot be read, does not hold `{ scores: {...} }` (see {@link holdsScores}), or holds
+ * one record that is not a {@link ReadinessRecord} (see {@link recordFault}), FAILS CLOSED: it is answered `unreadable`, naming the key and the field at fault, so the scorer neither asks the model
+ * again for scores it may already hold nor writes over the file (A11-443 review of #2062). The whole file is checked to every depth, not only the record a page asks for.
  */
 function readRecords(stateDir: string): KeptRecords {
   const path = readinessPath(stateDir);
@@ -81,6 +108,10 @@ function readRecords(stateDir: string): KeptRecords {
   try {
     const kept = JSON.parse(readFileSync(path, "utf8")) as unknown;
     if (!holdsScores(kept)) return { unreadable: `${path} does not hold { "scores": { ... } }` };
+    for (const [key, record] of Object.entries(kept.scores)) {
+      const fault = recordFault(record);
+      if (fault !== null) return { unreadable: `bad record for ${key}, ${fault}, in ${path}`.slice(0, REASON_CHARS) };
+    }
     return { records: new Map(Object.entries(kept.scores as Record<string, ReadinessRecord>)) };
   } catch (error) {
     return { unreadable: `${path} cannot be read: ${(error as Error).message}`.slice(0, REASON_CHARS) };
@@ -110,9 +141,6 @@ export function readinessPrompt(ticket: Pick<Ticket, "key" | "title" | "project"
     ticket.description.slice(0, DESCRIPTION_CHARS),
   ].join("\n");
 }
-
-/** The highest score: a ticket ready to build. */
-const MAX_SCORE = 100;
 
 /** Whether the model's answer is an object with a finite number for its score. PURE. */
 function holdsScore(answer: { score?: unknown; reasons?: unknown } | null): answer is { score: number; reasons?: unknown } {

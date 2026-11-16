@@ -4,7 +4,7 @@ import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { tmpDir } from "../lib/tmp-fixture.ts";
 import type { ExecResult } from "../plugins/manifest.ts";
-import { createReadiness, LOW_READINESS, type ReadinessAnswer, READINESS_BOUNDS, readinessPath, readinessPrompt, readinessRoute, scoreOf } from "./readiness.ts";
+import { createReadiness, LOW_READINESS, type ReadinessAnswer, READINESS_BOUNDS, readinessPath, readinessPrompt, readinessRoute, recordFault, scoreOf } from "./readiness.ts";
 import { headlessArgs } from "./headless-claude.ts";
 import type { Ticket } from "./source.ts";
 
@@ -160,6 +160,62 @@ test("A11-443: a kept scores file that is JSON but not { scores: {...} } fails c
 test("A11-443: a kept scores file with no scores, or null scores, fails closed: the board always writes { scores: {...} }", async () => {
   await assertFailsClosed(keptFile("{}"), /does not hold/);
   await assertFailsClosed(keptFile('{"scores": null}'), /does not hold/);
+});
+
+/** A good scored record and a good failed one, each changed in one field per row below. */
+const SCORED = { hash: "h1", at: NOW, score: 80, reasons: ["Fine."] };
+const FAILED = { hash: "h1", at: NOW, failed: "the model was down" };
+
+/** One malformed record at every depth of a kept file, by what is wrong with it. Each makes the whole file unreadable. */
+const BAD_RECORDS: ReadonlyArray<readonly [string, unknown, RegExp]> = [
+  ["a null record", null, /not an object/],
+  ["a number record", 5, /not an object/],
+  ["a string record", "h1", /not an object/],
+  ["a list record", [SCORED], /not an object/],
+  ["no hash", { at: NOW, score: 80, reasons: [] }, /fields are/],
+  ["a numeric hash", { ...SCORED, hash: 7 }, /hash is not/],
+  ["an empty hash", { ...SCORED, hash: "" }, /hash is not/],
+  ["no at", { hash: "h1", score: 80, reasons: [] }, /fields are/],
+  ["a string at", { ...SCORED, at: "now" }, /at is not/],
+  ["a null at", { ...SCORED, at: null }, /at is not/],
+  ["a string score", { ...SCORED, score: "80" }, /score is not/],
+  ["a score over 100", { ...SCORED, score: 101 }, /score is not/],
+  ["a negative score", { ...SCORED, score: -1 }, /score is not/],
+  ["no reasons", { hash: "h1", at: NOW, score: 80 }, /fields are/],
+  ["reasons that are a string", { ...SCORED, reasons: "Fine." }, /reasons is not a list/],
+  ["a reason that is not a string", { ...SCORED, reasons: ["Fine.", 3] }, /reasons holds/],
+  ["a numeric failed", { ...FAILED, failed: 1 }, /failed is not/],
+  ["neither score nor failed", { hash: "h1", at: NOW }, /fields are/],
+  ["both score and failed", { ...SCORED, failed: "x" }, /fields are/],
+  ["a field the board never writes", { ...SCORED, extra: true }, /fields are/],
+];
+
+test("A11-443: a kept scores file holding one malformed record, at any depth, fails closed: no model call, the file unchanged, the key and the field named", async () => {
+  for (const [what, record, why] of BAD_RECORDS) {
+    // A good record beside the bad one: the bad one still makes the whole file unreadable, so the good one is not served from a file the board did not write.
+    const dir = keptFile(JSON.stringify({ scores: { "A11-9": SCORED, "A11-1": record } }));
+    await assertFailsClosed(dir, why).catch((error: unknown) => {
+      throw new Error(`${what}: ${(error as Error).message}`);
+    });
+    await assertFailsClosed(dir, /bad record for A11-1/);
+  }
+});
+
+test("A11-443: every record the scorer writes (scored, failed, and the empty description's) reads back as good", async () => {
+  const dir = tmpDir("readiness-");
+  let call = 0;
+  const { readiness } = scorer({ dir, reply: () => (call++ === 0 ? answered(LOW) : { status: 1, stdout: "", stderr: "claude: down" }) });
+  const tickets = [VAGUE, ticketOf("A11-2", "Another vague one."), ticketOf("A11-3", "")];
+  post(readiness, tickets);
+  await readiness.idle();
+  const kept = JSON.parse(readFileSync(readinessPath(dir), "utf8")) as { scores: Record<string, unknown> };
+  const records = Object.values(kept.scores);
+  assert.equal(records.length, tickets.length, "a scored, a failed and an empty description's record are written");
+  assert.ok(records.some((record) => "failed" in (record as object)), "one record is failed");
+  for (const record of records) assert.ok(recordFault(record) === null, `${JSON.stringify(record)} reads back as good`);
+  const again = scorer({ dir });
+  for (const [key, view] of Object.entries(post(again.readiness, tickets)[1].scores)) assert.notEqual(view.state, "pending", `${key} is answered from the file`);
+  assert.equal(again.prompts.length, 0, "a file the scorer wrote is read back with no model call");
 });
 
 test("A11-443: a kept scores file that cannot be read fails closed", async () => {
