@@ -106,12 +106,12 @@ function boardGh(...answers: Partial<ExecResult>[]) {
   return { deps, ledger, waits, runs };
 }
 
-test("A11-436: the board's gh call that met a connection reset is tried again through the outside client, answers the try that worked, and is one failed call in the figure", async () => {
+test("A11-436: the board's gh call that met a connection reset is tried again through the outside client, answers the try that worked, and is no failed call in the figure", async () => {
   const { deps, ledger, waits, runs } = boardGh({ status: 1, stderr: "read tcp: connection reset by peer\n" }, { status: 0, stdout: "worker-bot\n" });
   assert.equal(await asyncGhRunner(deps)(["api", "user", "--jq", ".login"]), "worker-bot\n");
   assert.deepEqual(waits, [RETRY_WAITS_MS[0]]);
   assert.deepEqual(runs.map(({ countedByCaller, timeoutMs }) => [countedByCaller, timeoutMs]), [[true, GH_TIMEOUT_MS], [true, GH_TIMEOUT_MS]], "the client counts the call, so exec does not count it again");
-  assert.deepEqual(ledger.figures().github, { calls: 1, failures: 1, failuresPer100: 100 });
+  assert.deepEqual(ledger.figures().github, { calls: 1, failures: 0, failuresPer100: 0 }, "A11-345: the call worked on its retry");
 });
 
 test("A11-436: a gh answer GitHub gave (a 404) is not tried again, and still rejects with the GhFailure a reader looks for HTTP 404 in", async () => {

@@ -33,7 +33,6 @@
 //     declared contract sets the planner, the writer and the plan's file pattern (`plugin-install.ts`).
 //   - THE HOUSE NOTES (A11-145): the worker's and the review's, written only where absent (`house-notes.ts`).
 //   - THE REVIEWER'S APP (A11-145): its private key is copied to `<AGENT_ORG_HOME>/apps/<slug>.pem`, mode 600, and named in the host file.
-//   - THE INTERIM GUARDS (A11-145) the hand-set gh-wrapper watchdog and herdr's KillMode drop-in are retired once their replacements are proven (`interim-guards.ts`).
 //   - THE HOST FILE'S PATH, in `<home>/host-file` (A11-68), so a shell with no `AGENT_ORG_HOST` finds it.
 //   - HERDR'S OWN SERVICE (A11-169) is started first, as `agent-org start herdr` starts it; a herdr server that runs outside it is said, with the `--move` that moves it.
 //   - AUTO-UPDATE: the `auto-update` service runs `agent-org update` every ten minutes. `--no-auto-update` leaves it unregistered, and `--update-channel main` makes it follow `main`.
@@ -75,7 +74,6 @@ import { describeMoves, planHostFix, writeHostFix } from "./migrate-host.ts";
 import { askProfile, parseProfile, profilePathOf, profileText, ProfileRefusal, providerBlocksOf, type Profile, type ProfileRepo } from "./onboard-profile.ts";
 import { installConventions, runProgram, stateOfRecord, type ConventionsStep } from "./plugin-install.ts";
 import { houseNotes } from "./house-notes.ts";
-import { replacementsNow, retireGuards, type Replacements } from "./interim-guards.ts";
 import { defaultDoctorDeps, diagnose, report, type Check } from "./doctor.ts";
 import { defaultMoveDeps, startHerdr } from "./herdr-move.ts";
 import { repoCloneArgs } from "../ticket-port/repo-args.ts";
@@ -125,10 +123,8 @@ export type OnboardDeps = Readonly<{
   loadPlugins: (providers: Providers, pluginDeps: PluginDeps) => Promise<LoadResult>;
   readFile: (path: string) => string;
   writeFile: (path: string, text: string) => void;
-  /** Whether a path exists: the profile, the guards, the plugin's record. */
+  /** Whether a path exists: the profile and the plugin's record. */
   exists: (path: string) => boolean;
-  /** Removes a file an interim guard leaves behind, once its replacement is proven. */
-  removeFile: (path: string) => void;
   isDirectory: (path: string) => boolean;
   /** The names in a directory; THROWS when it cannot be read, which the picker says: the checkouts onboard finds in the folder it runs in (A11-186). */
   listDir: (path: string) => string[];
@@ -159,8 +155,6 @@ export type OnboardDeps = Readonly<{
   which: (name: string) => string | null;
   /** The GitHub CLI as `account` (A11-106): the gh stack extension is listed and installed through it. */
   ghAs: (account: Account) => ProgramRunner;
-  /** Which replacements of the interim guards hold, read now (A11-145). */
-  replacements: () => Promise<Replacements>;
   /** What the person's login shell runs for `agent-org`, and the copy it ends in (A11-285). A test injects one, so no shell is started. */
   shell: ShellDeps;
   /** The checks `agent-org doctor` runs, read now: printed as onboard's last report (A11-145). */
@@ -702,16 +696,6 @@ async function runPluginSteps({ options, host, tickets, planned, answered, clone
   return chosen;
 }
 
-/** The old workarounds' lines that say one is still in place: they carry what to run. */
-const KEPT_WORKAROUND = /^kept /;
-
-/** Says what retiring the interim guards came to: those retired under one ✓ line, each that stays as a ✗ with the command that retires it. */
-function sayGuards(lines: readonly string[], say: OnboardOutput): void {
-  const retired = lines.filter((line) => !KEPT_WORKAROUND.test(line));
-  if (retired.length > 0) say.done("Old workarounds retired", ...retired);
-  for (const line of lines.filter((each) => KEPT_WORKAROUND.test(each))) say.failed("An old workaround is still in place", line);
-}
-
 /**
  * Says each doctor check that failed (doctor's own rule: a check passes when `ok`), as a ✗ line with its fix. The whole report is for `--verbose`.
  * @param said the names of checks a step already said, and counted (`setUpCommand` says `agent-org command`): a failing row of one points at that line and is not counted twice
@@ -761,9 +745,8 @@ async function setUpCommand(host: Readonly<Record<string, unknown>>, deps: Sessi
   return true;
 }
 
-/** What onboard does once the host file is written: the guards, the services, the `agent-org` command, doctor's checks, and the ending: whether this machine is set up, and what to run next. */
+/** What onboard does once the host file is written: the services, the `agent-org` command, doctor's checks, and the ending: whether this machine is set up, and what to run next. */
 async function finishOnboard({ options, terminal, host }: Readonly<{ options: OnboardOptions; terminal: boolean; host: Readonly<Record<string, unknown>> }>, deps: Session) {
-  sayGuards(await retireGuards({ platform: deps.platform, env: deps.env, home: deps.home, exists: deps.exists, remove: deps.removeFile, run: deps.run, replacements: deps.replacements }), deps.say);
   // herdr removed since the first step: the herdr, instance, ui and terminal services all need it, so none is started without it.
   if (options.start && deps.which("herdr") === null) refuseWithoutHerdr("`herdr` is no longer on PATH", "after the host file was written and before any service was started", deps);
   const services = options.start ? await deps.startServices(onboardServices({ terminal, autoUpdate: options.autoUpdate })) : [];
@@ -862,7 +845,7 @@ if (import.meta.url === pathToFileURL(process.argv[1] ? realpathSync(process.arg
       env: process.env, home, platform: process.platform, arch: process.arch, interactive: Boolean(process.stdin.isTTY && process.stdout.isTTY),
       ask, askHidden, exec: realExec, catalog: defaultCatalog, loadPlugins: (providers, pluginDeps) => loadEnabled(providers, defaultCatalog(), pluginDeps),
       readFile: (path) => readFileSync(path, "utf8"), writeFile: (path, text) => writeAtomic(path, text, 0o600),
-      exists: (path) => existsSync(path), removeFile: (path) => rmSync(path, { force: true }),
+      exists: (path) => existsSync(path),
       isDirectory: (path) => existsSync(path) && statSync(path).isDirectory(),
       listDir: (path) => readdirSync(path),
       cwd: process.cwd(), codeHost: () => loadedCodeHost(process.env), prompts: clackPrompts(), now: () => new Date(), fetch: (input, init) => fetch(input, init),
@@ -894,7 +877,6 @@ if (import.meta.url === pathToFileURL(process.argv[1] ? realpathSync(process.arg
       run: runProgram,
       which: (name) => whichOn(name, process.env),
       ghAs: (account) => asAccount(defaultGh, account),
-      replacements: () => replacementsNow(process.env, home, services),
       shell: realShellDeps(process.env, home, toolDir(process.env, home)),
       diagnose: () => diagnose(defaultDoctorDeps()),
       chromium: () => chromiumReport(),
