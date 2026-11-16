@@ -1,20 +1,20 @@
 {
-  "ranAt": "2026-11-16T14:58:48.634Z",
-  "sha": "7613bac6d",
+  "ranAt": "2026-11-16T15:11:51.982Z",
+  "sha": "cf4c0bcce",
   "model": "haiku",
   "capped": false,
   "score": {
     "checked": 10,
     "scored": 10,
     "low": {
-      "tickets": 1,
-      "roundsPerRun": 2,
-      "replans": 0,
-      "needsYou": 0
+      "tickets": 0,
+      "roundsPerRun": null,
+      "replans": null,
+      "needsYou": null
     },
     "rest": {
-      "tickets": 9,
-      "roundsPerRun": 1.9722222222222223,
+      "tickets": 10,
+      "roundsPerRun": 1.975,
       "replans": 0,
       "needsYou": 0
     },
@@ -22,7 +22,7 @@
     "against": [],
     "meetsBar": false
   },
-  "verdict": "10 scored of 10 past tickets: 1 under 60, 9 at 60 or more. Low against the rest, per ticket: rounds per run 2 against 1.97, re-plans 0 against 0, Needs-you rounds 0 against 0. No clear link, so the key stays off: 1 scored under 60, short of the 3 the bar needs; no measure is 1.5 times as high for the low tickets.",
+  "verdict": "10 scored of 10 past tickets: 0 under 60, 10 at 60 or more. No clear link, so the key stays off: 0 scored under 60, short of the 3 the bar needs; no measure is 1.5 times as high for the low tickets.",
   "tickets": [
     {
       "ticket": "A11-434",
@@ -30,7 +30,7 @@
       "rounds": 3,
       "needsYou": 0,
       "replans": 0,
-      "score": 65
+      "score": 68
     },
     {
       "ticket": "A11-441",
@@ -38,7 +38,7 @@
       "rounds": 2,
       "needsYou": 0,
       "replans": 0,
-      "score": 62
+      "score": 72
     },
     {
       "ticket": "A11-447",
@@ -46,7 +46,7 @@
       "rounds": 6,
       "needsYou": 0,
       "replans": 0,
-      "score": 62
+      "score": 72
     },
     {
       "ticket": "A11-442",
@@ -54,7 +54,7 @@
       "rounds": 4,
       "needsYou": 0,
       "replans": 0,
-      "score": 70
+      "score": 78
     },
     {
       "ticket": "A11-431",
@@ -62,7 +62,7 @@
       "rounds": 4,
       "needsYou": 0,
       "replans": 0,
-      "score": 55
+      "score": 62
     },
     {
       "ticket": "A11-437",
@@ -70,7 +70,7 @@
       "rounds": 3,
       "needsYou": 0,
       "replans": 0,
-      "score": 72
+      "score": 68
     },
     {
       "ticket": "A11-439",
@@ -78,7 +78,7 @@
       "rounds": 1,
       "needsYou": 0,
       "replans": 0,
-      "score": 70
+      "score": 65
     },
     {
       "ticket": "A11-433",
@@ -86,7 +86,7 @@
       "rounds": 5,
       "needsYou": 0,
       "replans": 0,
-      "score": 65
+      "score": 72
     },
     {
       "ticket": "A11-445",
@@ -94,7 +94,7 @@
       "rounds": 3,
       "needsYou": 0,
       "replans": 0,
-      "score": 62
+      "score": 70
     },
     {
       "ticket": "A11-435",
