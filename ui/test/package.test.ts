@@ -1,3 +1,4 @@
+import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import ts from "typescript";
 import config from "../astro.config.ts";
@@ -42,5 +43,18 @@ describe("the UI program's tsconfig", () => {
     const [target] = config.compilerOptions.paths?.typescript ?? [];
     expect(target).toBe("./node_modules/typescript");
     expect(existsSync(`${UI_ROOT}${target}/package.json`)).toBe(true);
+  });
+});
+
+describe("@astrojs/check", () => {
+  // `astro check` reports only "The '@astrojs/check' and 'typescript' packages are required" when it cannot load `@astrojs/check`, whatever the cause (A11-456). The cause there was
+  // `@emnapi/runtime` 2.0.0-beta.2, from `@rolldown/binding-wasm32-wasi`, resolved as the peer of `@astrojs/astro2tsx`'s `@napi-rs/wasm-runtime` beside its `@emnapi/core` 1.x:
+  // "this.bridge.setLastError is not a function". So the load runs here on its own, in a fresh process, as `astro check` runs it, and its own error is the one reported.
+  // THE FIX IS `ui/package.json`'s DEV DEPENDENCY `@emnapi/runtime` ^1.11.3: nothing imports it, but pnpm resolves a peer from the importer's own dependencies first, so the chain gets the 1.x
+  // runtime its 1.x core needs. It can go once `@astrojs/astro2tsx` pairs the two itself, or the 2.x runtime leaves the lockfile; this test says whether removing it still loads.
+  it("loads, and its process exits cleanly", () => {
+    const loaded = spawnSync(process.execPath, ["--input-type=module", "--eval", 'await import("@astrojs/check");'], { cwd: UI_ROOT, encoding: "utf8" });
+    // The whole result is compared, so a failure prints the load's own stderr; a warning alone on stderr does not fail it.
+    expect({ status: loaded.status, stderr: loaded.stderr }).toMatchObject({ status: 0 });
   });
 });
