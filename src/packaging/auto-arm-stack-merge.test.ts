@@ -189,6 +189,45 @@ test("a 409 (a stack merge for this pull request is already running) is not a re
   assert.ok(!out.calls.some((c) => c.includes("/comments")));
 });
 
+const STACKS = `repos/${REPOSITORY}/stacks`;
+const STACK_1874 = `${STACKS}/1874`;
+/** Stack 1874 as GitHub lists it: #311 at the bottom, and the open members above it (a merged one is left out of the restack). */
+const stackOf = (above: number[]) => ({ [`GET ${STACK_1874}`]: { stdout: { number: 1874, base: { ref: "main" }, pull_requests: [{ number: PR, state: "open" }, { number: 300, state: "merged" }, ...above.map((number) => ({ number, state: "open" }))] } } });
+const NOT_AUTHORIZED = { [`PUT ${MERGE_ASYNC}`]: { stdout: { status: "pending", details: { message: "queued", uuid: "u-9" } } }, [`GET ${MERGE_ASYNC}/u-9`]: { stdout: { status: "failed", details: { message: "Enqueuer is not authorized to merge" } } } };
+
+test("#2048: GitHub refusing the App the stack merge (\"Enqueuer is not authorized to merge\") takes #311 out of its stack, arms it alone, and stacks the members above it again, with no comment", () => {
+  const out = runStacked({ ...NOT_AUTHORIZED, ...stackOf([312, 313]) });
+  assert.equal(out.status, 0, out.out);
+  const unstack = out.calls.findIndex((c) => c.includes(`-X POST`) && c.includes(`${STACK_1874}/unstack`));
+  const arm = out.calls.indexOf(`pr merge ${PR} --repo ${REPOSITORY} --auto --merge`);
+  const restack = out.calls.findIndex((c) => c.includes("-X POST") && c.endsWith(`${STACKS} -F pull_requests[]=312 -F pull_requests[]=313`));
+  assert.ok(unstack >= 0 && arm > unstack && restack > arm, `unstack, then arm, then restack the open members above it:\n${out.calls.join("\n")}`);
+  assert.ok(!out.calls.some((c) => c.includes("/comments")), "a refusal the job answered is not shown as one");
+  assert.match(out.out, /taking it out of stack 1874, arming it alone/);
+});
+
+test("#2048: the same refusal answered to the PUT itself (a 403) is answered the same way, and a single member above is not stacked alone", () => {
+  const out = runStacked({ [`PUT ${MERGE_ASYNC}`]: { stdout: { message: "Enqueuer is not authorized to merge" }, stderr: "gh: Enqueuer is not authorized to merge (HTTP 403)", exit: 1 }, ...stackOf([312]) });
+  assert.equal(out.status, 0, out.out);
+  assert.ok(out.calls.includes(`pr merge ${PR} --repo ${REPOSITORY} --auto --merge`), out.calls.join("\n"));
+  assert.ok(!out.calls.some((c) => c.includes("-X POST") && c.endsWith(STACKS) || / -F pull_requests/.test(c)), "a stack of one is not made");
+});
+
+test("#2048: a stack that cannot be unstacked is a refusal: one comment naming both, and #311 is not armed", () => {
+  const out = runStacked({ ...NOT_AUTHORIZED, ...stackOf([312, 313]), [`POST ${STACK_1874}/unstack`]: { stderr: "gh: Validation Failed (HTTP 422)", exit: 1 } });
+  assert.equal(out.status, 0, out.out);
+  const comments = out.calls.filter((c) => c.includes("-X POST") && c.includes("/comments"));
+  assert.equal(comments.length, 1, out.calls.join("\n"));
+  assert.match(comments[0]!, /Enqueuer is not authorized to merge; and stack 1874 could not be unstacked/);
+  assert.ok(!out.calls.some((c) => c.startsWith("pr merge")), "nothing is armed");
+});
+
+test("#2048: any other refusal is still shown, and nothing is unstacked", () => {
+  const out = runStacked({ [`PUT ${MERGE_ASYNC}`]: { stdout: { message: "Pull request is not mergeable" }, stderr: "gh: Pull request is not mergeable (HTTP 422)", exit: 1 }, ...stackOf([312]) });
+  assert.ok(!out.calls.some((c) => c.includes("/unstack") || c.startsWith("pr merge")), out.calls.join("\n"));
+  assert.match(onlyPost(out), /not mergeable/);
+});
+
 for (const [label, exit, word] of [["pending (gh exits 8)", 8, "pending"], ["red (gh exits 1)", 1, "red"]] as const) {
   test(`stacked, required checks ${label}: no stack merge, no comment, exit 0`, () => {
     const out = runStacked({ "pr checks": { exit } });
