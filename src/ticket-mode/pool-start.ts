@@ -41,7 +41,7 @@ import { parsePaths } from "./overlap.ts";
 import { stepPathsOf } from "./plan-step-sections.ts";
 import { availableParallelism, loadavg } from "node:os";
 import { talk, talkFailed } from "./queue/talk.ts";
-import { markWriterRunning, markWriterStarting, nextStarts, recordWriterPin, writerFailed, writerOf, writerToStart } from "./queue.ts";
+import { allowanceHolds, markWriterRunning, markWriterStarting, nextStarts, recordWriterPin, writerFailed, writerOf, writerToStart } from "./queue.ts";
 // eslint-disable-next-line clean-code/no-duplication -- import list: the rule matches statement shape, and imports are not duplicated logic
 import { toolPinOf } from "./pool-pin.ts";
 import { recordPublishPin, recordToolPin } from "./queue/queue-pins.ts";
@@ -475,7 +475,7 @@ const WHY_LISTED = 8;
 
 /**
  * Why no queued run starts now, or null when there is nothing the pass can explain: no run is queued, or every slot is held (a full board starts nothing and says nothing). The queue is paused, the host is loaded past its
- * cores, or each queued run is held, with the reason the board shows on its card (`now` is the pool's clock, which the age of what was read is judged by, A11-364). The reasons leave out the time a retry is at, so a read that
+ * cores, the Claude allowance is spent until its reset (A11-434), or each queued run is held, with the reason the board shows on its card (`now` is the pool's clock, which the age of what was read is judged by, A11-364). The reasons leave out the time a retry is at, so a read that
  * keeps failing is said once. PURE.
  */
 export function whyNothingStarts(queue: Queue, load: number, cores: number, now: number): string | null {
@@ -483,6 +483,7 @@ export function whyNothingStarts(queue: Queue, load: number, cores: number, now:
   if (queued.length === 0 || queue.max - slotsHeld(queue) <= 0) return null;
   if (queue.paused) return `${queued.length} queued, and the queue is paused`;
   if (load > cores) return `${queued.length} queued, and the host's load is past its ${cores} cores`;
+  if (allowanceHolds(queue, now)) return `${queued.length} queued, and the Claude allowance is spent until ${new Date(queue.allowance?.until ?? now).toISOString()}`;
   const held = queued.map((entry) => `${entry.ticket.key} (${heldNote(entry, queue.entries, now)})`);
   return `${queued.length} queued with free slots, and none starts: ${held.slice(0, WHY_LISTED).join("; ")}${held.length > WHY_LISTED ? `; and ${held.length - WHY_LISTED} more` : ""}`;
 }
@@ -553,7 +554,7 @@ export async function fill(ctx: PoolContext): Promise<void> {
     await (batch.length > 1 ? startBatch(ctx, batch) : startOne(ctx, entry));
   }
   if (publishStarts(store.get())) await startPublish(ctx);
-  if (writerToStart(store.get()) !== undefined) await startWriter(ctx);
+  if (writerToStart(store.get(), at) !== undefined) await startWriter(ctx);
   noteFillCompleted(ctx);
 }
 
@@ -824,7 +825,7 @@ async function planReached(ctx: PoolContext, queued: Ticket): Promise<boolean> {
  */
 async function startWriter(ctx: PoolContext): Promise<void> {
   const { now, settings, source, store } = ctx;
-  const queued = writerToStart(store.get());
+  const queued = writerToStart(store.get(), now());
   const writer = settings.writer;
   if (queued === undefined) return;
   update(ctx, (queue) => recordWriterPin(markWriterStarting(queue, queued.id, now()), queued.id, toolPinOf(ctx)));
