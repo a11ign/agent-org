@@ -42,7 +42,7 @@ type Subscriber = { filter: Readonly<{ kinds?: readonly CodeHostEventKind[]; ref
 const reviewStateOf = (pull: FakePull | undefined): ReviewState | null => (pull === undefined ? null : { head: pull.head, trust: pull.trust, reviews: pull.reviews, settled: pull.settled,
   ...(pull.unrequiredRed === undefined ? {} : { unrequiredRed: pull.unrequiredRed }), view: { number: pull.number, ...(pull.body === undefined ? {} : { body: pull.body }), ...pull.view } });
 
-/** The seeded feedback without its review comment (contract 4.1): what a caller that names no review comments is answered, since a host says nothing of one it was not told how to find. */
+/** The seeded feedback without its review comment (contract 4.2): what a caller that names no review comments is answered, since a host says nothing of one it was not told how to find. */
 const withoutCommentReview = ({ commentReviewAtHead: _named, ...rest }: Partial<PullFeedback>): Partial<PullFeedback> => rest;
 
 /** The reads of pull requests: `null` for one the fake was never given, as a host does that cannot read it. */

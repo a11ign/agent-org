@@ -3,7 +3,7 @@
 //
 // A TYPE FILE, beside `code-host.ts` (whose public surface is full): it imports nothing.
 
-/** A comment that says a review was done (code host contract 4.1): its author's login, and the text its body starts with once trimmed. The host file's `tickets.reviewComments`. */
+/** A comment that says a review was done (code host contract 4.2): its author's login, and the text its body starts with once trimmed. The host file's `tickets.reviewComments`. */
 export type ReviewCommentMatcher = Readonly<{ author: string; startsWith: string }>;
 
 /** The review comment `PullFeedback.commentReviewAtHead` names: who wrote it, when it was posted or last edited, whichever is later, and its address. */

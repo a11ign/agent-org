@@ -29,7 +29,7 @@ test("A11-340: an approval at the head that GitHub's decision does not yet count
   assert.equal(reviewOf({ verdictAtHead: "changes-requested", reviewDecision: undefined }), undefined);
 });
 
-test("a review comment the code host named at the head (contract 4.1) is recorded beside the review, which it leaves as it was: none, never approved", () => {
+test("a review comment the code host named at the head (contract 4.2) is recorded beside the review, which it leaves as it was: none, never approved", () => {
   const headOf = (over: Partial<PullFeedback>) =>
     pullHeadsOf([{ url: URL, read: { head: "8b3d0ba9", approvedAtHead: false, failing: [], mergeable: true, state: "open", conflicting: false, base: "main", reviewDecision: "review-required", verdictAtHead: null, ...over } as PullFeedback }])[URL];
   const commented = headOf({ commentReviewAtHead: { author: "ci-bot", at: 5, url: `${URL}#issuecomment-1` } });

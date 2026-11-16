@@ -1,6 +1,6 @@
 // no-token: none -- pure: a recording code host in, the arguments it was read with out
 //
-// Every read that reaches the board names the reviewer's accounts and the host file's review comments (code host contract 4.1): a read that left the comments out would lose the card's clause for them without a word.
+// Every read that reaches the board names the reviewer's accounts and the host file's review comments (code host contract 4.2): a read that left the comments out would lose the card's clause for them without a word.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import type { PoolContext } from "./pool-context.ts";

@@ -1,5 +1,5 @@
 // @ts-check
-// module: the one read of a pull request's feedback that feeds the board -- the accounts whose feedback is not the worker's to answer, and the review comments the card names (`tickets.reviewComments`, code host contract 4.1)
+// module: the one read of a pull request's feedback that feeds the board -- the accounts whose feedback is not the worker's to answer, and the review comments the card names (`tickets.reviewComments`, code host contract 4.2)
 //
 // Every caller whose read reaches the board reads through here, so none can leave out the review comments and lose the card's clause for them. A caller that deliberately reads with neither says so where it calls the code host.
 import type { PullFeedback } from "../plugins/contracts/code-host.ts";

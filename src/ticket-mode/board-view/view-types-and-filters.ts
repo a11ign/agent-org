@@ -186,7 +186,7 @@ export type AfterMergeLine = Readonly<{ line: string; owner: string | null }>;
  */
 export type PullHead = Readonly<{
   head: string; approved: boolean; review?: "approved" | "none" | "changes-requested";
-  /** The review comment the code host named at this head (`tickets.reviewComments`, code host contract 4.1): who posted it and when. The card names it where no review is at the head; IT IS NEVER AN APPROVAL. */
+  /** The review comment the code host named at this head (`tickets.reviewComments`, code host contract 4.2): who posted it and when. The card names it where no review is at the head; IT IS NEVER AN APPROVAL. */
   commentReview?: Readonly<{ author: string; at: number }>; red?: readonly string[]; pending?: readonly string[]; mergeable?: boolean; conflict?: Readonly<{ base: string | null }>; blockedSince?: number;
   unmergedSince?: number; notMerging?: string; firstFlow?: true;
 }>;

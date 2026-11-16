@@ -238,7 +238,7 @@ const latestOf = (times: readonly (number | null)[]): number | null => {
 const accountOf = (login: string): string => login.replace(/\[bot\]$/, "");
 
 /**
- * When the head arrived on the branch, or null when the answer does not say (contract 4.1). GitHub's GraphQL gives no time for an ordinary push (`pushedDate` is deprecated and answers null), so this is the later of
+ * When the head arrived on the branch, or null when the answer does not say (contract 4.2). GitHub's GraphQL gives no time for an ordinary push (`pushedDate` is deprecated and answers null), so this is the later of
  * the head commit's own time (`committedDate`), which no push can precede, and the time of a force-push that left the branch at the head, which is when a rebased or an older commit arrived. The commit is the last
  * of the commits connection, which can lag the branch for a few seconds after a push, so its time counts only when it is the head.
  */

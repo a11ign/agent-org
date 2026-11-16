@@ -175,7 +175,7 @@ export type PullFeedback = Readonly<{
    */
   verdictAtHead?: "approved" | "changes-requested" | null;
   /**
-   * The newest conversation comment by an account one of the `reviewComments` given to {@link CodeHost.readPullFeedback} names, whose body starts with its text once trimmed, posted or last edited after the head arrived (contract 4.1), or null when there
+   * The newest conversation comment by an account one of the `reviewComments` given to {@link CodeHost.readPullFeedback} names, whose body starts with its text once trimmed, posted or last edited after the head arrived (contract 4.2), or null when there
    * is none. Absent when the host does not say: no matchers were given, or it cannot tell when the head arrived. IT IS NEVER AN APPROVAL: what it names is shown, and nothing decides on it.
    */
   commentReviewAtHead?: CommentReview | null;
@@ -371,7 +371,7 @@ export interface CodeHost extends CodeHostPort {
   readOwnLogin(): Promise<string | null>;
   /**
    * The feedback on the pull request at `url`, leaving out what `self` wrote and what `alsoIgnore` wrote (the reviewer's, which a worker does not answer and which must never
-   * move `feedbackAt`), or null for "could not ask". `reviewComments` (contract 4.1) names the comments that say a review was done, which `commentReviewAtHead` answers; none given leaves that field out.
+   * move `feedbackAt`), or null for "could not ask". `reviewComments` (contract 4.2) names the comments that say a review was done, which `commentReviewAtHead` answers; none given leaves that field out.
    */
   readPullFeedback(url: string, self: string, alsoIgnore?: readonly string[], reviewComments?: readonly ReviewCommentMatcher[]): Promise<PullFeedback | null>;
   /**
