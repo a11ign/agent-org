@@ -60,8 +60,28 @@ test("A11-442: a blocker the board holds no run for joins nothing", () => {
   assert.deepEqual(paths([entry("A-1", after("Z-9"))]), {});
 });
 
-test("A11-442: blockers that go round in a cycle do not loop: the walk ends, and no path names a run twice (the cycle's own note reports it, `wait-cycles.ts`)", () => {
+test("A11-442: a run on a cycle of blockers is on no path, nor is a run whose only chain leads into the cycle (the cycle's own note reports it, `wait-cycles.ts`)", () => {
   const entries = [entry("A-1", after("A-2")), entry("A-2", after("A-1")), entry("A-3", after("A-2"))];
-  const chains = [...criticalPaths(entries).values()];
-  for (const chain of chains) assert.equal(new Set(chain).size, chain.length, `${chain.join(" → ")} names a run twice`);
+  assert.deepEqual(paths(entries), {});
+  assert.deepEqual(paths([entry("A-2", after("A-1")), entry("A-1", after("A-2")), entry("A-3", after("A-2"))]), {}, "whichever run the walk starts from");
+});
+
+test("A11-442: a blocker whose relation was canceled, or that the run was stopped for, joins nothing, as the Waits on line drops it", () => {
+  const canceled = { blockers: [{ key: "A-1", state: "canceled", status: "Canceled" }] };
+  assert.deepEqual(paths([entry("A-1"), entry("A-2", canceled)]), {});
+  const stopped = { ...after("A-1"), stoppedForBlocker: { at: 1, keys: ["A-1"] } };
+  assert.deepEqual(paths([entry("A-1"), entry("A-2", stopped)]), {});
+});
+
+test("A11-442: only a ticket's newest run is marked: the row of an older run of it, that failed before it was queued again, has no line", () => {
+  const old = entry("A-1", { phase: "finished", outcome: { kind: "failed" }, queuedAt: 1 });
+  const again = entry("A-1", { queuedAt: 2 });
+  const entries = [old, again, entry("A-2", { ...after("A-1"), queuedAt: 3 })];
+  assert.equal(criticalPathNote(again, entries), "On the critical path: A-1 → A-2");
+  assert.equal(criticalPathNote(old, entries) ?? "no line", "no line");
+});
+
+test("A11-442: a Checked run found nothing to change, so it is off the path", () => {
+  const checked = entry("A-1", { phase: "finished", outcome: { kind: "checked", reason: "nothing to change" } });
+  assert.deepEqual(paths([checked, entry("A-2", after("A-1"))]), {});
 });
