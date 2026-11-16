@@ -159,6 +159,8 @@ export type TicketSettings = Readonly<{
   stallMinutes: number;
   /** How many decided past runs of one model and effort, of a kind, the queue footer needs before it suggests them (A11-435, `suggest-model.ts`). */
   suggestMinSample: number;
+  /** The tokens one worker eval run may spend before it stops at the next ticket (A11-431, `run-eval.ts`). {@link DEFAULT_EVAL_TOKEN_CAP} by default. */
+  evalTokenCap: number;
   /**
    * The weighted CI minutes one ticket's pushes may run before the board warns its worker, and, at twice that, holds the run (A11-261); 0 is none. {@link DEFAULT_CI_BUDGET_MINUTES} by default. The figures show whatever it is.
    */
@@ -633,11 +635,18 @@ function instanceOf(value: unknown, machine: string): string {
   return value;
 }
 
-/** The whole-number limits on a worker's run, in the order they are checked: its idle time, the runs a suggestion needs (A11-435), its CI budget and how long an update may wait for it. */
-function workerLimitsOf(tickets: Readonly<Record<string, unknown>>): Pick<TicketSettings, "stallMinutes" | "suggestMinSample" | "ciBudgetMinutes" | "updateMaxDeferHours"> {
+/**
+ * The tokens a worker eval run spends before it stops (A11-431): ten tickets at the 90th percentile of a first round on this board's outcome log on 2026-11-16 (29M tokens, cache
+ * reads included, of 104 runs), rounded up.
+ */
+export const DEFAULT_EVAL_TOKEN_CAP = 300_000_000;
+
+/** The whole-number limits on a worker's run, in the order they are checked: its idle time, the runs a suggestion needs (A11-435), an eval run's tokens (A11-431), its CI budget and how long an update may wait for it. */
+function workerLimitsOf(tickets: Readonly<Record<string, unknown>>): Pick<TicketSettings, "stallMinutes" | "suggestMinSample" | "evalTokenCap" | "ciBudgetMinutes" | "updateMaxDeferHours"> {
   return {
     stallMinutes: positiveInteger(tickets.stallMinutes, "tickets.stallMinutes", 30),
     suggestMinSample: positiveInteger(tickets.suggestMinSample, "tickets.suggestMinSample", 20),
+    evalTokenCap: positiveInteger(tickets.evalTokenCap, "tickets.evalTokenCap", DEFAULT_EVAL_TOKEN_CAP),
     ciBudgetMinutes: nonNegativeInteger(tickets.ciBudgetMinutes, "tickets.ciBudgetMinutes", DEFAULT_CI_BUDGET_MINUTES),
     updateMaxDeferHours: positiveInteger(tickets.updateMaxDeferHours, "tickets.updateMaxDeferHours", 2),
   };

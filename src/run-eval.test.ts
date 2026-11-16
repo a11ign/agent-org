@@ -1,7 +1,8 @@
 // no-token: gh -- the tracker, the merged diff, the worker, the tests and the reviewer are `RunEvalDeps` fakes; `git` is real, against local repositories in temporary directories
 /**
- * A11-431, step 1 of 2: the worker eval. A ticket is worked in a throwaway clone at its base sha with the current brief, model and effort, and scored by its tests, the reviewer's
+ * A11-431: the worker eval. A ticket is worked in a throwaway clone at its base sha with the current brief, model and effort, and scored by its tests, the reviewer's
  * verdict, its similarity to the merged diff, the files it touched outside it, its tokens and its wall time. A step that fails is an unknown score with its reason, never a skip.
+ * Step 2: a run is stored by its set and sha, may set a switch on or off, stops at the token cap, and two stored runs are compared side by side.
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -11,7 +12,9 @@ import { join } from "node:path";
 import { sandboxGitEnv } from "./lib/git-env.ts";
 import { tmpDir } from "./lib/tmp-fixture.ts";
 import { REVIEWER_EFFORT, REVIEWER_MODEL } from "./review-eval.ts";
-import { evaluateTicket, main, report, setFile, ticketReviewPrompt, type RunEvalDeps, type TicketResult } from "./run-eval.ts";
+import { compareMain, evaluateTicket, main, report, setFile, ticketReviewPrompt, type RunEvalDeps, type StoreOptions, type TicketResult } from "./run-eval.ts";
+import { runPath, type StoredRun } from "./run-eval/store.ts";
+import { SCHEMA } from "./ticket-mode/config-schema.ts";
 import { ATTEMPTS_FILE, PULL_BODY_FILE, type Git } from "./run-eval/sandbox.ts";
 import { type EvalEntry } from "./run-eval/set.ts";
 import { DEFAULT_KEYWORDS, type Ticket } from "./ticket-mode/source.ts";
@@ -230,17 +233,24 @@ test("the table shows tests, verdict, similarity, files outside, tokens and wall
 
 // --- the command --------------------------------------------------------------------------------------------------------
 
-const DEFAULTS = { defaults: { model: "opus", effort: "high" } };
+/** A sha the fakes run from: what `scripts/run-eval.ts` reads with `git rev-parse HEAD`. */
+const SHA = "0d450e9".padEnd(40, "0");
+const CLEAN = { sha: SHA, dirty: false };
+
+/** The command's options: the board's model and effort, results stored under `root`, a cap no fake reaches, and the real schema's switches. */
+const DEFAULTS = (root: string, over: Partial<StoreOptions> = {}) => ({
+  defaults: { model: "opus", effort: "high" }, store: { resultsDir: join(root, "results"), revision: { sha: SHA, dirty: false }, tokenCap: 1_000_000, ...over }, schema: SCHEMA,
+});
 
 test("the command runs each ticket of the named set in order and prints the table, with the board's model and effort unless told", async () => {
   const { root, deps, entry, calls } = world();
   const setPath = join(root, "set.json");
   writeFileSync(setPath, JSON.stringify([entry]));
   let printed = "";
-  assert.equal(await main(["--set", setPath], deps, { ...DEFAULTS, out: (text) => (printed += text), workDir: root }), 0);
+  assert.equal(await main(["--set", setPath], deps, { ...DEFAULTS(root), out: (text) => (printed += text), workDir: root }), 0);
   assert.match(printed, /^worker eval of .*set\.json \(opus, effort high\)$/m);
   assert.match(printed, /^A11-1 +pass +convinced +0\.50 +1 +150 +90s$/m);
-  assert.equal(await main([`--set=${setPath}`, "--model", "haiku", "--effort=low"], deps, { ...DEFAULTS, out: () => {}, workDir: root }), 0);
+  assert.equal(await main([`--set=${setPath}`, "--model", "haiku", "--effort=low", "--replace"], deps, { ...DEFAULTS(root), out: () => {}, workDir: root }), 0);
   const last = calls.work[calls.work.length - 1].args;
   assert.deepEqual([last[last.indexOf("--model") + 1], last[last.indexOf("--effort") + 1]], ["haiku", "low"]);
 });
@@ -250,7 +260,7 @@ test("the command refuses, with exit 2, a missing or unknown argument, an unread
   writeFileSync(join(root, "set.json"), JSON.stringify([entry]));
   const refusal = async (argv: string[]) => {
     let said = "";
-    const code = await main(argv, deps, { ...DEFAULTS, out: () => {}, err: (text) => (said += text), workDir: root, setsDir: root });
+    const code = await main(argv, deps, { ...DEFAULTS(root), out: () => {}, err: (text) => (said += text), workDir: root, setsDir: root });
     return { code, said };
   };
   const bare = await refusal([]);
@@ -267,4 +277,116 @@ test("a set named without a path is the checked-in one in evals/sets", () => {
   assert.equal(setFile("first", "/repo/evals/sets"), "/repo/evals/sets/first.json");
   assert.equal(setFile("./mine.json", "/repo/evals/sets"), "./mine.json");
   assert.equal(setFile("other.json", "/repo/evals/sets"), "other.json");
+});
+
+// --- step 2: stored runs, the key, the token cap and the comparison ----------------------------------------------------
+
+/** A set of `count` tickets, each the world's one ticket under another key, written to `root/set.json`. */
+function setOf(root: string, entry: EvalEntry, count: number): string {
+  const path = join(root, "set.json");
+  writeFileSync(path, JSON.stringify(Array.from({ length: count }, (_, at) => ({ ...entry, ticket: `A11-${at + 1}` }))));
+  return path;
+}
+
+const readStored = (path: string): StoredRun => JSON.parse(readFileSync(path, "utf8")) as StoredRun;
+
+test("a run of the whole set is stored by its set and sha, with its model, effort and every ticket's scores", async () => {
+  const { root, deps, entry } = world();
+  let printed = "";
+  assert.equal(await main(["--set", setOf(root, entry, 2)], deps, { ...DEFAULTS(root), out: (text) => (printed += text), workDir: root }), 0);
+  const path = runPath(join(root, "results"), "set", CLEAN, null);
+  assert.equal(path, join(root, "results", "set", `${SHA}.json`));
+  assert.match(printed, new RegExp(`^stored at ${path}$`, "m"));
+  const stored = readStored(path);
+  assert.deepEqual({ ...stored, results: undefined }, { v: 1, set: "set", sha: SHA, dirty: false, key: null, model: "opus", effort: "high", at: stored.at, stopped: null, results: undefined });
+  assert.deepEqual(stored.results.map(({ entry: { ticket }, scores: { tests, verdict, tokens } }) => [ticket, tests, verdict, tokens]), [["A11-1", true, "convinced", 150], ["A11-2", true, "convinced", 150]]);
+});
+
+test("a run already stored at this sha is refused before any ticket starts, unless --replace; a run with --only is not stored", async () => {
+  const { root, deps, entry, calls } = world();
+  const set = setOf(root, entry, 2);
+  await main(["--set", set], deps, { ...DEFAULTS(root), out: () => {}, workDir: root });
+  const worked = calls.work.length;
+  let said = "";
+  assert.equal(await main(["--set", set], deps, { ...DEFAULTS(root), out: () => {}, err: (text) => (said += text), workDir: root }), 2);
+  assert.match(said, /a run of .*set\.json at this sha is stored at .*; pass --replace to run it again/);
+  assert.equal(calls.work.length, worked, "no worker started");
+  let printed = "";
+  assert.equal(await main(["--set", set, "--only", "A11-2"], deps, { ...DEFAULTS(root, { revision: { sha: "b".repeat(40), dirty: true } }), out: (text) => (printed += text), workDir: root }), 0);
+  assert.match(printed, /^not stored: --only runs part of the set$/m);
+  assert.equal(existsSync(runPath(join(root, "results"), "set", { sha: "b".repeat(40), dirty: true }, null)), false);
+  assert.equal(await main(["--set", set, "--replace"], deps, { ...DEFAULTS(root), out: () => {}, workDir: root }), 0);
+  assert.equal(calls.work.length, worked + 3, "--replace runs the set again");
+});
+
+test("the token cap reached mid-set stops the run before the next ticket starts, and it says and stores how far it got", async () => {
+  const { root, deps, entry, calls } = world();
+  let printed = "";
+  // Each fake ticket spends 150 tokens: the cap of 300 is reached after the second, so the third never starts.
+  assert.equal(await main(["--set", setOf(root, entry, 4)], deps, { ...DEFAULTS(root, { tokenCap: 300 }), out: (text) => (printed += text), workDir: root }), 1);
+  assert.equal(calls.work.length, 2);
+  assert.match(printed, /^stopped by the token cap: 2 of 4 tickets ran, 300 tokens spent of a cap of 300 \(tickets\.evalTokenCap\); not started: A11-3, A11-4$/m);
+  assert.match(printed, /^total +2\/2 /m, "the totals are the tickets that ran");
+  const stored = readStored(runPath(join(root, "results"), "set", CLEAN, null));
+  assert.deepEqual(stored.stopped, { ran: 2, of: 4, tokens: 300, cap: 300, notStarted: ["A11-3", "A11-4"] });
+  assert.equal(stored.results.length, 2);
+});
+
+test("a run under the cap, one token short, starts its next ticket", async () => {
+  const { root, deps, entry, calls } = world();
+  assert.equal(await main(["--set", setOf(root, entry, 3)], deps, { ...DEFAULTS(root, { tokenCap: 301 }), out: () => {}, workDir: root }), 0);
+  assert.equal(calls.work.length, 3);
+});
+
+test("a run with a switch on or off is stored under that setting, says it in its header, and a name that is no switch is refused before any ticket starts", async () => {
+  const { root, deps, entry, calls } = world();
+  const set = setOf(root, entry, 1);
+  let printed = "";
+  assert.equal(await main(["--set", set, "--key", "tickets.drafts=on"], deps, { ...DEFAULTS(root), out: (text) => (printed += text), workDir: root }), 0);
+  assert.match(printed, /^worker eval of .*set\.json \(opus, effort high, tickets\.drafts on\)$/m);
+  assert.deepEqual(readStored(runPath(join(root, "results"), "set", CLEAN, { name: "tickets.drafts", on: true })).key, { name: "tickets.drafts", on: true });
+  assert.equal(await main(["--set", set, "--key=tickets.drafts=off"], deps, { ...DEFAULTS(root), out: () => {}, workDir: root }), 0, "off is stored apart from on");
+  let said = "";
+  assert.equal(await main(["--set", set, "--key", "tickets.max=on"], deps, { ...DEFAULTS(root), out: () => {}, err: (text) => (said += text), workDir: root }), 2);
+  assert.match(said, /--key tickets\.max is not a switch the eval hands its worker/);
+  assert.equal(calls.work.length, 2);
+});
+
+test("compare prints two stored runs of a set side by side, each score's change per ticket and in total", async () => {
+  const { root, deps, entry } = world();
+  const set = setOf(root, entry, 2);
+  await main(["--set", set], deps, { ...DEFAULTS(root), out: () => {}, workDir: root });
+  const better = { ...deps, work: async (opts: Parameters<RunEvalDeps["work"]>[0]) => (await deps.work(opts), JSON.stringify({ type: "result", modelUsage: { opus: { inputTokens: 60, outputTokens: 30 } } })) };
+  await main(["--set", set], better, { ...DEFAULTS(root, { revision: { sha: "a1b2c3d".padEnd(40, "0"), dirty: false } }), out: () => {}, workDir: root });
+  let printed = "";
+  assert.equal(compareMain(["--set", set, "0d450e9", "a1b2c3d"], { resultsDir: join(root, "results"), out: (text) => (printed += text) }), 0);
+  assert.match(printed, /^A: 0d450e9 \(opus, effort high, finished .*\)$/m);
+  assert.match(printed, /^B: a1b2c3d \(opus, effort high, finished .*\)$/m);
+  assert.match(printed, /^A11-1 +pass → pass +convinced → convinced +0\.50 → 0\.50 \(\+0\.00\) +1 → 1 \(\+0\) +150 → 90 \(-60\) +90s → 90s \(\+0s\)$/m);
+  assert.match(printed, /^total +2 → 2 \(\+0\) of 2 +2 → 2 \(\+0\) convinced +0\.50 → 0\.50 \(\+0\.00\) +2 → 2 \(\+0\) +300 → 180 \(-120\) +180s → 180s \(\+0s\)$/m);
+});
+
+test("compare refuses, with exit 2, a run that is not stored, a ref that is not a run and a missing run", async () => {
+  const { root } = world();
+  const refusal = (argv: string[]) => {
+    let said = "";
+    return { code: compareMain(argv, { resultsDir: join(root, "results"), out: () => {}, err: (text) => (said += text) }), said };
+  };
+  assert.deepEqual(refusal(["--set", "first", "0d450e9", "a1b2c3d"]), { code: 2, said: "REFUSED: no stored run of first is 0d450e9 (stored: none)\n" });
+  assert.match(refusal(["--set", "first", "HEAD", "a1b2c3d"]).said, /HEAD is not a run/);
+  assert.match(refusal(["--set", "first", "0d450e9"]).said, /compare takes --set and two runs/);
+});
+
+test("a worker that fails after printing its result is counted at its tokens, so the token cap sees them", async () => {
+  const { root, deps, entry } = world({
+    work: async () => {
+      throw Object.assign(new Error("claude exited 1"), { stdout: JSON.stringify({ type: "result", modelUsage: { opus: { inputTokens: 400, outputTokens: 100 } } }) });
+    },
+  });
+  const result = await evaluateTicket(entry, deps, OPTIONS(root));
+  assert.equal(result.scores.tokens, 500);
+  assert.deepEqual(result.notes.filter((note) => note.startsWith("worker failed")), ["worker failed: claude exited 1"]);
+  let printed = "";
+  assert.equal(await main(["--set", setOf(root, entry, 2)], deps, { ...DEFAULTS(root, { tokenCap: 500 }), out: (text) => (printed += text), workDir: root }), 1);
+  assert.match(printed, /^stopped by the token cap: 1 of 2 tickets ran/m);
 });
