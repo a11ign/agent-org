@@ -17,6 +17,7 @@ import {
 } from "../../../src/ticket-mode/board-view/pull-status-and-notes.ts";
 import { crashedHoldsNote, crashedRunOf, isCrashedBlocker } from "../../../src/ticket-mode/board-view/crashed-blockers.ts";
 import { stackedOnItNote, stackWaitNote } from "../../../src/ticket-mode/board-view/stack-wait.ts";
+import { criticalPathNote } from "../../../src/ticket-mode/board-view/critical-path.ts";
 import { publishingOffLine } from "../../../src/ticket-mode/board-view/publishing-off.ts";
 import { RUN_STATUSES, type RunStatus } from "../../../src/ticket-mode/board-view/view-types-and-filters.ts";
 import type { ConfigView, QueueView } from "../api/types.ts";
@@ -218,6 +219,7 @@ function linesOf(entry: RunEntry, { queue, publisher, now }: NoteContext, ci?: s
     stacked.length > 0 ? stackNote(stacked, entry.overlapStack) : null,
     stackWaitNote(entry, entries),
     stackedOnItNote(entry, entries),
+    criticalPathNote(entry, entries),
     rebaseNote(entry),
     waitNote(entry, entries),
     crashedHoldsNote(entry, waitingOnCrashed(entry.ticket.key, entries), now),
