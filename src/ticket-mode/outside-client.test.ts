@@ -36,14 +36,14 @@ function answering(...statuses: number[]) {
 
 const byStatus = { statusOf: (response: Response) => response.status } as const;
 
-test("Given Linear answers a read with a 503 twice and then succeeds, the read succeeds and the failure figure counts it once", async () => {
+test("Given Linear answers a read with a 503 twice and then succeeds, the read succeeds and the failure figure counts it once, as a call that worked", async () => {
   const { client, ledger, waits } = world();
   const linear = answering(503, 503, 200);
   const answer = await client.call("linear", linear.attempt, byStatus);
   assert.equal(answer.status, 200, "the read succeeds");
   assert.equal(linear.made(), 3);
   assert.deepEqual(waits, RETRY_WAITS_MS.slice(0, 2), "after a wait that grows");
-  assert.deepEqual(ledger.figures().linear, { calls: 1, failures: 1, failuresPer100: 100 }, "one call, counted once as failed, not three");
+  assert.deepEqual(ledger.figures().linear, { calls: 1, failures: 0, failuresPer100: 0 }, "one call, not three, and it worked: its third attempt was answered");
 });
 
 test("Given a 401 from Linear, the call is not retried, because the one rule classes it as not transient", async () => {
@@ -143,10 +143,28 @@ test("A 429 is tried again within the call, and an answer let go for a retry is 
 });
 
 test("A 5xx that goes on is returned after the fourth attempt, for the caller to read as any answer", async () => {
-  const { client } = world();
+  const { client, ledger } = world();
   const linear = answering(503);
   assert.equal((await client.call("linear", linear.attempt, byStatus)).status, 503);
   assert.equal(linear.made(), 1 + RETRY_WAITS_MS.length, "never a fifth");
+  assert.deepEqual(ledger.figures().linear, { calls: 1, failures: 1, failuresPer100: 100 }, "a call that failed every attempt is one failed call");
+});
+
+test("A call the breaker refuses part-way, after its own attempts failed, is one failed call", async () => {
+  const ledger = createCallLedger(() => 1_000);
+  const client = createOutsideClient({ ledger, now: () => 1_000, sleep: async () => undefined, breakerFailures: 2 });
+  await assert.rejects(client.call("linear", async () => { throw reset(); }), ServiceUnavailable);
+  assert.deepEqual(ledger.figures().linear, { calls: 1, failures: 1, failuresPer100: 100 });
+});
+
+test("A11-399: a call the breaker refuses part-way moves no last-call time, so a good call made while it waited still shows the network up", async () => {
+  let clock = 1_000;
+  const ledger = createCallLedger(() => clock);
+  // While the failing call waits to retry, another path counts a good call to Linear.
+  const client = createOutsideClient({ ledger, now: () => clock, sleep: async () => { clock += 100; ledger.record("linear", false); clock += 100; }, breakerFailures: 2 });
+  await assert.rejects(client.call("linear", async () => { clock += 10; throw reset(); }), ServiceUnavailable);
+  assert.deepEqual(ledger.figures().linear, { calls: 3, failures: 1, failuresPer100: 33.3 }, "the refused call is counted once, as failed");
+  assert.equal(networkUpSince(ledger, 500), true, "its last failed attempt came before the good call");
 });
 
 test("Every attempt is told to the caller: whether it failed, why, and the wait before the next", async () => {
@@ -171,7 +189,7 @@ test("A11-399: a retry that got through is not a call of its own, but it shows t
     return "answered";
   });
   assert.equal(await call, "answered");
-  assert.deepEqual(ledger.figures().linear, { calls: 1, failures: 1, failuresPer100: 100 });
+  assert.deepEqual(ledger.figures().linear, { calls: 1, failures: 0, failuresPer100: 0 }, "the call worked on its retry (A11-345)");
   assert.equal(networkUpSince(ledger, 500), true, "the answered retry is the ledger's latest call");
 });
 
@@ -195,6 +213,16 @@ test("A11-345, fourth reopen: three Linear calls made one after another into one
     advance(5_000);
   }
   assert.deepEqual(ledger.figures().linear, { calls: 141, failures: 1, failuresPer100: 0.7 }, "the outage is one failed call; the calls made into it are only observed");
+});
+
+test("A11-345, fifth reopen: a call whose first attempt times out on a stale connection and is answered on a new one is no failed call", async () => {
+  // The 2026-11-16 02:47Z reading, six minutes after the board restarted: 44 answered calls, then one whose first attempt failed with ETIMEDOUT and whose retry, on a new connection, was answered. Counted by its
+  // first attempt, that read 1 of 45, 2.2%, and reopened the ticket, though no call to Linear failed.
+  const { client, ledger } = world();
+  await answer(client, 44);
+  let made = 0;
+  assert.equal(await client.call("linear", async () => { made += 1; if (made === 1) throw noRoute(); return "answered"; }), "answered");
+  assert.deepEqual(ledger.figures().linear, { calls: 45, failures: 0, failuresPer100: 0 });
 });
 
 test("An outage ends at the service's next answer, and a failure after it is counted again", async () => {
@@ -240,7 +268,7 @@ test("A failure its retry covered begins no outage: the next failure is counted"
   const { client, ledger } = world();
   assert.equal((await client.call("linear", answering(503, 200).attempt, byStatus)).status, 200);
   await assert.rejects(client.call("linear", unreachable));
-  assert.equal(ledger.figures().linear.failures, 2);
+  assert.deepEqual(ledger.figures().linear, { calls: 2, failures: 1, failuresPer100: 50 }, "the covered call worked; the unreachable one is counted");
 });
 
 test("A 4xx is the service answering: it begins no outage, and it ends one that is going on", async () => {
@@ -320,7 +348,7 @@ test("A gh answer GitHub gave (a 404) is not tried again, does not trip the brea
   assert.deepEqual([notFound.status, made, waits], [1, 1, []]);
   const answered = await client.call("github", async () => { made += 1; return made === 2 ? ghExit(1, "HTTP 502: Bad Gateway") : ghExit(0); }, { exitOf: (answer) => answer, attemptMs: 120_000 });
   assert.deepEqual([answered.status, made, waits], [0, 3, [RETRY_WAITS_MS[0]]]);
-  assert.deepEqual(ledger.figures().github, { calls: 2, failures: 1, failuresPer100: 50 });
+  assert.deepEqual(ledger.figures().github, { calls: 2, failures: 0, failuresPer100: 0 }, "the 502 was covered by its retry, so neither call failed (A11-345)");
 });
 
 test("A call made once (a write) is not tried again after a failure another try could get past, and is still counted and seen by the breaker", async () => {
