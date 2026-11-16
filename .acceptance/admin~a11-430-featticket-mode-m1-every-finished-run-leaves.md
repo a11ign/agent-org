@@ -1,11 +1,15 @@
-Every round a ticket-mode run ends appends the run's outcome record to the outcome log (A11-430, step 1 of 3): each round's own tokens (a resumed round counts only the turns after the round before it ended), a batch planning run's tokens split evenly across its tickets so the shares add up to the run's, and no record when the round's transcript cannot be read, which the run's Timeline reports instead.
+The board's Outcomes page (A11-430, step 3 of 3) draws `/api/outcomes` by model and effort, repository and label, and every figure lists the runs behind it, each linking to its run's page. The page checks answer `/api/outcomes` with the instance's own route (`outcomesAnswer`) over a scratch outcome log and host file, so the figures, the "at configured prices" words and a price changed in the host file are the backend's. Steps 1 and 2's tests run here too.
 
 Acceptance:
 ```bash
 npx rstest run --config scripts/rstest/rstest.config.ts src/ticket-mode/outcomes/
-npx rstest run --config scripts/rstest/rstest.config.ts src/ticket-mode/pool.test.ts src/ticket-mode/queue.test.ts src/ticket-mode/run-log.test.ts -t "A11-430|the pool logs what it does to a run|a run ends on its outcome file"
+pnpm --dir ui install --frozen-lockfile
+pnpm --dir ui exec rstest run --config rstest.config.ts --project components src/outcomes src/shell
+pnpm ui:build
+pnpm --dir ui exec playwright-core install chromium
+pnpm --dir ui exec rstest run --config rstest.config.ts --project pages test/outcomes test/routes.page.test.ts test/dist.page.test.ts test/shell.page.test.ts test/responsive/responsive-captures.page.test.ts
 ```
 
-Mutation: in `roundTokens` (`src/ticket-mode/outcomes/round-tokens.ts`) take every turn whatever `after` says, and "a run resumed for round 2 in the same session" fails (round 2 reads m1 again). Drop the remainder term from `batchShare`, and the batch test fails on its sum. In `roundEndsOf` make an unread round return a `record`, and "a run whose transcript cannot be read" fails on its empty log.
+Mutation: in `OutcomesPage.tsx` return `client.outcomes(query)` itself as the read (so the tab keeps each week's answer), and "keeps no week's answer" fails. In `outcomes-model.ts` make `figureOf` give a rate's `runs` in place of its `of`, and "lists the runs a rate is out of" fails. In `route.ts` price at `pricesOf(undefined)`, and "uses a price changed in the host file when the page is read again" fails.
 
-Consumer-declaration: none -- no host file key or contract changes. The outcome log is a new file in the board's state directory, read by step 2's `/api/outcomes`.
+Consumer-declaration: a new page, `/outcomes`, and an Outcomes link in the sidebar's Main navigation. No API or host file change.

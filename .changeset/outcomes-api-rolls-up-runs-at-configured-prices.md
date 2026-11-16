@@ -1,0 +1,5 @@
+---
+"agent-org": minor
+---
+
+`GET /api/outcomes` rolls the outcome records of a time window up by model and effort, by repository and by label (A11-430, step 2 of 3): each group's cost, the reviewer's share of it, rounds per pull request, first-pass approval rate and Needs-you rate, each figure with the runs behind it. The window is `?from=` and `?to=` (an ISO date or time, or ms), a week to now by default. Dollars are priced at `tickets.prices` in the host file, read again on each request, else at the trace's published table, and every figure says "at configured prices"; a model with no price, or tokens that could not be read, make the dollars a floor. A run's record now also names its pull requests and each review the Codex reviewer posted on them, with that review's tokens, read from the reviewer's Codex sessions, so a pull request reviewed twice carries both reviews' usage. An unreadable outcome log or price table is a 500 naming it, never an empty rollup. A host file whose `tickets.prices` is not a list of valid rows now refuses the board's start, naming the field.

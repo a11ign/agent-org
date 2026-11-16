@@ -93,10 +93,10 @@ describe("the page when the plugins are read", () => {
     await within(messaging).findByRole("button", { name: "Copy the fix: agent-org messaging:pair" }).then((button) => expect(button.textContent).toBe("Copied"));
   });
 
-  it("shows a secret as the command that sets it, never as a field", async () => {
+  it("shows a secret the page cannot take as the command that sets it, never as a field (A11-445: a Keychain service off a Mac)", async () => {
     await pageOn();
     const tracker = card("Tracker");
-    expect(within(tracker).getByText(/A secret is never typed in this page/)).toBeTruthy();
+    expect(within(tracker).getByText(/never shown again\. Where there is no field, set it with the command below/)).toBeTruthy();
     expect(within(tracker).getByText(/security add-generic-password/)).toBeTruthy();
     expect(within(tracker).queryByLabelText(/keychain/i)).toBeNull();
   });

@@ -5,7 +5,7 @@ import { tmpDir } from "../../lib/tmp-fixture.ts";
 import { appendOutcome, latestOutcomes, outcomeRecordOf, outcomesPath, readOutcomes } from "./outcome-record.ts";
 
 const spent = (input: number) => ({ m: { input, output: 1, cacheRead: 0, cacheWrite5m: 0, cacheWrite1h: 0 } });
-const subject = { ticket: "A11-1", model: "opus", effort: "high", repos: ["agent-org"], labels: ["Bug"] };
+const subject = { ticket: "A11-1", model: "opus", effort: "high", repos: ["agent-org"], labels: ["Bug"], prs: [] };
 
 test("a run's record adds up its rounds: tokens of the rounds read, the rounds that asked a person, and the time they ran", () => {
   const record = outcomeRecordOf(subject, { since: 100, rounds: [

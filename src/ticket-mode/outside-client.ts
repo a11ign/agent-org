@@ -6,7 +6,8 @@
 // only when its KIND says another try can get past it ({@link failureKindOf}, the one place a failure is classed), each service has a circuit breaker that refuses calls at once while the service keeps failing,
 // and the call is counted ONCE in the board's call figure however often it is tried (A11-345's rule, now the client's). Services move onto it one per step: Linear first (the tracker plugin is handed it as
 // `deps.outside` by the loader, since a plugin imports core's types only), then `gh` (the code host plugin is handed it the same way, bound to GitHub, and its runners that the board's loop reads GitHub
-// through make each `gh` through it: step 2), then herdr.
+// through make each `gh` through it: step 2), then herdr (the pool's herdr seams make each `herdr` through it, `pool-herdr.ts`: step 3). `/api/health` serves the calls of every service as one failure figure
+// beside each service's own (`health-figures.ts`).
 import { basename } from "node:path";
 import { callOutcomes, type CallLedger, type CallService } from "./call-outcomes.ts";
 
@@ -101,10 +102,13 @@ export const isTransient = (err: unknown): boolean => ["network", "server", "una
 export type OutsideService = CallService;
 
 /** How a service is named where a person reads it. */
-const SERVICE_NAMES: Readonly<Record<OutsideService, string>> = { linear: "Linear", github: "GitHub" };
+const SERVICE_NAMES: Readonly<Record<OutsideService, string>> = { linear: "Linear", github: "GitHub", herdr: "herdr" };
 
-/** How long one attempt of a call to each service may take, in ms. A fresh process reaches Linear in about 150 ms and the largest read the board makes answers in a few seconds; `gh` has always had 30 s. */
-export const ATTEMPT_MS: Readonly<Record<OutsideService, number>> = { linear: 10_000, github: 30_000 };
+/**
+ * How long one attempt of a call to each service may take, in ms. A fresh process reaches Linear in about 150 ms and the largest read the board makes answers in a few seconds; `gh` has always had 30 s, and so
+ * has a herdr call (a start, which waits on Claude, names its own 90 s).
+ */
+export const ATTEMPT_MS: Readonly<Record<OutsideService, number>> = { linear: 10_000, github: 30_000, herdr: 30_000 };
 /** The waits before the first, second and third retry of a failed call, in ms: a call is made at most four times. */
 export const RETRY_WAITS_MS: readonly number[] = [200, 800, 2_000];
 /** How many failed attempts in a row open a service's breaker. */
@@ -313,15 +317,19 @@ export function createOutsideClient(deps: OutsideClientDeps = {}): OutsideClient
   return { call };
 }
 
+/** The programs that are calls to a service, by name: `gh` calls GitHub, and `herdr` calls this host's herdr server. */
+const PROGRAM_SERVICES: ReadonlyMap<string, OutsideService> = new Map([["gh", "github"], ["herdr", "herdr"]]);
+
 /**
- * Counts a finished program into `ledger` when it is `gh`, by the one rule: a failure is an answer {@link programKindOf} classes as a kind another try could get past (it could not start, was cut, or printed
- * that the network or GitHub failed it), and a refusal (`gh pr checks` while checks are pending, a 404) is GitHub answering. Any other program is not a call to GitHub. A `gh` call the client made is counted by
- * the client, once, and not here (`ExecOptions.countedByCaller`).
+ * Counts a finished program into `ledger` when it is `gh` or `herdr` ({@link PROGRAM_SERVICES}), by the one rule: a failure is an answer {@link programKindOf} classes as a kind another try could get past (it
+ * could not start, was cut, or printed that the network or the service failed it), and a refusal (`gh pr checks` while checks are pending, a 404, herdr's `agent_not_found`) is the service answering. Any other
+ * program is not a call to a service. A call the client made is counted by the client, once, and not here (`ExecOptions.countedByCaller`).
  */
 export function countProgram(file: string, answer: ProgramExit, ledger: CallLedger = callOutcomes): void {
-  if (basename(file) !== "gh") return;
+  const service = PROGRAM_SERVICES.get(basename(file));
+  if (service === undefined) return;
   const kind = programKindOf(answer);
-  ledger.record("github", kind !== null && RETRIED.has(kind));
+  ledger.record(service, kind !== null && RETRIED.has(kind));
 }
 
 /** This thread's client, which counts into this thread's ledger: one breaker per service for the whole thread. */

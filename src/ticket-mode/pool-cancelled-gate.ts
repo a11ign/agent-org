@@ -20,14 +20,9 @@ import { log, update } from "./pool-state.ts";
 import { replace, type Entry, type Queue } from "./queue/queue-entries-and-outcomes.ts";
 import { logEvent, logOf, shortReason, type RunEvent } from "./queue/run-log.ts";
 import { type CancelledRerun, type CancelledStop, MAX_CANCELLED_RUNS, cancelledRerunWords } from "./board-view/cancelled-rerun-words.ts";
+import { cancelledStep, MAX_CANCELLED_RERUNS, MAX_REFUSALS, type CancelledTries } from "./pr-state-machine.ts";
 
-export { MAX_CANCELLED_RUNS };
-
-/** How many refused reruns the board puts up with for one head before it stops asking. */
-export const MAX_REFUSALS = 3;
-
-/** How many reruns the code host may take for one head: the first run is cancelled once before any rerun, so {@link MAX_CANCELLED_RUNS} cancelled runs are the first and two reruns. */
-const MAX_RERUNS = MAX_CANCELLED_RUNS - 1;
+export { MAX_CANCELLED_RUNS, MAX_REFUSALS };
 
 /** An open pull request and what the board read of it. */
 type OpenPull = Readonly<{ url: string; read: PullFeedback }>;
@@ -44,11 +39,8 @@ export function cancelledGateRuns(read: PullFeedback): readonly string[] {
   return (read.cancelledRequired ?? []).flatMap(({ detailsUrl }) => (detailsUrl === null ? [] : [detailsUrl]));
 }
 
-/** What the run's log records of the board's reruns for one pull request at one head, sorted by what the board made of them. */
-type Tries = Readonly<{ taken: number; refused: number; stopped: boolean }>;
-
 /** The reruns the run's log records for the pull request at `head`: those the host took, those it refused, and whether the board stopped. */
-function triesAt(ctx: PoolContext, key: string, { url, head }: Readonly<{ url: string; head: string }>): Tries {
+function triesAt(ctx: PoolContext, key: string, { url, head }: Readonly<{ url: string; head: string }>): CancelledTries {
   const events = logOf(ctx.store.get(), key).filter((event): event is RerunEvent => event.kind === "cancelled-rerun" && event.url === url && event.head === head);
   return {
     taken: events.filter(({ refused, stopped }) => refused === undefined && stopped === undefined).length,
@@ -90,18 +82,17 @@ async function rerunOne(ctx: PoolContext, key: string, { url, read }: OpenPull, 
 }
 
 /**
- * What the board does about cancelled runs it has not stopped on, once the head is quiet: it logs the stop when {@link MAX_RERUNS} reruns were taken and the runs still block it, and else reruns one. It waits while a run of the workflow is in progress, which is also
- * what keeps it from reading the rerun it just made, still shown as cancelled, as another cancelled run.
+ * What the board does about cancelled runs it has not stopped on, once the head is quiet, as {@link cancelledStep} decides: it logs the stop when {@link MAX_CANCELLED_RERUNS} reruns were taken and the runs still block it, and else reruns one. It waits while a run of
+ * the workflow is in progress, which is also what keeps it from reading the rerun it just made, still shown as cancelled, as another cancelled run.
  */
 async function actOn(ctx: PoolContext, key: string, pull: OpenPull, plan: Readonly<{ runs: readonly string[]; head: string }>): Promise<void> {
   const { url, read } = pull;
   const { runs, head } = plan;
   const tries = triesAt(ctx, key, { url, head });
-  const spent = tries.taken >= MAX_RERUNS;
-  if (tries.stopped || (!spent && tries.refused >= MAX_REFUSALS)) return;
-  if (await headIsBusy(ctx, runs, head)) return;
-  if (spent) recordRerun(ctx, key, { url, head, checks: checksOf(read), stopped: true });
-  else await rerunOne(ctx, key, pull, plan);
+  if (cancelledStep(tries, "unread").do === "leave") return;
+  const step = cancelledStep(tries, await headIsBusy(ctx, runs, head));
+  if (step.do === "stop") recordRerun(ctx, key, { url, head, checks: checksOf(read), stopped: true });
+  else if (step.do === "rerun") await rerunOne(ctx, key, pull, plan);
 }
 
 /** The line the card shows for `url` while the board has stopped rerunning, from its log, or none. */
@@ -131,7 +122,7 @@ function showStop(ctx: PoolContext, entry: Entry, pull: OpenPull): void {
 
 /**
  * What the board does about one open pull request of a finished run that sits BLOCKED behind cancelled runs of its required checks: it asks the code host to rerun the first one, on a head where no run of that workflow is in progress, and logs it. It does nothing for a
- * host that cannot rerun a whole run (`rerunRuns` absent). At most {@link MAX_RERUNS} reruns are taken for a head: when the cancelled runs block it past them, the board logs the stop once and the card says so (A11-403). A refusal is logged with its reason, and the
+ * host that cannot rerun a whole run (`rerunRuns` absent). At most {@link MAX_CANCELLED_RERUNS} reruns are taken for a head: when the cancelled runs block it past them, the board logs the stop once and the card says so (A11-403). A refusal is logged with its reason, and the
  * next watch asks again until {@link MAX_REFUSALS}.
  */
 export async function rerunCancelledGate(ctx: PoolContext, entry: Entry, pull: OpenPull): Promise<void> {

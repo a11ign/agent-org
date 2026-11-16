@@ -1,0 +1,163 @@
+{
+  "name": "@agent-org/plugin-github-issues",
+  "private": true,
+  "version": "0.0.0",
+  "description": "GitHub Issues as the tracker: the issues of one repository are read and written through GitHub's REST API with a token.",
+  "type": "module",
+  "agentOrg": {
+    "concern": "tracker",
+    "contract": "1.9",
+    "description": "GitHub Issues: where tickets are kept and read.",
+    "setUp": "GitHub Issues connected as the tracker",
+    "entry": "index.ts",
+    "settings": {
+      "repo": {
+        "key": "tickets.providers.tracker.repo",
+        "file": "host.json",
+        "group": "Tracker",
+        "type": "owner/name",
+        "absent": "unset",
+        "default": null,
+        "explanation": "The GitHub repository whose issues are the tickets, as owner/name.",
+        "breaks": "A value that is not owner/name is refused by name, and the board cannot read the tracker.",
+        "edit": {
+          "editable": true,
+          "input": "text",
+          "applies": "board",
+          "dangerous": "Another repository's issues become the tickets."
+        }
+      },
+      "prefix": {
+        "key": "tickets.providers.tracker.prefix",
+        "file": "host.json",
+        "group": "Tracker",
+        "type": "letters and digits, starting with a letter",
+        "absent": "default",
+        "default": "GH",
+        "explanation": "The prefix of every ticket's key: issue 12 is GH-12, and its branch is gh-12.",
+        "breaks": "A prefix that is not letters and digits is refused by name. Changing it renames every ticket's key, so queued runs no longer match their tickets.",
+        "edit": {
+          "editable": true,
+          "input": "text",
+          "applies": "board",
+          "dangerous": "Every ticket's key changes, and queued runs no longer match their tickets."
+        }
+      },
+      "token": {
+        "key": "tickets.providers.tracker.token",
+        "file": "host.json",
+        "group": "Tracker",
+        "type": "{ \"keychain\": \"<service>\" } or { \"path\": \"/abs/file\" }",
+        "absent": "default",
+        "default": "{ \"keychain\": \"agent-org-github-issues\" }",
+        "explanation": "Where the GitHub token is read from: the macOS Keychain by service name, or a file. The token is never shown on this page.",
+        "breaks": "A shape that is neither is refused by name, and the board cannot read the tracker.",
+        "edit": {
+          "editable": false,
+          "why": "an object: change its path with tickets.providers.tracker.token.path"
+        }
+      },
+      "token.path": {
+        "key": "tickets.providers.tracker.token.path",
+        "file": "host.json",
+        "group": "Tracker",
+        "type": "absolute path",
+        "absent": "unset",
+        "default": null,
+        "secret": "path",
+        "setCommand": "( umask 077; printf 'GitHub token: ' >&2; stty -echo; read -r SECRET; stty echo; printf '\\n' >&2; printf '%s' \"$SECRET\" > {value|~/.config/agent-org/github-issues.token} )",
+        "explanation": "The file the GitHub token is in: a token that can read and write the repository's issues. The file must be readable by no one else.",
+        "breaks": "A wrong path means the board cannot read the tracker.",
+        "edit": {
+          "editable": true,
+          "input": "text",
+          "applies": "board",
+          "note": "the token file itself is never read by this page",
+          "dangerous": "The file the GitHub token is read from: a wrong path stops the board from reading the tracker."
+        }
+      },
+      "token.keychain": {
+        "key": "tickets.providers.tracker.token.keychain",
+        "file": "host.json",
+        "group": "Tracker",
+        "type": "service name in the macOS Keychain",
+        "absent": "unset",
+        "default": null,
+        "secret": "keychain",
+        "setCommand": "security add-generic-password -a \"$USER\" -s {value|agent-org-github-issues} -w",
+        "explanation": "The Keychain service that holds the GitHub token. This page names the service and does not read the token.",
+        "breaks": "A service with no key there means the board cannot read the tracker.",
+        "edit": {
+          "editable": false,
+          "why": "a secret's Keychain service: the ticket allows only the path to a key file to change"
+        }
+      },
+      "connectors": {
+        "key": "tickets.providers.tracker.connectors",
+        "file": "host.json",
+        "group": "Tracker",
+        "type": "list of patterns starting ^mcp__",
+        "absent": "default",
+        "default": "none",
+        "explanation": "The connector tools a worker may call to read or comment on a tracker ticket, each a regular expression anchored at the tool's name: the tracker's own, from Linear. tickets.connectors keeps the rest.",
+        "breaks": "A pattern not starting ^mcp__ is refused by name. A broad one lets a worker act in the person's connected accounts.",
+        "edit": {
+          "editable": true,
+          "input": "json",
+          "applies": "board",
+          "dangerous": "A broad pattern lets a worker act in the person's connected accounts."
+        }
+      },
+      "workingState": {
+        "key": "tickets.providers.tracker.workingState",
+        "file": "host.json",
+        "group": "Tracker",
+        "type": "a state's name in the tracker",
+        "absent": "unset",
+        "default": null,
+        "explanation": "The state a ticket moves to as a worker starts implementing it, such as \"In Progress\", if it has not started yet. Absent leaves its state alone. A planning run moves nothing. The ticket goes back to the state it came from when its run ends without a pull request.",
+        "breaks": "A name the tracker lacks fails that move, not the run. A team with no state of that name keeps the ticket's state, and the board's log says so.",
+        "edit": {
+          "editable": true,
+          "input": "text",
+          "applies": "board"
+        }
+      },
+      "plannedState": {
+        "key": "tickets.providers.tracker.plannedState",
+        "file": "host.json",
+        "group": "Tracker",
+        "type": "a state's name in the tracker",
+        "absent": "unset",
+        "default": null,
+        "explanation": "The state a planned ticket moves to once its plan is attached, if it has not started. A team with no state of that name keeps the ticket's state, and the board's log says so, because teams name their states differently.",
+        "breaks": "A name the tracker lacks fails that move, not the plan.",
+        "edit": {
+          "editable": true,
+          "input": "text",
+          "applies": "board"
+        }
+      },
+      "takenStates": {
+        "key": "tickets.providers.tracker.takenStates",
+        "file": "host.json",
+        "group": "Tracker",
+        "type": "list of state names",
+        "absent": "default",
+        "default": "the working and planned states, where they are set",
+        "explanation": "The tracker states in which a ticket another instance claimed is held in Pick: a ticket in one of them, whose latest claim in the tracker names another instance, is shown with its state and cannot be queued here. A state of the started type is always one of them, so In Progress needs no entry. A ticket with no claim, or one this instance claimed, is not taken in any state. Listing [] names none of these states.",
+        "breaks": "A name that is not a state's name is refused by name. A state left out lets another instance's ticket be queued here too.",
+        "edit": {
+          "editable": true,
+          "input": "json",
+          "applies": "board"
+        }
+      }
+    },
+    "tooling": {
+      "mcpServers": [],
+      "connectors": [],
+      "skills": []
+    }
+  }
+}

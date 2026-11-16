@@ -3,7 +3,8 @@
 //
 // PURE, AND SENT TO THE BROWSER AS IT IS, like `settings-search.ts`: `ui-server.ts` serves it as `/plugins-section.js` with the types stripped, so it imports nothing and uses no Node
 // API. The page draws what `GET /api/plugins` answers (`plugins/health.ts`'s account) with these rules, and they are tested here without a browser. A state is always said in words,
-// never by colour alone; a control a plan refused is drawn off with the refusal's sentence beside it; a secret is a command with a copy button, never a field.
+// never by colour alone; a control a plan refused is drawn off with the refusal's sentence beside it; a secret is a command with a copy button, and, where the manifest allows it, a
+// write-only field too (A11-445).
 
 /** The plugin concerns the page lists, in its order, and what each is called on the page. */
 export const CONCERNS = [
@@ -65,5 +66,5 @@ export const controlsOf = (offered: readonly ControlName[]): readonly ControlNam
 /** What the page says an action did: the sentence the action answered, then when it is in force. */
 export const outcomeWords = (done: Readonly<{ said: string; inForce: readonly string[] }>): string => [done.said, ...done.inForce].join(". ").replace(/\.\./g, ".");
 
-/** The words that say a plugin's secrets are set by the CLI. */
-export const SECRET_WORDS = "A secret is never typed in this page. Set it with the command below, then run `agent-org doctor`.";
+/** The words over a plugin's secrets: where a field takes one, and that a saved one is never shown again; else the command that sets it. */
+export const SECRET_WORDS = "A secret saved here is stored on the instance's machine and never shown again. Where there is no field, set it with the command below, then run `agent-org doctor`.";

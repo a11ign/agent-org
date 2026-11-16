@@ -92,7 +92,7 @@ test("A breaker that lets a call through after its time opens again at once when
 });
 
 test("Given an attempt that never answers, it fails as transient when its time passes, and is tried again", async () => {
-  const client = createOutsideClient({ ledger: createCallLedger(), sleep: async () => undefined, attemptMs: { linear: 20, github: 20 } });
+  const client = createOutsideClient({ ledger: createCallLedger(), sleep: async () => undefined, attemptMs: { linear: 20, github: 20, herdr: 20 } });
   let made = 0;
   let aborted = false;
   const silent = (signal: AbortSignal) => {
@@ -292,6 +292,13 @@ test("A gh call is counted by the one rule: a failure another try could get past
   assert.deepEqual(ledger.figures().github, { calls: 6, failures: 3, failuresPer100: 50 });
 });
 
+test("A herdr program is counted by the same rule as the herdr figure (A11-436 step 3): herdr cut at its bound or its server unreachable is a failed call, and a refusal herdr gave is not", () => {
+  const ledger = createCallLedger(() => 1_000);
+  for (const answer of [ghExit(null, "spawn herdr ETIMEDOUT"), ghExit(1, "Connection refused (os error 111)"), ghExit(1, "{\"error\":{\"code\":\"agent_not_found\"}}"), ghExit(0)]) countProgram("herdr", answer, ledger);
+  assert.deepEqual(ledger.figures().herdr, { calls: 4, failures: 2, failuresPer100: 50 });
+  assert.deepEqual(ledger.figures().github, { calls: 0, failures: 0, failuresPer100: 0 }, "a herdr call is not a call to GitHub");
+});
+
 test("Given gh fails 10 times in a row on a connection reset, the board's next gh call is refused at once by the breaker, which says GitHub is unavailable", async () => {
   const { client, ledger } = world();
   let made = 0;
@@ -325,7 +332,7 @@ test("A call made once (a write) is not tried again after a failure another try 
 });
 
 test("A call that names its own time is cut at it, not at its service's", async () => {
-  const client = createOutsideClient({ ledger: createCallLedger(() => 0), sleep: async () => undefined, retryWaitsMs: [], attemptMs: { linear: 1, github: 1 } });
+  const client = createOutsideClient({ ledger: createCallLedger(() => 0), sleep: async () => undefined, retryWaitsMs: [], attemptMs: { linear: 1, github: 1, herdr: 1 } });
   assert.equal(await client.call("github", () => new Promise((done) => { setTimeout(() => done("late but within its own time"), 20); }), { attemptMs: 1_000 }), "late but within its own time");
   await assert.rejects(client.call("github", () => new Promise(() => undefined)), { name: "TimeoutError" });
 });

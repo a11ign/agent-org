@@ -15,8 +15,8 @@ import { OUTCOME_FILE } from "./worker-files.ts";
 import { markOutcomeStale } from "./pool-outcome.ts";
 import { type PoolContext } from "./pool-context.ts";
 // eslint-disable-next-line clean-code/no-duplication -- import list: the rule matches statement shape, and imports are not duplicated logic
-import { log, runMembers, runPlace, updateEach } from "./pool-state.ts";
-import { sendToAgent } from "./pool-resume.ts";
+import { log, runMembers, runPlace, sameRun, updateEach } from "./pool-state.ts";
+import { sendToAgentAsync } from "./pool-resume.ts";
 import { noteWorking } from "./queue/queue-transitions.ts";
 import type { Entry } from "./queue/queue-entries-and-outcomes.ts";
 import type { RunPlace } from "./pool-paths.ts";
@@ -112,11 +112,16 @@ function closeRound(ctx: PoolContext, { place, n, refusals, before }: Round): vo
   markOutcomeStale(place.dir, existsSync(written) ? statSync(written).mtimeMs : ctx.now());
 }
 
-/** Prompt the planner's own pane with the round's refusals and the file that holds the format. The run stays running. */
-function sendToPlanner(ctx: PoolContext, round: Round): void {
+/**
+ * Prompt the planner's own pane with the round's refusals and the file that holds the format. The run stays running. The prompt is asked over `herdrCall`, so the board's loop goes on while herdr answers (A11-433);
+ * no pass settles the same `planned` meanwhile, because the caller holds the run in `ctx.attaching` until this returns. A run stopped or started again while herdr answered is left as it is: its count and outcome are the
+ * new run's.
+ */
+async function sendToPlanner(ctx: PoolContext, round: Round): Promise<void> {
   writeFileSync(round.file, sendBackText(round.refusals, round.n));
-  const refused = sendToAgent(ctx, round.place, promptFor(round.refusals, round.n, round.file));
+  const refused = await sendToAgentAsync(ctx, round.place, promptFor(round.refusals, round.n, round.file));
   if (refused !== null) return log(`${whoOf(round)}'s plan could not be sent back to its planner: ${refused}`);
+  if (!sameRun(ctx, round.entry)) return log(`${whoOf(round)}'s plan was sent back to its planner, but the run was stopped meanwhile, so the send is not counted`);
   closeRound(ctx, round);
   log(`${whoOf(round)}'s plan: the board refused its ${AFTER_MERGE_CHECKS_HEADING} section, sent back to its planner (${round.n} of ${MAX_SEND_BACKS})`);
 }
@@ -137,7 +142,7 @@ function handToSession(ctx: PoolContext, round: Round): void {
  * Handle the refusals of the `## After-merge checks` sections of the plans a planning run (one ticket, or a batch's members all together) wrote, instead of ending the run on them. While the run has had fewer than
  * {@link MAX_SEND_BACKS} refusals, the planner's own pane is prompted ({@link sendToPlanner}); after that the run is handed to the person's session ({@link handToSession}), which never ends it for the chairman.
  */
-export function sendBack(ctx: PoolContext, entry: Entry, refusals: readonly FormatRefusal[]): void {
+export async function sendBack(ctx: PoolContext, entry: Entry, refusals: readonly FormatRefusal[]): Promise<void> {
   const place = runPlace(ctx, entry);
   const { count, refusals: before } = sentBefore(place.dir);
   const n = count + 1;

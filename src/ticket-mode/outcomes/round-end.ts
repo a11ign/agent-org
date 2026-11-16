@@ -5,7 +5,8 @@
 // its own turns and the next record says this round's tokens are missing.
 
 import type { Entry } from "../queue/queue-entries-and-outcomes.ts";
-import { type OutcomeRecord, outcomeRecordOf, type OutcomeRound, type OutcomeRun } from "./outcome-record.ts";
+import { pullsOf } from "../board-view/view-types-and-filters.ts";
+import { type OutcomeRecord, outcomeRecordOf, type OutcomeRound, type OutcomeRun, type OutcomeSubject } from "./outcome-record.ts";
 import { batchShare, inputOutputOf, roundTokens, type TranscriptRead } from "./round-tokens.ts";
 
 /** What the end of a round records for one ticket of the run: its run with the round added, the tokens its Properties show, and its outcome record, or why there is none. */
@@ -18,6 +19,15 @@ function reposOf(entry: Entry): readonly string[] {
   return typeof planned === "string" ? [planned] : [];
 }
 
+/**
+ * What `entry`'s run is known by apart from its rounds (A11-430): its ticket, model and effort, repositories, labels and pull requests, those the queue holds and `pulls`, the ones this round's
+ * outcome names. PURE.
+ */
+export function outcomeSubjectOf(entry: Entry, pulls: readonly string[] = []): OutcomeSubject {
+  const prs = [...new Set([...pullsOf(entry).map(({ url }) => url), ...pulls])];
+  return { ticket: entry.ticket.key, model: entry.model, effort: entry.effort, repos: reposOf(entry), labels: (entry.ticket.labels ?? []).map(({ name }) => name), prs };
+}
+
 type RoundEndInput = Readonly<{
   /** The tickets of the run, in the batch's order: one for a run of one ticket. */
   members: readonly Entry[];
@@ -27,6 +37,8 @@ type RoundEndInput = Readonly<{
   read: TranscriptRead;
   /** How the round ended for each ticket, by key: a batch's planner may plan one ticket and ask about another. */
   outcomeOf: (key: string) => string;
+  /** The pull requests the round's outcome names, by address: none for a planning run. */
+  pulls?: readonly string[];
   session?: string;
   now: number;
 }>;
@@ -35,7 +47,7 @@ type RoundEndInput = Readonly<{
  * What the end of this round records for each of `members`, by key (A11-430). The round's tokens are the turns its transcript holds since the run's previous round ended; a batch's are split
  * across its tickets by {@link batchShare}, so the shares add up to the run's. PURE.
  */
-export function roundEndsOf({ members, watched, read, outcomeOf, session, now }: RoundEndInput): Map<string, RoundEnd> {
+export function roundEndsOf({ members, watched, read, outcomeOf, pulls, session, now }: RoundEndInput): Map<string, RoundEnd> {
   const after = watched.outcomeRun?.rounds.at(-1)?.endedAt;
   const unread = "unreadable" in read ? read.unreadable : null;
   const spent = "turns" in read ? roundTokens(read.turns, after) : null;
@@ -47,9 +59,10 @@ export function roundEndsOf({ members, watched, read, outcomeOf, session, now }:
     const startedAt = member.startedAt === undefined || (previousEnd !== undefined && member.startedAt < previousEnd) ? null : member.startedAt;
     const tokens = spent === null || batch === undefined ? spent : batchShare(spent, index, members.length);
     const round: OutcomeRound = { startedAt, endedAt: now, outcome: outcomeOf(member.ticket.key), ...(session === undefined ? {} : { session }), ...(unread === null ? {} : { unread }), ...(tokens === null ? {} : { tokens }) };
-    const outcomeRun: OutcomeRun = { since: before?.since ?? member.ciSince ?? member.startedAt ?? now, rounds: [...(before?.rounds ?? []), round] };
-    const record = outcomeRecordOf({ ticket: member.ticket.key, model: member.model, effort: member.effort, repos: reposOf(member), labels: (member.ticket.labels ?? []).map(({ name }) => name),
-      ...(batch === undefined ? {} : { batch: { id: batch, share: index + 1, of: members.length } }) }, outcomeRun);
+    const { batch: _earlier, ...carried } = before ?? {};
+    const outcomeRun: OutcomeRun = { ...carried, since: before?.since ?? member.ciSince ?? member.startedAt ?? now, rounds: [...(before?.rounds ?? []), round],
+      ...(batch === undefined ? {} : { batch: { id: batch, share: index + 1, of: members.length } }) };
+    const record = outcomeRecordOf(outcomeSubjectOf(member, pulls), outcomeRun);
     const shown = outcomeRun.rounds.some((each) => each.tokens !== undefined) ? { tokens: inputOutputOf(record.tokens) } : {};
     const end: RoundEnd = unread === null ? { outcomeRun, ...shown, record } : { outcomeRun, ...shown, unread };
     return [member.ticket.key, end];

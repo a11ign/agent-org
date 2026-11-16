@@ -222,16 +222,25 @@ test("every run action the page can send to an instance is passed on, so no butt
   assert.equal(passedOn("POST", "/api/queue/NBF-1/start-anyway"), false, "the one override that stays on this machine");
 });
 
+const LOCAL: Connection = { name: "local", kind: "local" };
+const LAB: Connection = { name: "lab", kind: "https", origin: "https://agents.example.ts.net", keyFile: "/k" };
+
+/** A proxy whose forward answers `{}` and records the path and body of each request it was sent. */
+function recordedProxy() {
+  const sent: string[] = [];
+  const bodies: (string | null)[] = [];
+  const forward = async (_target: Target, request: { path: string; body: string | null }) => { sent.push(request.path); bodies.push(request.body); return { status: 200, body: "{}" }; };
+  const through = (remote: Connection, method: string, path: string) => proxy(fixed(overSsh("/unused.sock"), remote).remotes, remote.name, { method, path, body: method === "GET" ? null : "{}" }, forward);
+  return { sent, bodies, through };
+}
+
 test("A11-163: the Plugins section is read through any connection, and its actions are the machine's own instance's: refused for an ssh or an https connection before anything is sent", async () => {
   assert.equal(passedOn("GET", "/api/plugins"), true, "the section's read is passed on");
   assert.equal(passedOn("POST", "/api/plugins"), false, "and writes nothing");
   assert.equal(passedOn("POST", "/api/plugins/action"), true);
   assert.equal(passedOn("GET", "/api/plugins/action"), false, "an action is a POST");
-  const LAB: Connection = { name: "lab", kind: "https", origin: "https://agents.example.ts.net", keyFile: "/k" };
-  const sent: string[] = [];
-  const forward = async (_target: Target, request: { path: string }) => { sent.push(request.path); return { status: 200, body: "{}" }; };
-  const through = (remote: Connection, method: string, path: string) => proxy(fixed(overSsh("/unused.sock"), remote).remotes, remote.name, { method, path, body: method === "GET" ? null : "{}" }, forward);
-  assert.deepEqual(await through({ name: "local", kind: "local" }, "POST", "/api/plugins/action"), [200, {}]);
+  const { sent, through } = recordedProxy();
+  assert.deepEqual(await through(LOCAL, "POST", "/api/plugins/action"), [200, {}]);
   for (const remote of [PERSONAL, LAB]) {
     assert.deepEqual(await through(remote, "GET", "/api/plugins"), [200, {}], `${remote.name} is read`);
     const [status, body] = await through(remote, "POST", "/api/plugins/action");
@@ -239,6 +248,19 @@ test("A11-163: the Plugins section is read through any connection, and its actio
     assert.match((body as { error: string }).error, new RegExp(`${remote.name}'s settings are not changed from here`));
   }
   assert.deepEqual(sent, ["/api/plugins/action", "/api/plugins", "/api/plugins"], "the local action and both reads were sent, and neither remote action");
+});
+
+test("A11-445: a secret typed on the page goes to this machine's own instance only: refused for an ssh or an https connection before anything is sent", async () => {
+  assert.equal(passedOn("POST", "/api/plugins/secret"), true);
+  assert.equal(passedOn("GET", "/api/plugins/secret"), false, "a secret is a POST, and never read back");
+  const { sent, bodies, through } = recordedProxy();
+  assert.deepEqual(await through(LOCAL, "POST", "/api/plugins/secret"), [200, {}]);
+  for (const remote of [PERSONAL, LAB]) {
+    const [status, answer] = await through(remote, "POST", "/api/plugins/secret");
+    assert.equal(status, 403, `a secret over ${remote.kind}`);
+    assert.match((answer as { error: string }).error, new RegExp(`${remote.name}'s settings are not changed from here`));
+  }
+  assert.deepEqual([sent, bodies], [["/api/plugins/secret"], ["{}"]], "only the local instance was sent the secret");
 });
 
 /** A forward that answers `body` with `status` until `down` is set, then fails as an instance that stopped. */
