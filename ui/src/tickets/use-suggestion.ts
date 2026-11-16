@@ -1,6 +1,9 @@
 import { useEffect, useState } from "react";
 import type { Client } from "../api/client.ts";
-import type { Suggestion } from "../api/types.ts";
+import type { SuggestionView } from "../api/types.ts";
+
+/** One suggestion: the model and effort, its first-pass rate, sample size, kind and reason. */
+export type Suggestion = NonNullable<SuggestionView["suggestion"]>;
 
 // THE FOOTER'S SUGGESTION (A11-435): the model and effort past runs of the selected tickets' kind went best on, asked once each time the selection changes. It only advises: nothing here
 // changes the batch's model or effort, which the person still chooses.
