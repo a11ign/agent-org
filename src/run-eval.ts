@@ -27,7 +27,7 @@ import { parseKey, type KeySetting } from "./run-eval/key.ts";
 import { DEFAULT_TEST, parseSet, type EvalEntry } from "./run-eval/set.ts";
 import { COLUMNS, layOut } from "./run-eval/table.ts";
 import { loadRun, runPath, setNameOf, storeRun, type Revision, type Stopped } from "./run-eval/store.ts";
-import { evalBrief, evalSettings, tokensOfResult, workerArgs, type HostBrief, type Place } from "./run-eval/worker.ts";
+import { evalBrief, evalSettings, resultOf, tokensOfResult, workerArgs, type HostBrief, type Place } from "./run-eval/worker.ts";
 import { type SchemaEntry } from "./ticket-mode/config-schema.ts";
 import { type Ticket } from "./ticket-mode/source.ts";
 import { BRIEF_FILE, type ParentTicket } from "./ticket-mode/worker-files.ts";
@@ -118,9 +118,26 @@ async function runWorker(entry: EvalEntry, deps: RunEvalDeps, options: RunOption
     return { tokens: tokensOfResult(stdout), wallMs: deps.now() - started };
   } catch (error) {
     // A worker that exits non-zero may still have printed its result: its tokens were spent, and the token cap must count them. One killed for its time printed none, and is unknown.
-    const printed = (error as { stdout?: unknown })?.stdout;
-    return { tokens: typeof printed === "string" ? tokensOfResult(printed) : null, wallMs: deps.now() - started, note: `worker failed: ${firstLine(error)}` };
+    const { stdout: printed, stderr } = error as { stdout?: unknown; stderr?: unknown };
+    const why = failureOf(printed, stderr);
+    mkdirSync(place.record, { recursive: true });
+    writeFileSync(join(place.record, WORKER_FAILED_FILE), `${typeof printed === "string" ? printed : ""}\n--- stderr ---\n${typeof stderr === "string" ? stderr : ""}`);
+    return { tokens: typeof printed === "string" ? tokensOfResult(printed) : null, wallMs: deps.now() - started, note: `worker failed: ${firstLine(error)}${why === null ? "" : ` -- ${why}`}` };
   }
+}
+
+/** Where a failed worker's output is kept, beside its stand-ins' record, so why it failed (a spent allowance, say) can be read after the run. */
+export const WORKER_FAILED_FILE = "worker-failed.txt";
+
+/**
+ * Why a worker failed, in one line, from what it printed: its result's error text (`claude -p` prints a usage limit that way), else the first line of its stderr; null when it said
+ * neither. PURE.
+ */
+export function failureOf(stdout: unknown, stderr: unknown): string | null {
+  const result = typeof stdout === "string" ? resultOf(stdout) : null;
+  if (result?.is_error === true && typeof result.result === "string" && result.result.trim() !== "") return result.result.trim().split("\n")[0];
+  const said = typeof stderr === "string" ? stderr.split("\n").find((line) => line.trim() !== "") : undefined;
+  return said === undefined ? null : said.trim();
 }
 
 /** The reviewer's verdict on the worker's diff, or null with the reason. */

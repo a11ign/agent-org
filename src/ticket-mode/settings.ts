@@ -107,8 +107,8 @@ export type TicketSettings = Readonly<{
    */
   fixRedMain?: boolean;
   /**
-   * Whether the board runs the daily ticket-mode retro, which writes each repository's lessons from its recent runs (A11-432, `retro/retro-job.ts`), and worker and planner briefs carry them (`retro/lessons-brief.ts`). False by default: the feature turns on only once
-   * the offline eval shows no drop. Optional, so a settings object made by hand (a test's) leaves it off.
+   * Whether the board runs the daily ticket-mode retro, which writes each repository's lessons from its recent runs (A11-432, `retro/retro-job.ts`), and worker and planner briefs carry them (`retro/lessons-brief.ts`). True by default: the offline eval showed no drop with
+   * lessons on (A11-432, step 3). Optional, so a settings object made by hand (a test's) leaves it off; the host file's absent key reads as true.
    */
   lessons?: boolean;
   /**
@@ -504,9 +504,12 @@ function fixRedMainOf(value: unknown): boolean {
   return value;
 }
 
-/** `tickets.lessons`: true for the board to run the daily retro and write each repository's lessons (A11-432). Absent is false. Any other value is refused by name. */
+/**
+ * `tickets.lessons`: true for the board to run the daily retro and write each repository's lessons (A11-432). Absent is true, since the offline eval showed no drop with lessons on (step 3);
+ * false turns them off. Any other value is refused by name.
+ */
 function lessonsOf(value: unknown): boolean {
-  if (value === undefined) return false;
+  if (value === undefined) return true;
   if (typeof value !== "boolean") throw new TicketSettingsRefusal("tickets.lessons", `must be true or false, not ${JSON.stringify(value)}`);
   return value;
 }

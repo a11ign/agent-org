@@ -27,7 +27,7 @@ test("only `clones` is required, every repository in it is offered, and every ot
 
 test("the `tickets` block and `stateDir` override the defaults", () => {
   const settings = parseTicketSettings({ clones, stateDir: "/state", tickets: { max: 5, port: 5000, herdrSession: "nbl", worktreeRoot: "/wt", linearKey: { path: "/keys/linear" } } });
-  assert.deepEqual({ ...settings, clones: undefined, providers: undefined }, { clones: undefined, providers: undefined, stackRequired: true, takenStates: [], max: 5, port: 5000, uiPort: 4748, herdrSession: "nbl", instance: defaultInstance(), worktreeRoot: "/wt", stateDir: "/state", binDir: join(homedir(), ".local", "bin"), brief: null, review: null, deny: [], plugins: [], terminal: null, plan: null, planner: null, writer: null, preflight: [], workingState: null, connectors: [], publish: null, drafts: true, designTools: false, fixRedMain: true, lessons: false, localReview: false, autoAnswer: { on: false, threshold: 0.9, model: "haiku" }, readiness: false, capture: false, prReview: null, reviewer: null, reviewerRequired: false, publishWhen: "ready-to-merge", pick: "assigned", stallMinutes: 30, suggestMinSample: 20, evalTokenCap: 300_000_000, ciBudgetMinutes: 300, updateMaxDeferHours: 2, reviewComments: [] });
+  assert.deepEqual({ ...settings, clones: undefined, providers: undefined }, { clones: undefined, providers: undefined, stackRequired: true, takenStates: [], max: 5, port: 5000, uiPort: 4748, herdrSession: "nbl", instance: defaultInstance(), worktreeRoot: "/wt", stateDir: "/state", binDir: join(homedir(), ".local", "bin"), brief: null, review: null, deny: [], plugins: [], terminal: null, plan: null, planner: null, writer: null, preflight: [], workingState: null, connectors: [], publish: null, drafts: true, designTools: false, fixRedMain: true, lessons: true, localReview: false, autoAnswer: { on: false, threshold: 0.9, model: "haiku" }, readiness: false, capture: false, prReview: null, reviewer: null, reviewerRequired: false, publishWhen: "ready-to-merge", pick: "assigned", stallMinutes: 30, suggestMinSample: 20, evalTokenCap: 300_000_000, ciBudgetMinutes: 300, updateMaxDeferHours: 2, reviewComments: [] });
 });
 
 test("A11-261: the CI budget is a whole number of weighted minutes per ticket, 300 by default, and 0 is none", () => {
@@ -149,8 +149,9 @@ test("A11-443: the readiness score is off unless tickets.readiness is true, and 
   assert.throws(() => parseTicketSettings({ clones, tickets: { readiness: "yes" } }), (err: unknown) => err instanceof TicketSettingsRefusal && err.field === "tickets.readiness");
 });
 
-test("A11-432: the daily retro and its lessons are off unless tickets.lessons is true, and any other value is refused by name", () => {
-  assert.equal(parseTicketSettings({ clones }).lessons, false);
+test("A11-432: the daily retro and its lessons are on unless tickets.lessons is false (on by default since step 3's eval), and any other value is refused by name", () => {
+  assert.equal(parseTicketSettings({ clones }).lessons, true);
+  assert.equal(parseTicketSettings({ clones, tickets: { lessons: false } }).lessons, false);
   assert.equal(parseTicketSettings({ clones, tickets: { lessons: true } }).lessons, true);
   assert.throws(() => parseTicketSettings({ clones, tickets: { lessons: "yes" } }), (err: unknown) => err instanceof TicketSettingsRefusal && err.field === "tickets.lessons");
 });

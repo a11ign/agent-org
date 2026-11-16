@@ -1742,7 +1742,7 @@ test("A11-432: the daily retro is scheduled on the feedback cadence beside the o
 });
 
 test("A11-432: the board's retro sweep does nothing while tickets.lessons is off: no model is asked and no lessons are written", async () => {
-  const b = board();
+  const b = board(4747, { lessons: false });
   await retroOf(b, { settings: b.settings, now: () => 7 } as BoardDeps)();
   assert.equal(existsSync(join(b.settings.stateDir, "tickets", "lessons")), false);
   assert.equal(existsSync(join(b.settings.stateDir, "tickets", "lessons-retro.json")), false);

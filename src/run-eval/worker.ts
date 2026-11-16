@@ -72,6 +72,16 @@ export function workerArgs({ name, model, effort, ticketDir }: { name: string; m
   return [firstPrompt(ticketDir), "-p", "--output-format", "json", "--strict-mcp-config", ...workerFlags({ name, model, effort, addDirs: [ticketDir] })];
 }
 
+/** A headless run's JSON result, its last line of output parsed, or null when that is not a JSON object. PURE. */
+export function resultOf(stdout: string): Record<string, unknown> | null {
+  try {
+    const result: unknown = JSON.parse(stdout.trim().split("\n").pop() ?? "");
+    return result !== null && typeof result === "object" ? (result as Record<string, unknown>) : null;
+  } catch {
+    return null;
+  }
+}
+
 const sum = (tokens: Tokens): number => tokens.input + tokens.output + tokens.cacheRead + tokens.cacheWrite5m + tokens.cacheWrite1h;
 
 /**
@@ -79,13 +89,8 @@ const sum = (tokens: Tokens): number => tokens.input + tokens.output + tokens.ca
  * way the trace store reads it (`tokensOf`). `null` when the output is not a result, so a run whose tokens are unknown never reads as 0. PURE.
  */
 export function tokensOfResult(stdout: string): number | null {
-  let result: { modelUsage?: Record<string, Record<string, number>>; usage?: unknown; type?: string };
-  try {
-    result = JSON.parse(stdout.trim().split("\n").pop() ?? "");
-  } catch {
-    return null;
-  }
-  if (result === null || typeof result !== "object") return null;
+  const result = resultOf(stdout) as { modelUsage?: Record<string, Record<string, number>>; usage?: unknown } | null;
+  if (result === null) return null;
   const models = Object.values(result.modelUsage ?? {});
   if (models.length > 0) return models.reduce((total, used) => total + (used.inputTokens ?? 0) + (used.outputTokens ?? 0) + (used.cacheReadInputTokens ?? 0) + (used.cacheCreationInputTokens ?? 0), 0);
   return result.usage === undefined ? null : sum(tokensOf(result.usage));

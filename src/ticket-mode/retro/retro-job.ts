@@ -1,7 +1,7 @@
 // @ts-check
 // module: the ticket-mode daily retro (A11-432) -- once a UTC day, each repository's recent runs are read for recurring causes, and its lessons file is written
 //
-// OFF UNLESS `tickets.lessons` IS TRUE: the feature ships off and turns on only when the offline test (the M2 eval set, run with lessons off and on) shows no drop (the plan's step 3).
+// OFF WHEN `tickets.lessons` IS FALSE: on by default since the offline test (the M2 eval set, run with lessons off and on) showed no drop (the plan's step 3).
 //
 // ONCE A UTC DAY, AT THE FIRST SWEEP OF THE DAY. The board runs this with its feedback sweeps; the day it last ran is kept in `lessons-retro.json`, written BEFORE the model is asked, so a
 // retro that fails is tried again tomorrow, not every sweep of today (each try is a model run). A `lessons-retro.json` that exists and cannot be read stops the retro, failing closed: it is

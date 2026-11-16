@@ -42,10 +42,15 @@ test("A11-432: with tickets.lessons on, a worker run starting in agent-org has a
   assert.ok(brief.indexOf("## Lessons from earlier runs") < brief.indexOf("## What to do"), "before the steps the worker follows");
 });
 
-test("A11-432: with tickets.lessons off, the default, a worker brief carries no lessons whatever the files hold", async () => {
-  const { brief } = await briefOf({});
+test("A11-432: with tickets.lessons off, a worker brief carries no lessons whatever the files hold", async () => {
+  const { brief } = await briefOf({ lessons: false });
   assert.equal(brief.includes("Lessons from earlier runs"), false);
   assert.equal(brief.includes(CHANGESET), false);
+});
+
+test("A11-432 step 3: with tickets.lessons absent, the default, a worker brief carries its repository's lessons", async () => {
+  const { brief } = await briefOf({});
+  assert.ok(brief.includes(`- ${CHANGESET} (runs: A11-1@1, A11-2@2)`), brief);
 });
 
 test("A11-432: with tickets.lessons on, a planner run for agent-org has agent-org's lessons in its brief", async () => {
