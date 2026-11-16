@@ -144,7 +144,8 @@ describe("the controls that write, on a page drawn from what the tab kept", () =
     const { page, controls, open } = WRITERS[name];
     const release = await returnTo(page);
     open?.();
-    expect(controls().length).toBeGreaterThan(0);
+    // Waited for, not read once: a kept page draws some controls a tick after the rest (a ticket request's Stop failed `ui` with none drawn yet on #2062 and #2065, 2026-11-16).
+    await waitFor(() => expect(controls().length).toBeGreaterThan(0));
     expect(controls()).not.toContain(null);
     expect(controls().some(enabled)).toBe(false);
     await release();
