@@ -82,3 +82,75 @@ export function machineView(): SettingsView {
 export const machineStand = (): Stand => ({ ...boardSizedStand(HERE) });
 
 export type { ViewEntry };
+
+// The run notes A11-446 designs: one run for each group of PARITY.md's "A run's card" rows that were still `pattern: disclosure`, each drawn whole in Run detail's "Everything this run noted".
+
+const pullOf = (number: number): string => `https://github.com/a11ign/agent-org/pull/${number}`;
+
+/** A finished run whose open pull request is approved, on a machine whose publisher is off: the publishing-off line, and the verdict, retarget, check and merge queue notes. */
+export const DELIVERY_KEY = "A11-93";
+const DELIVERY_PULL = pullOf(1950);
+export const DELIVERY_NOTES = {
+  verdict: "the reviewer's verdict is not on a11ign/agent-org #1950: GitHub refused the review (422)",
+  retarget: "a11ign/agent-org #1950 is based on A11-90's branch, which merged: retarget it to main",
+  check: "Reran test on 1a2b3c4: a runner was lost",
+  queue: "removed from the merge queue 3 times: middleware",
+} as const;
+const delivery: RunFields = {
+  ticket: ticketOf(DELIVERY_KEY, "A run whose pull request the board has notes about"), phase: "finished", model: "sonnet", effort: "high", planned: true, repos: ["agent-org"],
+  queuedAt: Date.now() - 50 * MINUTE, startedAt: Date.now() - 45 * MINUTE, finishedAt: Date.now() - 20 * MINUTE,
+  outcome: { kind: "reviewed", prs: [{ repo: "agent-org", url: DELIVERY_PULL }] }, pullStates: { [DELIVERY_PULL]: "open" }, pullFiles: { [DELIVERY_PULL]: ["src/settings.ts"] },
+  pullHeads: { [DELIVERY_PULL]: { head: "1a2b3c4d5e6f", approved: true, review: "approved", red: [], pending: [] } },
+  verdictNotPosted: DELIVERY_NOTES.verdict, retargets: { [DELIVERY_PULL]: DELIVERY_NOTES.retarget },
+  checkHeads: { [DELIVERY_PULL]: { head: "1a2b3c4d5e6f", note: DELIVERY_NOTES.check } },
+  queueHeads: { [DELIVERY_PULL]: { head: "1a2b3c4d5e6f", step: "held", removals: 3, jobs: ["middleware"], held: true, note: DELIVERY_NOTES.queue } },
+};
+
+/** A run that ended done, with no pull request: its evidence, one line each. */
+export const DONE_KEY = "A11-94";
+export const EVIDENCE = ["pnpm test: the new case passes, 12 of 12", "read docs/design/atomaut/PARITY.md: no pattern row is left"] as const;
+const doneRun: RunFields = {
+  ticket: ticketOf(DONE_KEY, "A ticket that needed no change"), phase: "finished", model: "sonnet", effort: "high", planned: true, repos: ["agent-org"], trackerState: "completed",
+  queuedAt: Date.now() - 30 * MINUTE, startedAt: Date.now() - 28 * MINUTE, finishedAt: Date.now() - 25 * MINUTE,
+  outcome: { kind: "done", reason: "Every Done-when item holds.", evidence: [...EVIDENCE] },
+};
+
+/** A queued run that waits on one blocker, is stacked on another, was lost in a restart, and declares a path that a run holding its repository lists only part of its files for. */
+export const WAITING_KEY = "A11-95";
+const HOLDER_KEY = "A11-98";
+const STACK_PULL = pullOf(1960);
+const CUT_PULL = pullOf(1961);
+const waiting: RunFields = {
+  ticket: ticketOf(WAITING_KEY, "A queued run with everything to say about what it waits on"), phase: "queued", model: "sonnet", effort: "high", repos: ["agent-org"], queuedAt: Date.now() - 6 * MINUTE,
+  projectRepo: "agent-org", paths: ["agent-org:src/pool.ts"], lostInRestart: { at: Date.now() - 5 * MINUTE },
+  blockers: [
+    { key: "A11-9", state: "started", status: "In Progress" },
+    { key: "A11-97", state: "started", status: "In Review", branch: "admin/a11-97-the-base", head: "9f8e7d6c5b4a", pulls: { [STACK_PULL]: "open" } },
+  ],
+};
+/** The run that holds `agent-org` with an open pull request whose list of changed files GitHub cut short. */
+const holder: RunFields = {
+  ticket: ticketOf(HOLDER_KEY, "A run with a pull request too large to list"), phase: "finished", model: "sonnet", effort: "high", planned: true, repos: ["agent-org"],
+  queuedAt: Date.now() - 90 * MINUTE, startedAt: Date.now() - 85 * MINUTE, finishedAt: Date.now() - 60 * MINUTE,
+  outcome: { kind: "ready-pr", prs: [{ repo: "agent-org", url: CUT_PULL }] }, pullStates: { [CUT_PULL]: "open" }, pullFiles: { [CUT_PULL]: ["src/board.ts", ""] },
+};
+
+/** A batch planner's run in Talk, sharing its pane with another ticket of the batch, re-adopted after a restart, and started past an overlap. */
+export const TALKING_KEY = "A11-96";
+const BATCH = { batch: "batch-7", workspace: "ws-batch-7" } as const;
+const talking: RunFields = {
+  ticket: ticketOf(TALKING_KEY, "A batch planner's run that a person is talking to"), phase: "running", model: "opus", effort: "high", planned: false, repos: ["agent-org"],
+  queuedAt: Date.now() - 20 * MINUTE, startedAt: Date.now() - 18 * MINUTE, talk: true, ...BATCH,
+  readopted: { at: Date.now() - 10 * MINUTE, from: "crashed", reason: "its pane did not answer" },
+  overlapOverride: { holder: HOLDER_KEY, pull: "1961", path: "src/board.ts", at: Date.now() - 18 * MINUTE },
+};
+const batchmate: RunFields = {
+  ticket: ticketOf("A11-99", "The other ticket of the batch"), phase: "running", model: "opus", effort: "high", planned: false, repos: ["agent-org"],
+  queuedAt: Date.now() - 20 * MINUTE, startedAt: Date.now() - 18 * MINUTE, ...BATCH,
+};
+
+/** The stand for the notes' Run detail pages: every run above on one queue, so a note that names another run finds it, on a machine whose publisher is installed and off. */
+export function notesStand(): Stand {
+  const queue = { ...queueWith([delivery, doneRun, waiting, holder, talking, batchmate]), pulls: {} } as unknown as QueueView;
+  return { connections: [PERSONAL], instances: { personal: { config: queueingConfig({ publish: true, publisher: "off" } as never), queue } } };
+}
