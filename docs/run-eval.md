@@ -96,4 +96,27 @@ Evals run on the board's own Claude and Codex accounts: at most 10 tickets per s
 
 ### The measured cost of the first set
 
-MEASURED_COST_PENDING
+One run, `node scripts/run-eval.ts --set first` from 30a8a5b59 (step 2 of A11-431), opus at effort medium, 2026-11-16 02:44–07:42 UTC on the board's host:
+
+| ticket | tests | verdict | similarity | outside | tokens | wall |
+|---|---|---|---|---|---|---|
+| A11-376 | fail | convinced | 0.11 | 3 | 4,878,818 | 2265s |
+| A11-397 | fail | convinced | 0.25 | 0 | 4,181,052 | 739s |
+| A11-344 | fail | convinced | 0.13 | 1 | 5,999,623 | 1201s |
+| A11-340 | fail | convinced | 0.06 | 3 | 13,616,095 | 1029s |
+| A11-341 | fail | not convinced | 0.12 | 0 | 7,348,419 | 2093s |
+| A11-297 | fail | convinced | 0.11 | 1 | 6,802,865 | 1401s |
+| A11-449 | fail | not convinced | 0.08 | 4 | 36,947,107 | 2943s |
+| A11-394 | fail | not convinced | 0.11 | 0 | 8,711,888 | 2198s |
+| A11-239 | fail | convinced | 0.10 | 0 | 4,871,442 | 689s |
+| A11-140 | fail | not convinced | 0.12 | 0 | 3,545,182 | 371s |
+| **total** | **0/10** | **6/10 convinced** | **0.12** | **12** | **96,902,491** | **14,927s** |
+
+**The cost: about 97M tokens and 5 hours of wall time for the set** (4h09m of ticket time, 4h58m end to end), one ticket at a time. That is a third of the 300M default cap, so one run of the set fits under it with room for a ticket like A11-449 (37M) going long.
+
+**The tests column of this run does not measure the workers.** Two reasons, both found by re-running the check in the run's own trees:
+
+- A11-140, A11-239 and A11-297 start from commits older than `check:changed`, so `DEFAULT_TEST` fails there with `Missing script: check:changed` whatever the worker did. Those entries need their own `test` (or replacing) before their tests score means anything.
+- The other seven fail on tests that fail on this host without any change: in A11-397's tree, 8 of 5,438 failed, all in `src/packaging/host-units`, `src/packaging/org-health`, `src/ticket-mode/serve-ticket-only-host` and `src/tmp-fixtures-are-removed`, and the files the worker changed passed. The same files fail on a clean checkout of main on this host.
+
+So until those are fixed, read the verdict, similarity and outside columns, and compare tests only between two runs on the same host, where the same host failures sit on both sides.
