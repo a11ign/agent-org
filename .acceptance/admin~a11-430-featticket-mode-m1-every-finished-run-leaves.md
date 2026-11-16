@@ -1,12 +1,15 @@
-`GET /api/outcomes` rolls a time window's outcome records up by model and effort, repository and label, priced at the host file's `tickets.prices` read on each request (A11-430, step 2 of 3), and a run's record carries each Codex review of its pull requests with that review's tokens. Step 1's per-round record is unchanged, and its tests run here too.
+The board's Outcomes page (A11-430, step 3 of 3) draws `/api/outcomes` by model and effort, repository and label, and every figure lists the runs behind it, each linking to its run's page. The page checks answer `/api/outcomes` with the instance's own route (`outcomesAnswer`) over a scratch outcome log and host file, so the figures, the "at configured prices" words and a price changed in the host file are the backend's. Steps 1 and 2's tests run here too.
 
 Acceptance:
 ```bash
 npx rstest run --config scripts/rstest/rstest.config.ts src/ticket-mode/outcomes/
-npx rstest run --config scripts/rstest/rstest.config.ts src/ticket-mode/config-schema.test.ts src/ticket-mode/settings.test.ts src/ticket-mode/loop-load-routes.test.ts src/ticket-mode/interventions.test.ts src/trace/codex-price.test.ts src/packaging/trace-store-readers.test.ts
-npx rstest run --config scripts/rstest/rstest.config.ts src/ticket-mode/pool.test.ts src/ticket-mode/queue.test.ts src/ticket-mode/run-log.test.ts -t "A11-430|the pool logs what it does to a run|a run ends on its outcome file"
+pnpm --dir ui install --frozen-lockfile
+pnpm --dir ui exec rstest run --config rstest.config.ts --project components src/outcomes src/shell
+pnpm ui:build
+pnpm --dir ui exec playwright-core install chromium
+pnpm --dir ui exec rstest run --config rstest.config.ts --project pages test/outcomes test/routes.page.test.ts test/dist.page.test.ts test/shell.page.test.ts test/responsive/responsive-captures.page.test.ts
 ```
 
-Mutation: skip `holdsReview` in both `recordReview` (`src/ticket-mode/pool-reviewers.ts`) and `reviewEndOf` (`src/ticket-mode/outcomes/review-end.ts`), and "a pull request the reviewer reviewed twice" fails on a review recorded twice. In `recordReview` (`src/ticket-mode/pool-reviewers.ts`) pass `run.since` as `after` in place of `reviewTurnsAfter`, and the same test fails on the second review's tokens (the first review's requests counted again). In `outcomesAnswer` (`src/ticket-mode/outcomes/route.ts`) price at `pricesOf(undefined)` in place of the host file's prices, and "a price changed in the host file" fails. In `runViewOf` (`rollup.ts`) drop the unread round's floor, and the sonnet/medium figure is no longer a floor.
+Mutation: in `OutcomesPage.tsx` return `client.outcomes(query)` itself as the read (so the tab keeps each week's answer), and "keeps no week's answer" fails. In `outcomes-model.ts` make `figureOf` give a rate's `runs` in place of its `of`, and "lists the runs a rate is out of" fails. In `route.ts` price at `pricesOf(undefined)`, and "uses a price changed in the host file when the page is read again" fails.
 
-Consumer-declaration: one new host file key, `tickets.prices` (optional; absent keeps the published table), described in `config-schema.ts`. No contract changes. The UI reads `/api/outcomes` in step 3.
+Consumer-declaration: a new page, `/outcomes`, and an Outcomes link in the sidebar's Main navigation. No API or host file change.

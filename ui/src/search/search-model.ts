@@ -8,7 +8,6 @@ import { shownStatus } from "../../../src/ticket-mode/board-view/pull-status-and
 import { ownerName } from "../../../src/ticket-mode/assignee-filter.ts";
 import type { QueueListEntry, QueueView, TicketView } from "../api/types.ts";
 import { STATUS_TONE } from "../runs/icons.tsx";
-import { runsHref } from "../shell/routes.ts";
 
 /** What a row needs of an open ticket, and all a remembered one keeps: enough to draw it again and to open it on the Tickets page. */
 export type OpenTicket = Pick<TicketView, "key" | "title" | "project" | "assignee" | "labels" | "status" | "statusType" | "statusOrder" | "priority">;
@@ -16,8 +15,6 @@ export type OpenTicket = Pick<TicketView, "key" | "title" | "project" | "assigne
 /** One row of the palette: a ticket by its key and title, the open ticket when one is known (it can be opened on Tickets), and its run in the queue when it has one. */
 export type Match = Readonly<{ key: string; title: string; ticket: OpenTicket | null; run: QueueListEntry | null }>;
 
-/** Where a run's own page is. */
-export const runHref = (key: string): string => `${runsHref}/${encodeURIComponent(key)}`;
 
 const holds = (text: string, query: string): boolean => text.toLowerCase().includes(query);
 

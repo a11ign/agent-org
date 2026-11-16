@@ -17,6 +17,9 @@ import { lostText } from "./brief-ticket-text.ts";
 import { runEnvOf } from "./run-env.ts";
 import type { Entry } from "./queue/queue-entries-and-outcomes.ts";
 import type { PoolDeps } from "./pool-context.ts";
+import { herdrThroughClient, type ExecAsync } from "./pool-herdr.ts";
+import { createOutsideClient } from "./outside-client.ts";
+import { createCallLedger } from "./call-outcomes.ts";
 
 const MIN = 60_000;
 const T0 = Date.UTC(2026, 9, 25, 15, 0, 0);
@@ -432,6 +435,53 @@ test("A11-279: a workspace herdr will not close is not started a second time: th
   run.status.set(herdrName("NBF-1"), "idle");
   await run.advance(30_000);
   assert.deepEqual([createdWith(run.herdr.calls).length, run.resumes("w1:p1").length, run.entry("NBF-1").resume?.environment], [before, 1, "missing"]);
+});
+
+/** The board's wait before its first retry of a run that crashed on a transient failure (`crash-retry.ts`). */
+const FIRST_RETRY_MS = 30_000;
+/** A pass after the one that queued the retry: the queued run is started in it. */
+const NEXT_PASS_MS = 1_000;
+
+/**
+ * One live run whose herdr calls go through the one outside client, over the fixture's fake herdr, with each `workspace create` answered as `create.answer` says: by the fake, cut at its bound as a herdr that
+ * never answers is, or refused by herdr for a reason that is not transient. Then herdr restarts and restores its pane without its environment, its agent idle at its prompt, and one pass runs.
+ */
+async function reseatWithCreate(answer: "fake" | "cut" | "refused") {
+  const create = { answer: "fake" as typeof answer };
+  const fake: { run: (args: string[]) => string } = { run: () => assert.fail("herdr called before the fixture") };
+  const exec: ExecAsync = async (_file, args) => {
+    const creating = args.includes("workspace") && args.includes("create");
+    if (creating && create.answer === "cut") return { status: null, stdout: "", stderr: "spawn herdr ETIMEDOUT", spawnError: "spawn herdr ETIMEDOUT", signal: "SIGTERM" };
+    if (creating && create.answer === "refused") return { status: 1, stdout: "", stderr: "{\"error\":{\"code\":\"invalid_cwd\"}}\n", signal: null };
+    try {
+      return { status: 0, stdout: fake.run([...args]), stderr: "", signal: null };
+    } catch (err) {
+      return { status: 1, stdout: "", stderr: String((err as { stderr?: unknown }).stderr ?? (err as Error).message), signal: null };
+    }
+  };
+  const herdrAsync = herdrThroughClient({ outside: createOutsideClient({ ledger: createCallLedger(() => T0), sleep: async () => undefined }), exec, echo: false });
+  const run = await liveRuns(["NBF-1"], { herdrAsync }, (herdr) => { fake.run = herdr.run; });
+  const before = createdWith(run.herdr.calls).length;
+  create.answer = answer;
+  await restartIdle(run);
+  return { run, before, create };
+}
+
+test("A11-436: a reseat whose new workspace herdr never answers ends crashed with the board's retry scheduled, as a failed first start does, and the board starts it again with no person", async () => {
+  const { run, before, create } = await reseatWithCreate("cut");
+  const crashed = run.entry("NBF-1");
+  assert.equal(crashed.outcome?.kind, "crashed", "its workspace was closed, so the run cannot carry on where it was");
+  assert.deepEqual(crashed.crashRetry, { count: 1, retryAt: run.now() + FIRST_RETRY_MS }, "a transient failure: the board's retry is scheduled, not a person's");
+  create.answer = "fake";
+  await run.advance(FIRST_RETRY_MS);
+  await run.advance(NEXT_PASS_MS);
+  assert.ok(createdWith(run.herdr.calls).length > before, "started again in a new workspace by the board");
+  assert.notEqual(run.entry("NBF-1").outcome?.kind, "crashed");
+});
+
+test("A11-436: a reseat whose new workspace herdr refuses for a reason that is not transient stays crashed for a person, with no retry", async () => {
+  const { run } = await reseatWithCreate("refused");
+  assert.deepEqual([run.entry("NBF-1").outcome?.kind, run.entry("NBF-1").crashRetry], ["crashed", undefined]);
 });
 
 test("A11-279: a run that is working when herdr restores its pane without the environment is left working, and started again with it once its agent first sits at a prompt", async () => {

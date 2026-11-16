@@ -3,13 +3,13 @@ import { MINE } from "../tickets/tickets-model.ts";
 import { ANYONE, UNASSIGNED, YOU } from "../../../src/ticket-mode/assignee-filter.ts";
 import type { QueueView } from "../api/types.ts";
 import { useModalFocus } from "../lifecycle/use-modal-focus.ts";
-import { ticketsHref, type Page } from "../shell/routes.ts";
+import { runHref, ticketsHref, type Page } from "../shell/routes.ts";
 import { useShell, type ShellValue } from "../shell/ShellProvider.tsx";
 import { browserStorage } from "../shell/storage.ts";
 import { SEARCH_MIN_CHARS, useWorkspaceSearch } from "../tickets/use-workspace-search.ts";
 import { SearchIcon } from "./SearchIcon.tsx";
 import { HANDOFF_EVENT, HANDOFF_TTL_MS, handOver, recentOf, rememberOpened } from "./search-memory.ts";
-import { countText, matchesOf, metaOf, noMatchText, partsOf, runHref, SEARCH_HINT, statusOf, withRun, type Match } from "./search-model.ts";
+import { countText, matchesOf, metaOf, noMatchText, partsOf, SEARCH_HINT, statusOf, withRun, type Match } from "./search-model.ts";
 
 /** How many skeleton rows the palette draws while it searches, and how wide each one's title is, as the board draws them. */
 const SKELETON_WIDTHS = ["sk-search-70", "sk-search-55", "sk-search-82", "sk-search-60"] as const;

@@ -26,6 +26,15 @@ export function RunsIcon() {
   );
 }
 
+/** Outcomes (A11-430): three bars, the figures runs add up to. */
+export function OutcomesIcon() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+      <path d="M3.5 13V9M8 13V3.5M12.5 13V6.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+    </svg>
+  );
+}
+
 export function SettingsIcon() {
   return (
     <svg width="15" height="15" viewBox="0 0 24 24" fill="none" aria-hidden="true">

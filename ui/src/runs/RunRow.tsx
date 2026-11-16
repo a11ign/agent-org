@@ -2,7 +2,7 @@ import { runChoiceLabel, safeHref } from "../../../src/ticket-mode/board-view.ts
 import { pullsOf, type PullRef } from "../../../src/ticket-mode/board-view/view-types-and-filters.ts";
 import { publishable, repoLabel, shownStatus } from "../../../src/ticket-mode/board-view/pull-status-and-notes.ts";
 import type { QueueView, RunAction } from "../api/types.ts";
-import { runsHref } from "../shell/routes.ts";
+import { runHref } from "../shell/routes.ts";
 import { actionsOf } from "./run-actions.ts";
 import { ActionIcon, MessageIcon, PullIcon, StatusIcon, STATUS_TONE } from "./icons.tsx";
 import { MESSAGE_TITLE } from "./publish-model.ts";
@@ -23,9 +23,6 @@ export type RowContext = Readonly<{
   /** The tick column, drawn only on a machine with a publisher: null draws none, as the boards of a machine without one. */
   ticks: Ticks | null;
 }>;
-
-/** Where Run detail is: `/runs/<key>`, the key encoded. */
-const runHref = (key: string): string => `${runsHref}/${encodeURIComponent(key)}`;
 
 /** The number a pull request's address ends in. */
 const numberOf = (pull: PullRef): string => pull.url.split("/").pop() ?? "";

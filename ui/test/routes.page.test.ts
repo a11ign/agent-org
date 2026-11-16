@@ -10,6 +10,7 @@ describe("ticket:ui's nearest-page fallback (locate) over the build, for every r
   it.each([
     ["/tickets", "tickets/index.html"],
     ["/runs", "runs/index.html"],
+    ["/outcomes", "outcomes/index.html"],
     ["/settings/models", "settings/models/index.html"],
     ["/settings/workers", "settings/workers/index.html"],
     ["/settings/machine", "settings/machine/index.html"],
