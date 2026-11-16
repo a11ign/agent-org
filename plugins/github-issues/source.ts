@@ -12,7 +12,7 @@ import { writeFileSync } from "node:fs";
 import type { PickScope } from "../../src/ticket-mode/settings.ts";
 import type { AutomaticCompletionUndo, Blocker, Keywords, PullState, ScopePage, Ticket, TicketComments, TicketSource, TicketText } from "../../src/plugins/contracts/tracker.ts";
 import { type Client, PAGE_SIZE, callGitHub, fetchAllPages } from "./client.ts";
-import { type IssueJson, type Repository, CLAIM_PREFIX, attachmentBody, attachmentIn, fetchComments, fetchEachIssue, fetchIssue, fetchLinkedPulls, fetchOpenChildren, fetchTicketsOf, repoPath, ticketOf } from "./issues.ts";
+import { type IssueJson, type Repository, CLAIM_PREFIX, attachmentBody, attachmentIn, fetchComments, fetchEachIssue, fetchIssue, fetchLinkedPulls, fetchOpenChildren, fetchTicketsOf, ownRepoPath, repoPath, ticketOf } from "./issues.ts";
 import { branchOf, isOpenType, keyOf, numberOf, stateNamed } from "./mapping.ts";
 import { BEFORE_PLANNING, BEFORE_WORK, currentState, fetchIssueOrThrow, moveIssueFrom, restoreIssueState, writeState } from "./moves.ts";
 
@@ -80,8 +80,8 @@ async function fetchMilestonePage(scope: Scope, project: string, after: string |
 /** A blocker as the board reads it: an issue of this repository by its key and branch, and one of another repository by its address. */
 async function fetchBlocker(scope: Scope, issue: IssueJson): Promise<Blocker> {
   const state = currentState(issue);
-  const { pulls, titles } = await fetchLinkedPulls(scope.at, issue.number);
-  if (!issue.repository_url.endsWith(scope.base)) return { key: issue.html_url, state: state.type, status: state.name, pulls, titles };
+  const { pulls, titles } = await fetchLinkedPulls(scope.at.client, issue);
+  if (ownRepoPath(issue) !== scope.base) return { key: issue.html_url, state: state.type, status: state.name, pulls, titles };
   return { key: keyOf(scope.at.prefix, issue.number), state: state.type, status: state.name, branch: branchOf(scope.at.prefix, issue.number), pulls, titles };
 }
 
@@ -128,7 +128,7 @@ function ticketOperations(scope: Scope): Pick<TicketSource, "read" | "download" 
     },
     stateTypes: (keys) => scope.fetchByKey(keys, (issue) => currentState(issue).type),
     texts: (keys) => scope.fetchByKey(keys, (issue): TicketText => ({ description: issue.body ?? "", updatedAt: issue.updated_at })),
-    pullStates: (keys) => scope.fetchByKey(keys, async (issue): Promise<Readonly<Record<string, PullState>>> => (await fetchLinkedPulls(scope.at, issue.number)).pulls),
+    pullStates: (keys) => scope.fetchByKey(keys, async (issue): Promise<Readonly<Record<string, PullState>>> => (await fetchLinkedPulls(scope.at.client, issue)).pulls),
     blockers: (keys) => scope.fetchByKey(keys, async (issue) => Promise.all((await scope.fetchBlockedBy(issue.number)).map((blocker) => fetchBlocker(scope, blocker)))),
     async projectSummaries(keys) {
       const issues = await fetchEachIssue(scope.at, keys, scope.numberFor);

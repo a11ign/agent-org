@@ -70,7 +70,7 @@ GitHub's own sub-issues are the ticket's children, and its parent issue is the t
 
 ### Blocked by
 
-GitHub's issue dependencies are Linear's "blocked by". `addBlockers` adds a dependency once, and adding it again changes nothing. A blocker in another repository is named by its address, not by a key.
+GitHub's issue dependencies are Linear's "blocked by". `addBlockers` adds a dependency once, and adding it again changes nothing. A blocker in another repository is named by its address, not by a key, and its pull requests are read from that repository.
 
 ### Plans, attachments and claims
 

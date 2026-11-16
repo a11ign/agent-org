@@ -109,6 +109,15 @@ test("pull requests are read from the issue's cross-references, and a blocker ca
     [{ key: "GH-2", state: "started", status: "In Review", branch: "gh-2", pulls: { [pull.html_url]: "merged" }, titles: { [pull.html_url]: "feat: the fix" } }]);
 });
 
+test("a blocker in another repository is named by its address, and its pull requests are read from its own repository's timeline", async () => {
+  const own = { html_url: "https://github.com/acme/other/pull/4", title: "fix: the other side", state: "open", merged_at: null };
+  const { source, github } = sourceOver([fakeIssue(1, { blockedBy: [50] }), fakeIssue(50, { repo: "acme/other", labels: ["state: In Progress"], crossReferences: [own] })]);
+  assert.deepEqual((await source.blockers!(["GH-1"])).get("GH-1"),
+    [{ key: "https://github.com/acme/other/issues/50", state: "started", status: "In Progress", pulls: { [own.html_url]: "open" }, titles: { [own.html_url]: "fix: the other side" } }]);
+  assert.ok(github.requests.some(({ path }) => path.startsWith("/repos/acme/other/issues/50/timeline")), "the timeline is asked of the blocker's own repository");
+  assert.ok(!github.requests.some(({ path }) => path.startsWith(`/repos/${FAKE_REPO}/issues/50`)), "nothing about the blocker is asked of the configured repository");
+});
+
 test("the settings are refused by name: a repository that is not owner/name, a prefix that is not a word, and an unreadable token", () => {
   const deps = fakePluginDeps();
   assert.throws(() => create({ repo: "tracker" }, deps), /tickets\.providers\.tracker\.repo must name the repository/);

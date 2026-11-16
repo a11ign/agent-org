@@ -24,6 +24,9 @@ export type Repository = Readonly<{ client: Client; owner: string; repo: string;
 /** The path of the repository's API, which every issue's path starts with. */
 export const repoPath = (at: Repository): string => `/repos/${at.owner}/${at.repo}`;
 
+/** The API path of the repository that holds `issue`, read from the issue itself: a blocker can be an issue of another repository, and is asked of its own. */
+export const ownRepoPath = (issue: IssueJson): string => new URL(issue.repository_url).pathname;
+
 /** The words a claim comment starts with: `agent-org: claimed by <claimant>` (A11-168), as the Linear plugin writes them. */
 export const CLAIM_PREFIX = "agent-org: claimed by ";
 const ATTACHMENT_LINE = /^<!-- agent-org attachment: (\S+) -->\n?/;
@@ -94,9 +97,9 @@ type TimelineEvent = Readonly<{ event: string; source?: { issue?: { html_url: st
 /** A pull request's state: merged once it has a merge time, closed when closed without one, and open otherwise, a draft included. */
 const pullStateOf = (state: string, mergedAt: string | null): PullState => (mergedAt !== null ? "merged" : state === "closed" ? "closed" : "open");
 
-/** The state and the title of each pull request that cross-references the issue, by its address: a pull request links an issue on GitHub by naming it. */
-export async function fetchLinkedPulls(at: Repository, number: number): Promise<{ pulls: Record<string, PullState>; titles: Record<string, string> }> {
-  const events = await fetchAllPages<TimelineEvent>(at.client, `${repoPath(at)}/issues/${number}/timeline`);
+/** The state and the title of each pull request that cross-references the issue, by its address: a pull request links an issue on GitHub by naming it. The timeline is read from the issue's own repository. */
+export async function fetchLinkedPulls(client: Client, issue: IssueJson): Promise<{ pulls: Record<string, PullState>; titles: Record<string, string> }> {
+  const events = await fetchAllPages<TimelineEvent>(client, `${ownRepoPath(issue)}/issues/${issue.number}/timeline`);
   const pulls: Record<string, PullState> = {};
   const titles: Record<string, string> = {};
   for (const { event, source } of events) {

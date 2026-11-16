@@ -9,6 +9,8 @@ export type FakeIssue = {
   id: number; number: number; title: string; body: string; state: "open" | "closed"; state_reason: string | null; labels: string[]; assignee: string | null; milestone: number | null;
   parent: number | null; comments: FakeComment[]; blockedBy: number[]; events: { event: string; commit_id: string | null; actor: { type: string } }[]; pullRequest?: boolean;
   crossReferences: { html_url: string; title: string; state: string; merged_at: string | null }[];
+  /** The repository that holds the issue, as `owner/name`: the fake repository's unless named, so a blocker can be an issue of another repository. */
+  repo?: string;
 };
 type Milestone = { number: number; title: string; description: string | null };
 type Answer = { status: number; body?: unknown };
@@ -40,7 +42,12 @@ function paged<T>(items: T[], query: URLSearchParams): T[] {
   return items.slice((page - 1) * size, page * size);
 }
 
-const listIssues = ({ held }: World, query: URLSearchParams) => [...held.values()].filter((issue) => (query.get("state") !== "open" || issue.state === "open")
+/** The repository that holds `issue`, as `owner/name`. */
+const repoOf = (issue: FakeIssue): string => issue.repo ?? FAKE_REPO;
+/** Whether `issue` is one of the fake repository's own, not another repository's. */
+const isOwn = (issue: FakeIssue): boolean => repoOf(issue) === FAKE_REPO;
+
+const listIssues = ({ held }: World, query: URLSearchParams) => [...held.values()].filter((issue) => isOwn(issue) && (query.get("state") !== "open" || issue.state === "open")
   && (query.get("assignee") === null || issue.assignee === query.get("assignee")) && (query.get("milestone") === null || String(issue.milestone) === query.get("milestone")));
 
 function answerIssue(world: World, issue: FakeIssue, rest: string, { method, body, query }: FakeRequest): Answer {
@@ -82,7 +89,7 @@ function answerIssue(world: World, issue: FakeIssue, rest: string, { method, bod
   }
   if (rest === "/timeline" && method === "GET") return { status: 200, body: paged(issue.crossReferences.map((pull) => ({ event: "cross-referenced", source: { issue: { ...pull, pull_request: { merged_at: pull.merged_at } } } })), query) };
   if (rest === "/events" && method === "GET") return { status: 200, body: paged(issue.events, query) };
-  return { status: 501, body: { message: `the fake does not answer ${method} ${BASE}/issues/${issue.number}${rest}` } };
+  return { status: 501, body: { message: `the fake does not answer ${method} /repos/${repoOf(issue)}/issues/${issue.number}${rest}` } };
 }
 
 function answer(world: World, url: URL, request: FakeRequest): Answer {
@@ -92,7 +99,7 @@ function answer(world: World, url: URL, request: FakeRequest): Answer {
   if (path === "/user" && method === "GET") return { status: 200, body: { login: VIEWER } };
   if (path === "/search/issues" && method === "GET") {
     const words = (url.searchParams.get("q") ?? "").split(" ").filter((word) => !word.includes(":")).join(" ").toLowerCase();
-    return { status: 200, body: { items: [...held.values()].filter((issue) => issue.state === "open" && issue.title.toLowerCase().includes(words)).map(json) } };
+    return { status: 200, body: { items: [...held.values()].filter((issue) => isOwn(issue) && issue.state === "open" && issue.title.toLowerCase().includes(words)).map(json) } };
   }
   if (path === `${BASE}/milestones` && method === "GET") return { status: 200, body: paged([...milestones], url.searchParams) };
   if (path === `${BASE}/issues` && method === "GET") return { status: 200, body: paged(listIssues(world, url.searchParams).map(json), url.searchParams) };
@@ -104,10 +111,11 @@ function answer(world: World, url: URL, request: FakeRequest): Answer {
     owner.comments = owner.comments.filter((entry) => entry.id !== id);
     return { status: 204 };
   }
-  const issuePath = new RegExp(`^${BASE}/issues/(\\d+)(/.*)?$`).exec(path);
-  const issue = issuePath === null ? undefined : held.get(Number(issuePath[1]));
+  const issuePath = /^\/repos\/([^/]+\/[^/]+)\/issues\/(\d+)(\/.*)?$/.exec(path);
+  const found = issuePath === null ? undefined : held.get(Number(issuePath[2]));
+  const issue = found !== undefined && repoOf(found) === issuePath![1] ? found : undefined;
   if (issuePath !== null && issue === undefined) return { status: 404, body: { message: "Not Found" } };
-  if (issue !== undefined) return answerIssue(world, issue, issuePath![2] ?? "", request);
+  if (issue !== undefined) return answerIssue(world, issue, issuePath![3] ?? "", request);
   return { status: 501, body: { message: `the fake does not answer ${method} ${path}` } };
 }
 
@@ -122,8 +130,8 @@ export function fakeGitHub(issues: readonly FakeIssue[], milestones: readonly Mi
     const children = [...held.values()].filter((child) => child.parent === issue.number);
     const milestone = milestones.find(({ number }) => number === issue.milestone) ?? null;
     return {
-      id: issue.id, number: issue.number, title: issue.title, body: issue.body, updated_at: tick(), html_url: `https://github.com/${OWNER}/${REPO}/issues/${issue.number}`,
-      repository_url: `https://api.github.com${BASE}`, state: issue.state, state_reason: issue.state_reason, labels: issue.labels.map((name) => ({ name })),
+      id: issue.id, number: issue.number, title: issue.title, body: issue.body, updated_at: tick(), html_url: `https://github.com/${repoOf(issue)}/issues/${issue.number}`,
+      repository_url: `https://api.github.com/repos/${repoOf(issue)}`, state: issue.state, state_reason: issue.state_reason, labels: issue.labels.map((name) => ({ name })),
       assignee: issue.assignee === null ? null : { id: 7, login: issue.assignee }, milestone,
       parent_issue_url: issue.parent === null ? null : `https://api.github.com${BASE}/issues/${issue.parent}`,
       sub_issues_summary: { total: children.length, completed: children.filter((child) => child.state === "closed").length },
