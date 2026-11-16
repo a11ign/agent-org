@@ -18,7 +18,7 @@
 import { readFileSync, statSync, writeFileSync, mkdirSync, existsSync } from "node:fs";
 import { realExecAsync } from "../plugins/real-seams.ts";
 import { dirname, join } from "node:path";
-import { herdrReason, readAgents, readAgentsAsync, rootPaneOf, type ListedAgent } from "../herdr-agents.ts";
+import { herdrReason, readAgentsAsync, rootPaneOf, type ListedAgent } from "../herdr-agents.ts";
 import { HERDR_UNIT } from "../install/herdr-place.ts";
 import { type PoolContext } from "./pool-context.ts";
 import { type RunPlace } from "./pool-paths.ts";
@@ -136,15 +136,6 @@ function writeRestartRecord(path: string, record: RestartRecord): void {
   }
 }
 
-/**
- * {@link agentTargetAsync} on the synchronous `herdr`: for the one prompt whose caller is the board's synchronous settling, a plan sent back to its planner (`pool-plan-send-back.ts`), which marks the run's file stale only
- * once the prompt went and so cannot let a pass in between. It holds the loop for as long as herdr takes, and runs a few times a day at most; `board-thread-sync-guard.test.ts` lists it.
- */
-export function agentTarget(ctx: PoolContext, { name, pane }: Pick<RunPlace, "name" | "pane">): string {
-  if (pane !== undefined) return pane;
-  return rootPaneOfListed(readAgents((args) => ctx.herdr(args), ctx.session), name);
-}
-
 /** The root pane of the workspace herdr lists under `name`, or the refusal that says herdr lists none (a listing that failed lists none). PURE. */
 function rootPaneOfListed(agents: readonly ListedAgent[] | null, name: string): string {
   const workspace = agents?.find((agent) => agent.label === name)?.workspace;
@@ -174,16 +165,6 @@ export async function agentTargetAsync(ctx: PoolContext, { name, pane }: Pick<Ru
 export async function sendToAgentAsync(ctx: PoolContext, place: Pick<RunPlace, "name" | "pane">, text: string): Promise<string | null> {
   try {
     await ctx.herdrCall(promptArgs(ctx, await agentTargetAsync(ctx, place), text), PROMPT_MS);
-    return null;
-  } catch (err) {
-    return herdrReason(err);
-  }
-}
-
-/** {@link sendToAgentAsync} on the synchronous `herdr`, for the one caller {@link agentTarget} names. */
-export function sendToAgent(ctx: PoolContext, place: Pick<RunPlace, "name" | "pane">, text: string): string | null {
-  try {
-    ctx.herdr(promptArgs(ctx, agentTarget(ctx, place), text));
     return null;
   } catch (err) {
     return herdrReason(err);

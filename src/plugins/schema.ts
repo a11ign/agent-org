@@ -6,7 +6,7 @@
 // it drew them when they were core's. A plugin's entries follow its block's `enabled` entry (`tickets.providers.<block>.enabled`), in the order the manifest declares them, and a
 // key the schema already holds is not added again: the built-ins' entries are still core's. EVERY READER OF THE SCHEMA USES THIS FUNCTION.
 import { SCHEMA, type SchemaEntry } from "../ticket-mode/config-schema.ts";
-import { blockOf } from "./concerns.ts";
+import { blockOf, type ProviderBlock } from "./concerns.ts";
 import type { Catalog } from "./manifest.ts";
 import { defaultCatalog } from "./registry.ts";
 
@@ -26,6 +26,16 @@ export function schemaOf(catalog: Catalog): readonly SchemaEntry[] {
     added.set(after, [...(added.get(after) ?? []), ...entries]);
   }
   return SCHEMA.flatMap((entry) => [entry, ...(added.get(entry.key) ?? [])]);
+}
+
+/**
+ * The keys of a block that only plugins OTHER than `provider` declare (A11-447): with two trackers in the catalog, the settings of the one a host does not name. The Settings page draws
+ * them as not in use, since the block refuses them while `provider` is named, and an edit of one would always be refused.
+ */
+export function keysOfOtherPlugins(block: ProviderBlock, provider: string, catalog: Catalog = defaultCatalog()): ReadonlySet<string> {
+  const ofBlock = catalog.plugins.filter((plugin) => blockOf(plugin.concern) === block);
+  const named = new Set(ofBlock.filter(({ name }) => name === provider).flatMap((plugin) => Object.values(plugin.settings).map(({ key }) => key)));
+  return new Set(ofBlock.filter(({ name }) => name !== provider).flatMap((plugin) => Object.values(plugin.settings).map(({ key }) => key)).filter((key) => !named.has(key)));
 }
 
 let memo: readonly SchemaEntry[] | null = null;
