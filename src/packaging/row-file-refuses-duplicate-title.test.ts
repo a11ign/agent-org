@@ -17,7 +17,6 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { appendFiledBy, titleFromArgv } from "../row-file/issue-body-and-region-checks.ts";
 import { createIssue, promoteRow } from "../row-file/roadmap-and-milestone-checks.ts";
-// eslint-disable-next-line clean-code/no-duplication -- import list: the rule matches statement shape, and imports are not duplicated logic
 import { duplicateTitleRefusal } from "../row-file/title-kind-and-label-refusals.ts";
 import { connectionOf, readsRowsByLabel } from "./rows-by-label-fixtures.ts";
 import { trackedTopLevelDirs } from "../region-paths.ts";

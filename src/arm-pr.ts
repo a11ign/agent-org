@@ -24,21 +24,18 @@ import { HOME_CHECKOUT, TICKET_ONLY_CHECKOUT, homeProjectDeclaration } from "./p
 // #2046: THE ARMED PREDICATE, IMPORTED RATHER THAN RE-DECIDED -- the mirror of the `pr-hold-state.ts`
 // line above, and for the reason this file's own header already gives about that one. It is the code host's rule now (`pr-armed-state.ts` delegates to it), asked in one place.
 import { ejectionVerdict } from "./pr-armed-state.ts";
-// eslint-disable-next-line clean-code/no-duplication -- import list: the rule matches statement shape, and imports are not duplicated logic
 import { extractClosesDeclaration } from "./acceptance-commands/acceptance-report-and-closure.ts";
 // #1969: THE REFUSAL'S SCOPE reads the pool through the code host (`graphqlPoolOf`), which reads it with `api-pool.ts`'s own parsing: a second copy of "how to read a pool" is the one place two readers
 // could silently disagree about what exhausted looks like.
 // #2391: WHAT "MAIN IS RED" MEANS IS THE GATE'S DEFINITION, IMPORTED. `newestVerdictRun` looks THROUGH a
 // cancelled or in-flight run, so the streak read below agrees with the order `work-gate.ts` wakes a fixer
 // with -- a second reading of red here would let the two disagree about whether the fix is owed.
-// eslint-disable-next-line clean-code/no-duplication -- import list: the rule matches statement shape, and imports are not duplicated logic
 import { newestVerdictRun, TRUNK_WORKFLOW } from "./trunk-red.ts";
 // agent-org#992: A LAB PULL REQUEST'S RED CROSS-REPO LEG, asked once for both arming doors (the sweep imports it from here as it does `blockerVerdict`).
 import { crossRepoRedMarker, crossRepoRedVerdict } from "./cross-repo-red.ts";
 // agent-org#1501: WHAT a11ign's `deliberateRefusals` JOB REFUSED (a head that is not the recorded tip, a `Closes` GitHub will not honour), asked here for an
 // agent pull request so the job can leave `gate`'s `needs`. Imported, never re-decided: the sweep asks the same function (`refusalBeforeArming`).
 import { deliberateRefusalVerdict } from "./deliberate-refusal.ts";
-// eslint-disable-next-line clean-code/no-duplication -- import list: the rule matches statement shape, and imports are not duplicated logic
 import { createHash } from "node:crypto";
 import { dequeuePullRequestOf } from "./ticket-port/queue-entry-reads.ts";
 import { disableAutoMergeOf, readDisarmSeat } from "./ticket-port/auto-merge-disarm.ts";

@@ -36,13 +36,10 @@ import { herdrStartRefusalReason } from "../herdr-agents.ts";
 import { closedWorkLines, closedWorkOf } from "./closed-work-account.ts";
 import { ticketDir } from "./ticket-paths.ts";
 import { doneWhenOf } from "./done-when.ts";
-// eslint-disable-next-line clean-code/no-duplication -- import list: the rule matches statement shape, and imports are not duplicated logic
 import { partialStepOf, type PlanStep } from "./board-view/plan-steps.ts";
 import { closingWordOf, type Sibling } from "./closing-word.ts";
 import { decisionsOf, hasDecisionsSection, unsupportedClaims } from "./ticket-decisions.ts";
-// eslint-disable-next-line clean-code/no-duplication -- import list: the rule matches statement shape, and imports are not duplicated logic
 import { isPlanUnreadable, planDecisions, planStepSection } from "./pool-ticket-text.ts";
-// eslint-disable-next-line clean-code/no-duplication -- import list: the rule matches statement shape, and imports are not duplicated logic
 import { escalationList } from "./escalation.ts";
 import { heldBy, recordRefusedRereview } from "./pool-standoff.ts";
 import { isRereviewComment } from "./standoff-words.ts";

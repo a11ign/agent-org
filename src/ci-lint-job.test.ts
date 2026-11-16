@@ -6,7 +6,7 @@
 // everything would pass the real files too), so a mutation that the check does not see turns the test red.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { parse } from "yaml";
 import { LINT_TARGETS } from "../scripts/lint-cache.ts";
@@ -24,8 +24,15 @@ const read = (path: string) => readFileSync(`${REPO}${path}`, "utf8");
  * The packages whose version the lint job must install exactly as reviewed. The test names them and never their versions: a Dependabot bump moves the manifest and the lockfile
  * together and passes; a hand edit of one side, a range, or a missing entry does not.
  */
-const LINT_TOOLS = ["eslint", "typescript-eslint", "@george2f/eslint-plugin-clean-code"] as const;
+const LINT_TOOLS = ["eslint", "typescript-eslint", "eslint-plugin-clean-code-book", "eslint-plugin-jsdoc"] as const;
 const EXACT_VERSION = /^\d+\.\d+\.\d+$/;
+/**
+ * The lint tools that have no published home yet, so they are pinned by a tarball committed under `vendor/`: the file name carries the version, and the lockfile
+ * records its integrity. eslint-plugin-clean-code-book is one until the plugin moves to its next repository.
+ */
+const VENDORED_LINT_TOOLS: readonly string[] = ["eslint-plugin-clean-code-book"];
+/** A vendored pin: `file:vendor/<name>-<version>.tgz`. */
+const vendoredPin = (name: string): RegExp => new RegExp(`^file:vendor/${name}-[0-9][\\w.+-]*\\.tgz$`);
 /** What a failure of the pin or lockfile check says the invariant is, and how a lint tool's version moves. */
 const LINT_PIN_INVARIANT = `the lint job installs a reviewed ESLint tree from the lockfile. So each of ${LINT_TOOLS.join(", ")} is in devDependencies with an exact version (no range), `
   + "and pnpm-lock.yaml's root importer has that same specifier and resolves exactly that version. The version itself is free to move: it moves in a Dependabot pull request, "
@@ -75,11 +82,18 @@ function pinProblems(pins: Pins): string[] {
   for (const name of LINT_TOOLS) {
     const range = pins.devDependencies?.[name];
     if (range === undefined) problems.push(`${name} is not in devDependencies`);
+    else if (VENDORED_LINT_TOOLS.includes(name)) problems.push(...vendoredProblems(name, range));
     else if (!EXACT_VERSION.test(range)) problems.push(`${name} is ${range} in devDependencies, a range and not an exact version`);
   }
   if (pins.scripts?.lint !== LINT_SCRIPT) problems.push(`the lint script is ${JSON.stringify(pins.scripts?.lint)}, not \`${LINT_SCRIPT}\``);
   if (JSON.stringify(LINT_TARGETS) !== JSON.stringify(LINT_SCOPE)) problems.push(`the lint script lints ${LINT_TARGETS.join(" ")}, not ${LINT_SCOPE.join(" ")}`);
   return problems;
+}
+
+/** What is wrong with a vendored lint tool's pin `range`: not a `file:vendor/<name>-<version>.tgz` specifier for `name`, or a tarball that is not in the tree. */
+function vendoredProblems(name: string, range: string): string[] {
+  if (!vendoredPin(name).test(range)) return [`${name} is ${range} in devDependencies, not a file:vendor/${name}-<version>.tgz tarball`];
+  return existsSync(`${REPO}${range.slice("file:".length)}`) ? [] : [`${name}'s tarball ${range.slice("file:".length)} is not in the tree`];
 }
 
 /** The lockfile agrees with the manifest on each lint tool: the same specifier, resolved to exactly that version. The install the lint job makes is the one that was reviewed. */
@@ -153,11 +167,11 @@ const nextPatch = (version: string): string => {
   return `${major}.${minor}.${patch + 1}`;
 };
 
-/** The manifest and lockfile as one Dependabot update leaves them: every lint tool moved one patch, on both sides. */
+/** The manifest and lockfile as one Dependabot update leaves them: every published lint tool moved one patch, on both sides. A vendored one has no Dependabot to move it. */
 const bumpedTogether = (): { pins: Pins; lock: Lock } => {
   const bumpedPins = clone(pins);
   const bumpedLock = clone(lock);
-  for (const name of LINT_TOOLS) {
+  for (const name of LINT_TOOLS.filter((tool) => !VENDORED_LINT_TOOLS.includes(tool))) {
     const next = nextPatch(pins.devDependencies?.[name] ?? "");
     bumpedPins.devDependencies = { ...bumpedPins.devDependencies, [name]: next };
     const entry = bumpedLock.importers["."].devDependencies?.[name];
@@ -187,6 +201,13 @@ test("the pin check sees a range, a missing tool, and a lint script over another
   assert.match(pinProblems(otherScope).join("\n"), /lint script/);
 });
 
+test("a vendored lint tool is pinned by a tarball in vendor/, and a range, another path or a missing file is refused, on a copy", () => {
+  const withPin = (pin: string): Pins => ({ ...clone(pins), devDependencies: { ...pins.devDependencies, "eslint-plugin-clean-code-book": pin } });
+  assert.match(pinProblems(withPin("^0.1.0")).join("\n"), /not a file:vendor\/eslint-plugin-clean-code-book-<version>\.tgz tarball/);
+  assert.match(pinProblems(withPin("file:elsewhere/eslint-plugin-clean-code-book-0.1.0.tgz")).join("\n"), /not a file:vendor/);
+  assert.match(pinProblems(withPin("file:vendor/eslint-plugin-clean-code-book-9.9.9.tgz")).join("\n"), /is not in the tree/);
+});
+
 test("the lockfile check sees a manifest that disagrees with it, a package that resolves to another version, and a missing entry, on a copy", () => {
   const bumped = bumpedTogether();
   assert.match(lockProblems(lock, bumped.pins).join("\n"), /pnpm-lock\.yaml has eslint at specifier .*, but package\.json declares /);
@@ -198,6 +219,6 @@ test("the lockfile check sees a manifest that disagrees with it, a package that 
   assert.match(lockProblems(drifted, pins).join("\n"), new RegExp(`typescript-eslint to ${drift.replaceAll(".", "\\.")}`));
 
   const unlisted = clone(lock);
-  delete unlisted.importers["."].devDependencies?.["@george2f/eslint-plugin-clean-code"];
-  assert.match(lockProblems(unlisted, pins).join("\n"), /does not list @george2f\/eslint-plugin-clean-code/);
+  delete unlisted.importers["."].devDependencies?.["eslint-plugin-clean-code-book"];
+  assert.match(lockProblems(unlisted, pins).join("\n"), /does not list eslint-plugin-clean-code-book/);
 });

@@ -23,7 +23,6 @@ import { gateHelpers } from "../plugins/reviewing-gate.ts";
 import type { ContractRow } from "../ticket-mode/plugin-contract.ts";
 import type { PluginContract, PluginState } from "../ticket-mode/plugins.ts";
 import type { StatusFile, UpdateStatus } from "./update-safety.ts";
-// eslint-disable-next-line clean-code/no-duplication -- import list: the rule matches statement shape, and imports are not duplicated logic
 import type { HerdrPlace } from "./herdr-place.ts";
 import type { RunVersion } from "../ticket-mode/queue/queue-pins.ts";
 import { createTailscale, freshState, type TailscaleState } from "../../plugins/tailscale/stub.ts";
@@ -466,7 +465,6 @@ const scopeOf = async (over: Partial<DoctorDeps>) => byName(await diagnose(deps(
 
 test("A11-169: herdr scope passes for a server in agent-org-herdr.service, and fails inside the instance's cgroup and in the old transient scope, each with the --move command", async () => {
   const unit = await scopeOf({});
-  // eslint-disable-next-line clean-code/no-duplication -- a test asserts one row's fields in turn, as the tests around it do
   assert.equal(unit.ok, true);
   assert.equal(unit.detail, "the herdr server for session tickets is in agent-org-herdr.service (/user.slice/agent-org-herdr.service), so a restart of the instance, the ui or the terminal never reaches it");
   const inside = await scopeOf({ herdrPlace: () => ({ kind: "instance", where: "/user.slice/agent-org-instance.service" }) });
@@ -534,7 +532,6 @@ test("with the exposure on the tailnet, doctor checks each served port's entry, 
 
 test("a served port with no entry, another entry, or Funnel on it fails with its fix, and the exposure's row fails with the first", async () => {
   const none = byName(await diagnose(tailnetDeps(freshState())));
-  // eslint-disable-next-line clean-code/no-duplication -- a test asserts one row's fields in turn, as the tests around it do
   assert.equal(none["ui tailnet entry"].ok, false);
   assert.equal(none["ui tailnet entry"].fix, "run `agent-org start ui`");
   assert.equal(none["exposure (tailscale)"].ok, false);

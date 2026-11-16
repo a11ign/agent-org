@@ -38,11 +38,12 @@
   },
   "devDependencies": {
     "@changesets/cli": "3.0.3",
-    "@george2f/eslint-plugin-clean-code": "0.5.0",
     "@rstest/core": "^0.12.5",
     "@types/node": "^25.9.9",
     "eslint": "10.14.0",
     "eslint-plugin-astro": "3.2.1",
+    "eslint-plugin-clean-code-book": "file:vendor/eslint-plugin-clean-code-book-0.0.0-main.5e93434.tgz",
+    "eslint-plugin-jsdoc": "65.4.2",
     "jiti": "2.7.0",
     "typescript": "^6.0.3",
     "typescript-eslint": "8.72.1",

@@ -20,12 +20,10 @@ import { rerunCancelledGate } from "./pool-cancelled-gate.ts";
 import { conflictLines, feedbackSince, markOutcomeStale, outcomeWritten, parseOutcome, publishResult, QUESTION_CHARS } from "./pool-outcome.ts";
 import { isParked, isWatched, mergesBase, resumesOnConflict } from "./board-view/pull-status-and-notes.ts";
 import { type Background, BACKGROUND_GONE, BACKGROUND_GONE_MS, type Entry, proposedEdit, type Queue, replace, SETTLED, type WorkingNote, type WriterRun, type WrittenOutcome } from "./queue/queue-entries-and-outcomes.ts";
-// eslint-disable-next-line clean-code/no-duplication -- import list: the rule matches statement shape, and imports are not duplicated logic
 import { deadlineOf, wakeRefused } from "./wait-on/wait-note.ts";
 import { wakePrompt } from "./wait-on/wait-prompt.ts";
 import { reseatMoved, resumeAfterRestart, sendToAgentAsync, watchIdle } from "./pool-resume.ts";
 import { sessionResultsFrom } from "./session-answers.ts";
-// eslint-disable-next-line clean-code/no-duplication -- import list: the rule matches statement shape, and imports are not duplicated logic
 import { fleetJobStatusVia, type WaitSeams } from "./wait-on/wait-read.ts";
 import { judgedWait, pollWhenDue } from "./wait-on/wait-watch.ts";
 import type { Judged } from "./wait-on/wait-verdict.ts";
@@ -54,7 +52,6 @@ import { recordWaits } from "./queue/queue-long-waits.ts";
 import { ageHolds } from "./ci-spend/hold.ts";
 import { watchCiSpend } from "./ci-spend/watch.ts";
 import { joinRunning, readEach } from "./pool-reads.ts";
-// eslint-disable-next-line clean-code/no-duplication -- import list: the rule matches statement shape, and imports are not duplicated logic
 import { readoptCrashed } from "./pool-readopt.ts";
 import { answerChecks, type CheckAnswer } from "./pool-checks.ts";
 import type { RoundOptions } from "./queue/queue-cap.ts";
@@ -588,7 +585,6 @@ export async function tick(ctx: PoolContext): Promise<void> {
       const sweeping = sweepRunTmp(ctx);
       if (sweeping !== undefined) await sweeping;
       // A draining update's deadline (A11-169): the runs still live are stopped and queued again before the pass fills slots, which a drain starts nothing in.
-      // eslint-disable-next-line clean-code/no-duplication -- the same two lines as the steps above: a helper that awaits would take the turn of the event loop these steps avoid when they have nothing to do (A11-282)
       const draining = forceDrain(ctx);
       if (draining !== null) await draining;
       // A run whose worker waits on a ticket not done lets go of its slot and its files, and is queued behind it, before the pass fills slots (A11-272).

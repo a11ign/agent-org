@@ -41,7 +41,6 @@ import { defaultCatalog } from "../plugins/registry.ts";
 import { API_BODY_BYTES, readJson, refusal, sameSecret, sendJson, type Json, type Served } from "./local-http.ts";
 import { createPairing, PAIR_MINUTES, type Pairing } from "./pairing.ts";
 import { createLastKnown, lastKnownDir, type LastKnown } from "./last-known.ts";
-// eslint-disable-next-line clean-code/no-duplication -- import list: the rule matches statement shape, and imports are not duplicated logic
 import { proxy, type Forward } from "./remote-proxy.ts";
 import { readTicketSettings } from "./settings.ts";
 import type { TerminalRun } from "./terminal-pair.ts";

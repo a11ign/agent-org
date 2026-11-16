@@ -18,7 +18,6 @@ import { tmpdir } from "node:os";
 import { basename, delimiter, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { chromium, type Browser, type Page } from "playwright-core";
-// eslint-disable-next-line clean-code/no-duplication -- import list: the rule matches statement shape, and imports are not duplicated logic
 import { sandboxGitEnv } from "../src/lib/git-env.ts";
 import { buildVersion, fetchMirror, mirrorGit, seedMirror, swapCurrent, withUpdateLock, type Exec } from "../src/install/tool-install.ts";
 import { clearDrain, drainPath, readDrain, writeDrain } from "../src/install/update-drain.ts";

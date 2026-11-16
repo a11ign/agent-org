@@ -32,11 +32,8 @@ import { runCommand } from "./command-exit.ts";
 import { sandboxGitEnv } from "../lib/git-env.ts";
 import { chooseReleaseTag, compareReleaseTags, isReleaseTag, isToolVersion, LATEST } from "../lib/release-tag.ts";
 import { defaultServiceDeps, registerService, reloadService, restartService, serviceState, TOOL_SERVICES, type ServiceDeps, type ServiceName, type ServiceState } from "./service.ts";
-// eslint-disable-next-line clean-code/no-duplication -- import list: the rule matches statement shape, and imports are not duplicated logic
 import { hostFilePath, readOrNull, TOOL_ROOT } from "./paths.ts";
-// eslint-disable-next-line clean-code/no-duplication -- import list: the rule matches statement shape, and imports are not duplicated logic
 import { hostSettings, readLiveRuns, readQueue, readStartingRuns } from "./instance-queue.ts";
-// eslint-disable-next-line clean-code/no-duplication -- import list: the rule matches statement shape, and imports are not duplicated logic
 import { toolRootsInUse } from "../ticket-mode/queue/queue-pins.ts";
 import type { TicketSettings } from "../ticket-mode/settings.ts";
 import { pinnedPnpm } from "./pnpm.ts";
