@@ -1,5 +1,0 @@
----
-"agent-org": minor
----
-
-The gate boards a row that is off Project 1 and carries a Status-naming label, and `product-manager` is woken only for the rest. `settleOffBoardRows` (`src/work-gate.ts`) takes the `row-off-board` facts before the order is made: each row that is provably off the board and past the grace, was read in this tick's open rows and carries exactly one of `ready`, `backlog`, `in-progress` is boarded through the ticket port's `changeState` (the adapter adds the item, then sets the Status) and recorded on the row as one `postDecision` (`kind: row-off-board`). A row with no such label, two state labels, `parked` beside one, an `epic`, one whose write failed or one not among the open rows keeps its place in the order, whose text for those rows is unchanged. The gate declares no release (the port has no milestone write, so no rule is mechanical): a boarded row that declares none is named once, in a paragraph that asks only for the declaration. `A11IGN_ROW_OFF_BOARD_BY_GATE=off` in the tick's environment restores today's order, with no write. a11ign/agent-org#490.
