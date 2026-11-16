@@ -3,6 +3,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { criticalPathNote, criticalPaths } from "./critical-path.ts";
+import { stackedOn, waitsOn } from "./pull-status-and-notes.ts";
+import { stackWaitNote } from "./stack-wait.ts";
 import type { ViewEntry } from "./view-types-and-filters.ts";
 
 const entry = (key: string, over: Record<string, unknown> = {}) => ({ ticket: { key }, phase: "queued", ...over }) as unknown as ViewEntry;
@@ -66,11 +68,38 @@ test("A11-442: a run on a cycle of blockers is on no path, nor is a run whose on
   assert.deepEqual(paths([entry("A-2", after("A-1")), entry("A-1", after("A-2")), entry("A-3", after("A-2"))]), {}, "whichever run the walk starts from");
 });
 
-test("A11-442: a blocker whose relation was canceled, or that the run was stopped for, joins nothing, as the Waits on line drops it", () => {
-  const canceled = { blockers: [{ key: "A-1", state: "canceled", status: "Canceled" }] };
-  assert.deepEqual(paths([entry("A-1"), entry("A-2", canceled)]), {});
-  const stopped = { ...after("A-1"), stoppedForBlocker: { at: 1, keys: ["A-1"] } };
-  assert.deepEqual(paths([entry("A-1"), entry("A-2", stopped)]), {});
+test("A11-442: a blocker is on the path when the run's Waits on line names it, whatever its state, as `waitsOn` reads it", () => {
+  const canceled = entry("A-2", { blockers: [{ key: "A-1", state: "canceled", status: "Canceled" }] });
+  const entries = [entry("A-1"), canceled];
+  assert.deepEqual(waitsOn(canceled, entries).map(({ key }) => key), ["A-1"], "the card says it waits on A-1 (Canceled)");
+  assert.deepEqual(paths(entries), { "A-1": ["A-1", "A-2"], "A-2": ["A-1", "A-2"] });
+});
+
+test("A11-442: a blocker the run was stopped for stays on the path while that wait lasts, as `waitsOn` keeps it", () => {
+  const stopped = { blockers: [{ key: "A-1", state: "started", status: "In Progress" }], stoppedForBlocker: { at: 1, keys: ["A-1"] } };
+  assert.deepEqual(paths([entry("A-1", { phase: "running" }), entry("A-2", stopped)]), { "A-1": ["A-1", "A-2"], "A-2": ["A-1", "A-2"] });
+});
+
+const PULL = "https://github.com/a11ign/agent-org/pull/7";
+const MEMBER = "https://github.com/a11ign/agent-org/pull/8";
+
+test("A11-442: a run the board starts stacked on its blocker is still after it on the path: it starts on the blocker's open pull request, but merges after it", () => {
+  const base = entry("A-1", { phase: "finished", outcome: { kind: "ready-pr", prs: [{ repo: "a11ign/agent-org", url: PULL }] } });
+  const member = entry("A-2", { plannedRepo: "agent-org", blockers: [{ key: "A-1", state: "started", status: "In Review", branch: "a-1", pulls: { [PULL]: "open" } }] });
+  const entries = [base, member];
+  assert.deepEqual(stackedOn(member, entries).map(({ key }) => key), ["A-1"], "the board shows it as Stacked on A-1");
+  assert.deepEqual(waitsOn(member, entries), [], "and not as waiting on it");
+  assert.deepEqual(paths(entries), { "A-1": ["A-1", "A-2"], "A-2": ["A-1", "A-2"] });
+});
+
+test("A11-442: a run whose open pull request is built on another run's, with no blocker listed, is after it on the path while its pull request waits on that one", () => {
+  const base = entry("A-1", { phase: "finished", outcome: { kind: "ready-pr", prs: [{ repo: "a11ign/agent-org", url: PULL }] } });
+  const stackBase = { key: "A-1", repo: "agent-org", branch: "a-1", sha: "abc" };
+  const member = entry("A-2", { phase: "finished", outcome: { kind: "ready-pr", prs: [{ repo: "a11ign/agent-org", url: MEMBER }] }, stackBase });
+  assert.ok(stackWaitNote(member, [base, member])?.startsWith("waits on #7"));
+  assert.deepEqual(paths([base, member]), { "A-1": ["A-1", "A-2"], "A-2": ["A-1", "A-2"] });
+  const merged = entry("A-1", { ...base, pullStates: { [PULL]: "merged" } });
+  assert.deepEqual(paths([merged, member]), {}, "once the base has merged, the member waits on nothing");
 });
 
 test("A11-442: only a ticket's newest run is marked: the row of an older run of it, that failed before it was queued again, has no line", () => {

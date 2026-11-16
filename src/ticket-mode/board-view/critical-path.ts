@@ -2,17 +2,15 @@
 // module: the critical path of the runs on the board (A11-442) -- in each set of runs joined by their blockers, the longest chain of runs still to finish, which decides when the set finishes
 //
 // A BATCH'S ORDER BECOMES BLOCKERS. The board writes a planned batch's `order.json` to the tracker as blockers (`batch-order.ts`), and a run that starts alone leaves its batch, so the
-// blockers are what still joins a batch's runs once they start. The path is read from them: each run's tracker-listed blockers that still hold it up (as `waitsOn` reads them) and are runs still to finish on
-// the board, each ticket's newest run alone. A run that is Completed, Cancelled or Checked has nothing left to decide, a run on a cycle of blockers is left to the cycle's own note, and a blocker the board holds no run for is not drawn. A chain of one run is no path: a run with nothing before or after it is not marked.
+// blockers are what still joins a batch's runs once they start. The path is read from them: each run's blockers that it waits on or is stacked on, as the board's own `waitsOn` and `stackedOn` read them, that are runs still
+// to finish on the board, each ticket's newest run alone. A run that is Completed, Cancelled or Checked has nothing left to decide, a run on a cycle of blockers is left to the cycle's own note, and a blocker the board holds no run for is not drawn. A chain of one run is no path: a run with nothing before or after it is not marked.
 // PURE, and it uses no Node API, since the Runs page runs it in the browser.
-import { runStatus } from "./pull-status-and-notes.ts";
+import { runStatus, stackedOn, waitsOn } from "./pull-status-and-notes.ts";
+import { stackWaitNote } from "./stack-wait.ts";
 import type { ViewEntry } from "./view-types-and-filters.ts";
 
 /** The statuses of a run with nothing left to do: it holds up no other run. Checked found nothing to change. */
 const OVER: ReadonlySet<string> = new Set(["completed", "cancelled", "checked"]);
-
-/** The tracker states of a blocker that holds nothing up, as `waitsOn` reads them: it is done, or the relation was canceled. */
-const SETTLED_BLOCKER: ReadonlySet<string> = new Set(["completed", "canceled"]);
 
 /** The fewest runs a chain needs to be a path: a run alone decides nothing beyond itself. */
 const SHORTEST_PATH = 2;
@@ -33,11 +31,15 @@ function newestRuns(entries: readonly ViewEntry[]): ReadonlyMap<string, ViewEntr
   return newest;
 }
 
-/** The keys of the runs in `open` that `entry` waits on: its tracker-listed blockers that still hold it up and that it was not stopped for, once each, never itself, in key order. */
-function blockersIn(entry: ViewEntry, open: ReadonlySet<string>): string[] {
-  const stoppedFor = new Set(entry.stoppedForBlocker?.keys ?? []);
-  const holding = (entry.blockers ?? []).filter(({ key, state }) => !SETTLED_BLOCKER.has(state) && !stoppedFor.has(key)).map(({ key }) => key);
-  return [...new Set(holding)].filter((key) => key !== entry.ticket.key && open.has(key)).sort();
+/**
+ * The keys of the runs in `open` that `entry` cannot finish before, in key order, read with the board's own rules: the blockers it waits on (`waitsOn`, which drops a done or canceled one and keeps
+ * one it was stopped for until that wait ends), the blockers it starts stacked on (`stackedOn`), and the run its open pull request is built on while that pull request still waits on it
+ * (`stackWaitNote`). A stacked run is not held from starting, but its pull request merges only after its base's, so its base still decides when the set finishes.
+ */
+function blockersIn(entry: ViewEntry, entries: readonly ViewEntry[], open: ReadonlySet<string>): string[] {
+  const built = entry.stackBase !== undefined && stackWaitNote(entry, entries) !== null ? [entry.stackBase.key] : [];
+  const keys = [...waitsOn(entry, entries), ...stackedOn(entry, entries)].map(({ key }) => key).concat(built);
+  return [...new Set(keys)].filter((key) => key !== entry.ticket.key && open.has(key)).sort();
 }
 
 /** The keys among `waits` (each key to the keys it waits on) that lie on a cycle: a key that its own waits lead back to. `wait-cycles.ts` reports such a cycle, and its runs are on no path. */
@@ -60,7 +62,7 @@ function onCycles(waits: ReadonlyMap<string, readonly string[]>): ReadonlySet<st
 function graphOf(entries: readonly ViewEntry[]): Graph {
   const runs = [...newestRuns(entries).values()].filter((entry) => !OVER.has(runStatus(entry, entries)));
   const open = new Set(runs.map(({ ticket }) => ticket.key));
-  const waits = new Map(runs.map((entry) => [entry.ticket.key, blockersIn(entry, open)]));
+  const waits = new Map(runs.map((entry) => [entry.ticket.key, blockersIn(entry, entries, open)]));
   const cycled = onCycles(waits);
   const keys = [...open].filter((key) => !cycled.has(key)).sort();
   const after = new Map(keys.map((key) => [key, (waits.get(key) ?? []).filter((blocker) => !cycled.has(blocker))]));
