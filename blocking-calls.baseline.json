@@ -4,7 +4,6 @@
     "plugins/github/command-exec.ts",
     "plugins/linear/key.ts",
     "src/ticket-mode/hook.ts",
-    "src/ticket-mode/pair-command.ts",
     "src/ticket-mode/plugin-contract.ts",
     "src/ticket-mode/pool-herdr.ts",
     "src/ticket-mode/ui-server.ts"

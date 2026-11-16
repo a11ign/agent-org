@@ -3,7 +3,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { tmpDir } from "../lib/tmp-fixture.ts";
 import { boardKey, boardKeyPath } from "./board-key.ts";
-import { type Exposed, exposedBy, pairingCode, runPair, terminalPair, type PairDeps, type TerminalDeps } from "./pair-command.ts";
+import { type Exposed, exposedBy, pairingCode, runOnThisTerminal, runPair, terminalPair, type PairDeps, type TerminalDeps } from "./pair-command.ts";
 import { createFakeExposure } from "../plugins/fakes/exposure.ts";
 import { parseTicketSettings, type TicketSettings } from "./settings.ts";
 
@@ -65,7 +65,7 @@ function pairDeps(over: Partial<PairDeps> = {}, exposed: Exposed = loopback) {
   const deps: PairDeps = {
     board: async () => ({ code: "ABCD-EFGH", minutes: 10 }),
     terminal: () => machine,
-    run: (program) => { ran.push({ argv: program.argv, cwd: program.workingDirectory, env: program.environment }); return 0; },
+    run: async (program) => { ran.push({ argv: program.argv, cwd: program.workingDirectory, env: program.environment }); return 0; },
     exposed: async () => exposed,
     out: (text) => out.push(text),
     err: (text) => err.push(text),
@@ -115,7 +115,7 @@ test("ticket:pair --board prints the board's code and never runs the plugin, eve
 });
 
 test("ticket:pair with the terminal down exits 1 with the fix, after the board's code is printed", async () => {
-  const { deps, out, err } = pairDeps({ run: () => 1 }, tailnet());
+  const { deps, out, err } = pairDeps({ run: async () => 1 }, tailnet());
   assert.equal(await runPair("both", withTerminal(true), deps), 1);
   assert.match(out[0], /^ABCD-EFGH/, "the board's code is still printed");
   assert.match(err.join(""), /agent-org start terminal/);
@@ -202,4 +202,35 @@ test("A11-162: exposedBy asks the exposure for its ports first and for a name on
   assert.deepEqual([exposed.ports, exposed.name, exposed.terminal(9444)], [{ ui: 9443, terminal: 9444 }, NAME, `https://${NAME}:9444/?ws={workspace}&pane={pane}&view=terminal`]);
   const unnamed = await exposedBy(Object.assign(createFakeExposure(NAME), { machineName: async () => null }))();
   assert.equal(unnamed.terminal(9444), null, "an exposure that cannot name this machine gives no terminal address");
+});
+
+/** A program that runs this node with `script`, in the temporary directory, under `environment`: it prints nothing, so the inherited output stays clean. */
+const nodeProgram = (script: string, environment: Record<string, string> = {}) => ({ argv: [process.execPath, "-e", script], environment, workingDirectory: tmpDir("ticket-pair-run-") });
+
+test("A11-433: runOnThisTerminal runs the plugin without holding the event loop, and answers its exit status once it has exited", async () => {
+  let ticks = 0;
+  const timer = setInterval(() => { ticks += 1; }, 10);
+  try {
+    const status = await runOnThisTerminal(nodeProgram("setTimeout(() => process.exit(3), 300)"));
+    assert.equal(status, 3, "the plugin's own exit status");
+    assert.ok(ticks >= 5, `the loop turned while the plugin ran (${ticks} ticks of 10 ms in 300 ms)`);
+  } finally {
+    clearInterval(timer);
+  }
+});
+
+test("A11-433: runOnThisTerminal runs the program in its working directory, under its environment over this process's", async () => {
+  const program = nodeProgram("process.exit(process.cwd() === process.env.WANT_CWD && process.env.PATH ? 0 : 7)");
+  assert.equal(await runOnThisTerminal({ ...program, environment: { WANT_CWD: program.workingDirectory } }), 0);
+});
+
+test("A11-433: runOnThisTerminal answers 1 and says why when the program cannot start", async () => {
+  const said: string[] = [];
+  const missing = { argv: ["/nonexistent/bun", "pair"], environment: {}, workingDirectory: tmpDir("ticket-pair-run-") };
+  assert.equal(await runOnThisTerminal(missing, (text) => said.push(text)), 1);
+  assert.match(said.join(""), /^ticket:pair: spawn \/nonexistent\/bun ENOENT\n$/);
+});
+
+test("A11-433: runOnThisTerminal answers 1 when a signal ends the program, which has no exit status", async () => {
+  assert.equal(await runOnThisTerminal(nodeProgram("process.kill(process.pid, 'SIGTERM')")), 1);
 });
