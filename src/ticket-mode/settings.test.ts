@@ -27,7 +27,7 @@ test("only `clones` is required, every repository in it is offered, and every ot
 
 test("the `tickets` block and `stateDir` override the defaults", () => {
   const settings = parseTicketSettings({ clones, stateDir: "/state", tickets: { max: 5, port: 5000, herdrSession: "nbl", worktreeRoot: "/wt", linearKey: { path: "/keys/linear" } } });
-  assert.deepEqual({ ...settings, clones: undefined, providers: undefined }, { clones: undefined, providers: undefined, stackRequired: true, takenStates: [], max: 5, port: 5000, uiPort: 4748, herdrSession: "nbl", instance: defaultInstance(), worktreeRoot: "/wt", stateDir: "/state", binDir: join(homedir(), ".local", "bin"), brief: null, review: null, deny: [], plugins: [], terminal: null, plan: null, planner: null, writer: null, preflight: [], workingState: null, connectors: [], publish: null, drafts: true, designTools: false, capture: false, prReview: null, reviewer: null, reviewerRequired: false, publishWhen: "ready-to-merge", pick: "assigned", stallMinutes: 30, ciBudgetMinutes: 300, updateMaxDeferHours: 2 });
+  assert.deepEqual({ ...settings, clones: undefined, providers: undefined }, { clones: undefined, providers: undefined, stackRequired: true, takenStates: [], max: 5, port: 5000, uiPort: 4748, herdrSession: "nbl", instance: defaultInstance(), worktreeRoot: "/wt", stateDir: "/state", binDir: join(homedir(), ".local", "bin"), brief: null, review: null, deny: [], plugins: [], terminal: null, plan: null, planner: null, writer: null, preflight: [], workingState: null, connectors: [], publish: null, drafts: true, designTools: false, fixRedMain: true, capture: false, prReview: null, reviewer: null, reviewerRequired: false, publishWhen: "ready-to-merge", pick: "assigned", stallMinutes: 30, ciBudgetMinutes: 300, updateMaxDeferHours: 2 });
 });
 
 test("A11-261: the CI budget is a whole number of weighted minutes per ticket, 300 by default, and 0 is none", () => {
@@ -135,6 +135,12 @@ test("a machine gives its workers no design tool unless it says so", () => {
   assert.equal(parseTicketSettings({ clones }).designTools, false);
   assert.equal(parseTicketSettings({ clones, tickets: { designTools: true } }).designTools, true);
   assert.equal(parseTicketSettings({ clones, tickets: { designTools: false } }).designTools, false);
+});
+
+test("A11-428: a machine files fix tickets for checks red on main unless tickets.fixRedMain is false, and refuses any other value by name", () => {
+  assert.equal(parseTicketSettings({ clones }).fixRedMain, true);
+  assert.equal(parseTicketSettings({ clones, tickets: { fixRedMain: false } }).fixRedMain, false);
+  assert.throws(() => parseTicketSettings({ clones, tickets: { fixRedMain: "no" } }), (err: unknown) => err instanceof TicketSettingsRefusal && err.field === "tickets.fixRedMain");
 });
 
 test("a machine can capture the board for its workers only where both Chromium builds start, which onboard says by writing tickets.capture", () => {
@@ -323,7 +329,7 @@ test("a machine names how a new ticket is written from a person's request: the w
 test("A11-124: the writer's instruction may name the board's mode with {mode}, which is optional, and the shipped example and its fixtures name no mode", () => {
   const withMode = "Run the a11ign:create-ticket skill, {mode}, for this request: {request}. Write each draft under {dir}/drafts.";
   assert.deepEqual(parseTicketSettings({ clones, tickets: { writer: { run: withMode } } }).writer?.run, withMode, "{mode} is accepted, and not required");
-  // The shipped example is the schema's words for `tickets.writer.run`: the README's key table no longer carries example values (A11-141).
+  // The shipped example is the schema's words for `tickets.writer.run`: the key table in docs/guide/configuration.md no longer carries example values (A11-141).
   const writerRun = SCHEMA.find((entry) => entry.key === "tickets.writer.run")?.explanation ?? "";
   const example = /Run the a11ign:create-ticket skill[^"`]*\{dir\}\./.exec(writerRun)?.[0];
   assert.ok(example, "POSITIVE CONTROL: the schema's example is found");

@@ -507,3 +507,44 @@
   padding-left: var(--space-24);
   color: var(--color-text-count);
 }
+
+/*
+ * Phone, 640px and below (A11-427): the inputs, selects and buttons of Settings and Plugins are 44px, the unsaved-changes bar stands over the tab bar, and the review and confirm dialogs are full-width
+ * bottom sheets.
+ */
+@media (max-width: 640px) {
+  .settings-check,
+  .settings-switch,
+  .review-tick {
+    min-height: var(--hit-target);
+  }
+  .settings :where(button, select, input:not([type="checkbox"], [type="radio"])),
+  .plugins :where(button, select, input:not([type="checkbox"], [type="radio"])),
+  .dialog :where(button) {
+    min-height: var(--hit-target);
+  }
+  .unsaved-stack {
+    position: fixed;
+    left: var(--space-12);
+    right: var(--space-12);
+    bottom: var(--bar-bottom-phone);
+    z-index: var(--z-tabbar);
+    margin: 0;
+  }
+  .shell-main:has(.unsaved-stack) {
+    padding-bottom: var(--page-bottom-phone-with-bar);
+  }
+  .dialog-overlay {
+    align-items: flex-end;
+    padding: 0;
+  }
+  .dialog {
+    width: 100%;
+    max-height: var(--sheet-max-height);
+    overflow-y: auto;
+    border-radius: var(--radius-sheet) var(--radius-sheet) 0 0;
+  }
+  .dialog-foot {
+    padding-bottom: calc(var(--space-12) + var(--safe-bottom));
+  }
+}

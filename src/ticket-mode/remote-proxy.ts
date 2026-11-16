@@ -27,13 +27,16 @@ export type Forward = (target: Target, request: ForwardRequest) => Promise<Forwa
 const FORWARD_MS = 30_000;
 /** The most an instance's answer may hold. The largest is a list of tickets. */
 const ANSWER_BYTES = 8 * 1024 * 1024;
-const READS = new Set(["/api/config", "/api/tickets", "/api/people", "/api/projects", "/api/search", "/api/parents", "/api/pick", "/api/queue", "/api/writer", "/api/settings", "/api/plugins", "/api/health", "/api/interventions", "/api/flakes"]);
+const READS = new Set(["/api/config", "/api/tickets", "/api/people", "/api/projects", "/api/search", "/api/parents", "/api/pick", "/api/queue", "/api/writer", "/api/settings", "/api/plugins", "/api/health", "/api/interventions", "/api/flakes", "/api/outcomes"]);
 const WRITES = new Set(["/api/queue", "/api/queue-children", "/api/choice", "/api/publish", "/api/paused", "/api/max", "/api/terminal-pair", "/api/terminal-run", "/api/writer", "/api/writer/dismiss-finished", "/api/grill-ticket",
-  "/api/settings/preview", "/api/settings/save", "/api/settings/restore", "/api/plugins/action"]);
+  "/api/settings/preview", "/api/settings/save", "/api/settings/restore", "/api/plugins/action", "/api/plugins/secret"]);
 /** Reads that are passed on but never kept for an SSH connection's last known: the loop's health (A11-282) changes on every read, is polled every 10 s, and is no use once old. */
 const NEVER_KEPT = new Set(["/api/health"]);
-/** The Settings page's edits of a file, and its install, enable, disable and uninstall of a plugin (A11-163): they change a `.agent-org` file, which only the machine that holds it may do (A11-132). */
-const SETTINGS_EDITS = new Set(["/api/settings/preview", "/api/settings/save", "/api/settings/restore", "/api/plugins/action"]);
+/**
+ * The Settings page's edits of a file, its install, enable, disable and uninstall of a plugin (A11-163), and a plugin's secret (A11-445): they change a `.agent-org` file or a secret, which
+ * only the machine that holds it may do (A11-132). So a secret typed on the page goes to this machine's own instance and never over a connection to another.
+ */
+const SETTINGS_EDITS = new Set(["/api/settings/preview", "/api/settings/save", "/api/settings/restore", "/api/plugins/action", "/api/plugins/secret"]);
 const RUN_ACTION = /^\/api\/queue\/[A-Za-z0-9_-]+\/(amend|remove|retry|approve|respond|talk|stop|close|dismiss|apply-edit|discard-edit)$/;
 /** One run in full (`GET /api/queue/<key>`, A11-270): a read, passed on, and never kept as last known, since a path for each run would push out the pages' own (`MOST_PATHS` in `last-known.ts`). */
 const RUN_READ = /^\/api\/queue\/[A-Za-z0-9_-]+$/;

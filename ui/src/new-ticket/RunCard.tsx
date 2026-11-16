@@ -4,7 +4,7 @@ import { POLL_MS } from "../api/poll-schedule.ts";
 import type { WritersView } from "../api/types.ts";
 import { useShell } from "../shell/ShellProvider.tsx";
 import { lookAtWriterRun, openTerminalWhenReady, runLink } from "../tickets/terminal.ts";
-import { headLineOf } from "./new-ticket-model.ts";
+import { headLineOf, queuesWhenDoneOf } from "./new-ticket-model.ts";
 
 type Run = WritersView["runs"][number];
 
@@ -43,17 +43,18 @@ function RunNote({ run }: Readonly<{ run: Run }>) {
 type CardProps = Readonly<{ run: Run; readAt: number | null; /** A Stop is out, or the connection is paused: the button waits. */ busy: boolean; onStop: (id: string) => void }>;
 
 /**
- * One new-ticket request still under way, as the boards draw it: its status and who is writing, Open terminal and Stop, the request, and the note. A finished request is no card: it is a
+ * One new-ticket request still under way, as the boards draw it: its status and who is writing (and the queueing it will do when done, A11-420), Open terminal and Stop, the request, and the note. A finished request is no card: it is a
  * notification (`NotificationCentre`).
  */
 export function RunCard({ run, readAt, busy, onStop }: CardProps) {
   const actions = writerRunActions(run);
+  const queues = queuesWhenDoneOf(run, useShell().config);
   return (
     <section aria-label="New ticket request" className={`run-card run-card-${run.status}`}>
       <div className="run-head">
         <span className="run-dot" aria-hidden="true" />
         <strong className="run-label">{WRITER_STATUS_LABEL[run.status] ?? run.status}</strong>
-        <span className="run-by">{headLineOf(run)}</span>
+        <span className="run-by">{[headLineOf(run), ...(queues === "" ? [] : [queues])].join(" · ")}</span>
         <div className="run-spacer" />
         <OpenTerminal run={run} readAt={readAt} />
         {actions.stop ? <button type="button" className="ghost run-stop" disabled={busy} onClick={() => onStop(run.id)}>Stop</button> : null}

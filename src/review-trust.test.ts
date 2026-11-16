@@ -153,6 +153,15 @@ test("#1311: a declared login is matched exactly or by the bot patterns, case-in
   assert.equal(isDeclaredLogin("DanBeckDev", { exact: ["danbeckdev"], pattern: [] }), true);
 });
 
+test("agent-org#2023: the Copilot coding agent's pull requests are the org's own, in both spellings, and never by a look-alike App", () => {
+  const declared = declaredIdentities({ host: null });
+  assert.equal(isDeclaredLogin("app/copilot-swe-agent", declared), true);
+  assert.equal(isDeclaredLogin("copilot-swe-agent[bot]", declared), true);
+  assert.equal(isDeclaredLogin("app/copilot-swe-agent-evil", declared), false, "an App named as a prefix of it is not it");
+  assert.equal(reviewTrustOf({ isCrossRepository: false, author: { login: "app/copilot-swe-agent" } }, declared), INSIDE);
+  assert.equal(reviewTrustOf({ isCrossRepository: true, author: { login: "app/copilot-swe-agent" } }, declared), OUTSIDE, "a fork is still a stranger's");
+});
+
 // --- the read-only shape of an outside reviewer ------------------------------------------------------------------
 
 test("#1311: an outside reviewer's codex runs read-only: every sandbox pair is replaced by one read-only pair, last", () => {

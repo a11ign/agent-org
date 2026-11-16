@@ -38,9 +38,12 @@ import { ticketDecisionsDefect } from "./plan-ticket-decisions.ts";
 import { closeWorkspaceLater } from "./pool-close.ts";
 import { cloneRefusal, mergeWaits, type Order, parseOrder, unknownRepos } from "./batch-order.ts";
 import { CONCLUDED, HANDED_BACK, RESULT_KINDS, pullsOf, type PullHead } from "./board-view/view-types-and-filters.ts";
-import { countTokens, findTranscript } from "./pool-transcripts.ts";
+import { findTranscript } from "./pool-transcripts.ts";
+import { readTurns } from "./outcomes/round-tokens.ts";
+import { type RoundEnd, roundEndsOf } from "./outcomes/round-end.ts";
+import type { OutcomeRun } from "./outcomes/outcome-record.ts";
+import { appendOutcomeSaying } from "./outcomes/append-record.ts";
 import { isParked } from "./board-view/pull-status-and-notes.ts";
-import { settledByPulls } from "./board-view/pull-settled.ts";
 // eslint-disable-next-line clean-code/no-duplication -- import list: the rule matches statement shape, and imports are not duplicated logic
 import { stepNamed } from "./board-view/plan-steps.ts";
 import { HERDR_CALL_MS, herdrRefusal } from "./pool-herdr.ts";
@@ -56,6 +59,9 @@ import { isCapPlanner } from "./queue/queue-cap.ts";
 import { planFiles as downloadPlanFiles } from "./pool-ticket-text.ts";
 import type { PullFeedback } from "../plugins/contracts/code-host.ts";
 import type { PullState } from "./source.ts";
+import { reviewAtHead, settleStep } from "./pr-state-machine.ts";
+
+export { reviewAtHead } from "./pr-state-machine.ts";
 
 /**
  * Record the plan step a live run's worker wrote as `currentStep` in its outcome file (A11-219), as written, without settling anything: it is read while the agent works and again when its outcome is settled. A file
@@ -335,13 +341,6 @@ function resultWriteFailed(ctx: PoolContext, entry: Entry, { err, reasonFor, han
   log(`${entry.ticket.key}'s result could not be recorded in the tracker (${messageOf(err)}): trying again in ${writeWait(failures) / MS_PER_SECOND} seconds, failure ${failures}`);
 }
 
-/** What a review round's `done` does with its ticket, judged by the round's pull requests (A11-173): complete it now, leave it to the merge of an open pull request, or ask a person. PURE. */
-function reviewDoneVerdict(entry: Entry, states: Readonly<Record<string, PullState>>): "complete" | "wait" | "ask" {
-  const settled = settledByPulls({ ...entry, pullStates: states });
-  if (settled === "completed") return "complete";
-  return settled === "cancelled" ? "ask" : "wait";
-}
-
 /**
  * Settle a review round's `done` by its pull requests as the tracker reads them (A11-173). With every one merged or closed and one merged, the ticket is completed now: the pull requests'
  * states are returned, to be recorded once the run ends. With one still open the round ends as its ordinary `reviewed` result and the ticket completes when they merge, and the run's
@@ -352,9 +351,9 @@ async function settleReviewDone(ctx: PoolContext, entry: Entry, outcome: Extract
   const key = entry.ticket.key;
   const states = (await ctx.source.pullStates?.([key]))?.get(key) ?? {};
   if (!sameRun(ctx, entry)) return null;
-  const verdict = reviewDoneVerdict(entry, states);
-  if (verdict === "complete") return states;
-  if (verdict === "ask") end(ctx, entry, { kind: "needs-human", reason: `the worker wrote done in a review round, but its pull requests were closed without merging: ${outcome.reason}` });
+  const step = settleStep(entry, states);
+  if (step.do === "complete") return states;
+  if (step.do === "ask") end(ctx, entry, { kind: "needs-human", reason: `the worker wrote done in a review round, but ${step.reason}: ${outcome.reason}` });
   else {
     end(ctx, entry, { kind: "reviewed", prs: entry.review ?? [] });
     update(ctx, (queue) => clearPartial(queue, key));
@@ -388,7 +387,7 @@ async function proposeEdit(ctx: PoolContext, entry: Entry, outcome: Extract<Outc
   if (!sameRun(ctx, entry)) return;
   const unrecorded = (error: string) => `${outcome.reason} (the worker's proposed edit to ${key}'s text could not be recorded: ${error})`;
   if (base === null && failure !== null) return resultWriteFailed(ctx, entry, { err: failure.err, reasonFor: unrecorded, handBack: handBackOfEdit(outcome) });
-  if (base === null) return end(ctx, entry, { kind: "needs-human", reason: unrecorded(`Linear has no ticket ${key}`) });
+  if (base === null) return end(ctx, entry, { kind: "needs-human", reason: unrecorded(`the tracker has no ticket ${key}`) });
   // The guard is released above, and nothing awaits between here and settle's own checks: the completion or end it starts takes `attaching` itself,
   // before its first await, so a tick that sees this outcome again meanwhile finds the run already held.
   settle(ctx, entry, { ...outcome, edit: { ...edit, base: { title: base.title, description: base.description } } });
@@ -609,7 +608,8 @@ async function attachPlan(ctx: PoolContext, entry: Entry): Promise<void> {
   try {
     // Not through `attachFiles`: its extra step would queue the ticket again only after this pass has filled its slots.
     const found = planFiles(planDir, checksFor(runPlace(ctx, entry).dir, key, entry.findingsGiven, entry.briefedAgainst, entry.ticket, closedWorkOf(ticketDir(settings, key))));
-    if ("refusal" in found) return found.afterMerge === undefined || !canSendBack(entry) ? end(ctx, entry, { kind: "needs-human", reason: found.refusal }) : sendBack(ctx, entry, [formatRefusalOf(entry, found.refusal, found.afterMerge.moves)]);
+    // `await`, not a bare return: the run stays in `attaching` until the send-back's herdr prompt is answered, so no pass settles the same `planned` meanwhile (A11-433).
+    if ("refusal" in found) return found.afterMerge === undefined || !canSendBack(entry) ? end(ctx, entry, { kind: "needs-human", reason: found.refusal }) : await sendBack(ctx, entry, [formatRefusalOf(entry, found.refusal, found.afterMerge.moves)]);
     if (source.attachPlan === undefined) return end(ctx, entry, { kind: "needs-human", reason: `this tracker takes no plans: attach the files in ${planDir} by hand` });
     const moving = { key, moves: found.moves, briefed: entry.briefedAgainst };
     // A plan that moves nothing awaits nothing before its attach, so the slot it frees is filled in this same pass.
@@ -623,9 +623,12 @@ async function attachPlan(ctx: PoolContext, entry: Entry): Promise<void> {
     const named = blockersOfPlan(found.files, key);
     const blockers = named.length === 0 ? named : await writePlanBlockers(ctx, key, named);
     if (!sameRun(ctx, entry)) return;
+    // The planning run is a run of its own: its record is written as it ends, and the ticket is queued again without it, to be worked by a fresh worker.
+    const ends = roundEndsAt(ctx, entry, [entry], () => "planned");
     if (entry.workspace) closeWorkspaceLater(ctx, entry.workspace);
     forgetRun(ctx, name);
-    update(ctx, (queue) => recordPlanBlockers(planDone(recordedOf(moving, stamped, stamp)?.(queue) ?? queue, key, { now: ctx.now() }), key, blockers));
+    update(ctx, (queue) => recordPlanBlockers(planDone(reportedUnread(recordedOf(moving, stamped, stamp)?.(queue) ?? queue, ends, key, ctx.now()), key, { now: ctx.now() }), key, blockers));
+    appendOutcomes(ctx, ends);
     // The ticket is queued again after the pass that saw the outcome decided, so a pass is asked for: the run starts at once, not at the next interval (A11-364).
     ctx.wake.run();
   } catch (err) {
@@ -671,7 +674,8 @@ async function attachBatch(ctx: PoolContext, entry: Entry): Promise<void> {
   try {
     // A member whose section the board refuses sends the whole run back before any member is attached, so the planner's next `planned` does not attach a plan twice (A11-288).
     const refused = canSendBack(entry) ? members.flatMap((member) => formatRefusalIn(ctx, member, join(planDir, member.ticket.key)) ?? []) : [];
-    if (refused.length > 0) return sendBack(ctx, entry, refused);
+    // Awaited inside the `attaching` hold, as in `attachPlan`.
+    if (refused.length > 0) return await sendBack(ctx, entry, refused);
     const handedBack = new Map<string, Outcome>();
     for (const { ticket: { key } } of members) {
       const outcome = await planOneOfBatch(ctx, key, join(planDir, key));
@@ -688,14 +692,18 @@ async function attachBatch(ctx: PoolContext, entry: Entry): Promise<void> {
     if (entry.workspace && !parks) closeWorkspaceLater(ctx, entry.workspace);
     forgetRun(ctx, name);
     const id = entry.workspace === undefined ? undefined : ctx.claudeSessions.get(entry.workspace);
+    // The run's tokens are split across every ticket it planned or asked about, so the shares add up to what it spent (A11-430).
+    const ends = roundEndsAt(ctx, entry, members, (key) => handedBack.get(key)?.kind ?? (misplaced.has(key) ? "needs-human" : "planned"));
     updateEach(ctx, still, (queue, key) => {
       const outcome = handedBack.get(key);
       const refused = misplaced.get(key);
-      if (outcome !== undefined) return (parks ? park : finish)(queue, key, outcome, now(), id === undefined ? {} : { session: id });
-      if (refused !== undefined) return finish(batchPlanDone(queue, key, null, [], now()), key, { kind: "needs-human", reason: refused }, now());
+      const reported = reportedUnread(queue, ends, key, now());
+      if (outcome !== undefined) return (parks ? park : finish)(reported, key, outcome, now(), { ...(id === undefined ? {} : { session: id }), ...recordedRound(ends, key) });
+      if (refused !== undefined) return finish(batchPlanDone(reported, key, null, [], now()), key, { kind: "needs-human", reason: refused }, now(), recordedRound(ends, key));
       const place = order.get(key);
-      return batchPlanDone(queue, key, placed.get(key) ?? place?.repo ?? null, mergeWaits(place), now());
+      return batchPlanDone(reported, key, placed.get(key) ?? place?.repo ?? null, mergeWaits(place), now());
     });
+    appendOutcomes(ctx, new Map([...ends].filter(([key]) => still.some((member) => member.ticket.key === key))));
     // Only a ticket queued again is a start to decide: the ones handed to a person wait for them.
     if (still.some(({ ticket: { key } }) => !handedBack.has(key) && !misplaced.has(key))) ctx.wake.run();
   } catch (err) {
@@ -817,19 +825,23 @@ type Ending = Readonly<{ outcome: Outcome; movedTo?: string }>;
 
 /** {@link end}, or the end of a run the board moves to the repository its worker named, which is queued again at once and so parks nowhere. */
 function finishRun(ctx: PoolContext, entry: Entry, { outcome, movedTo }: Ending): void {
-  const { claudeSessions, now, transcripts } = ctx;
+  const { claudeSessions, now } = ctx;
   // A concluded run never parks, whatever else a later change hands back: nobody would answer its agent.
   const parks = movedTo === undefined && entry.workspace !== undefined && HANDED_BACK.has(outcome.kind) && !CONCLUDED.has(outcome.kind);
   if (entry.workspace && !parks) closeWorkspaceLater(ctx, entry.workspace);
   const id = entry.workspace === undefined ? undefined : claudeSessions.get(entry.workspace);
-  const tokens = countTokens(id === undefined ? null : findTranscript(transcripts, id));
   const { name } = runPlace(ctx, entry);
   const record = id === undefined ? {} : { session: id };
-  // A batch's run spent its tokens once, so they are recorded on the ticket it was watched through, and not counted again on each of the rest.
-  updateEach(ctx, runMembers(ctx, entry), (queue, key) => {
-    const recorded = key === entry.ticket.key ? { ...record, tokens } : record;
-    return movedTo === undefined ? (parks ? park : finish)(queue, key, outcome, now(), recorded) : reroute(queue, key, { outcome, repo: movedTo }, now(), recorded);
+  const members = runMembers(ctx, entry);
+  const ends = roundEndsAt(ctx, entry, members, () => outcome.kind, "prs" in outcome ? (outcome.prs ?? []).map(({ url }) => url) : []);
+  // A batch's run spent its tokens once: each ticket carries its share of them (`batchShare`), so they add up to the run's and none is counted twice.
+  updateEach(ctx, members, (queue, key) => {
+    const recorded = { ...record, ...recordedRound(ends, key) };
+    // Reported before the run's end is logged, so the end stays the newest event its Timeline words (a canceled ticket's, a hand-back's).
+    const reported = reportedUnread(queue, ends, key, now());
+    return movedTo === undefined ? (parks ? park : finish)(reported, key, outcome, now(), recorded) : reroute(reported, key, { outcome, repo: movedTo }, now(), recorded);
   });
+  appendOutcomes(ctx, ends);
   if (movedTo !== undefined) ctx.wake.run();
   // Not waited for (A11-356): the code host answers a promise. Until it has, the run is finished with its files unrecorded, which is the state a read that failed leaves, and `overlapWait` holds its repository in it.
   void recordPullsAtEnd(ctx, entry, outcome).catch((err: unknown) => log(`${entry.ticket.key}: the files and heads of its pull requests could not be read (${messageOf(err)}), so its repository is held until the next watch reads them`));
@@ -839,23 +851,45 @@ function finishRun(ctx: PoolContext, entry: Entry, { outcome, movedTo }: Ending)
 }
 
 /**
+ * What the end of this round records for each ticket of the run (A11-430): its transcript is read once, by the session herdr reported for its workspace. A run that never had an agent has no round to
+ * record, and none is.
+ */
+function roundEndsAt(ctx: PoolContext, entry: Entry, members: readonly Entry[], outcomeOf: (key: string) => string, pulls: readonly string[] = []): Map<string, RoundEnd> {
+  if (entry.workspace === undefined) return new Map();
+  const id = ctx.claudeSessions.get(entry.workspace);
+  const read = id === undefined ? { unreadable: `herdr reported no Claude session for its workspace ${entry.workspace}` } : readTurns(findTranscript(ctx.transcripts, id));
+  return roundEndsOf({ members, watched: entry, read, outcomeOf, pulls, ...(id === undefined ? {} : { session: id }), now: ctx.now() });
+}
+
+/** The run of `key` with this round added, for the queue: its tokens and its outcome record so far (A11-430). Nothing when the round recorded nothing. PURE. */
+const recordedRound = (ends: ReadonlyMap<string, RoundEnd>, key: string): Readonly<{ outcomeRun?: OutcomeRun; tokens?: Entry["tokens"] }> => {
+  const roundEnd = ends.get(key);
+  return roundEnd === undefined ? {} : { outcomeRun: roundEnd.outcomeRun, ...(roundEnd.tokens === undefined ? {} : { tokens: roundEnd.tokens }) };
+};
+
+/** `queue` with the board's report on `key`'s run when its round's transcript could not be read, so no outcome record was written (A11-430). PURE. */
+function reportedUnread(queue: Queue, ends: ReadonlyMap<string, RoundEnd>, key: string, at: number): Queue {
+  const roundEnd = ends.get(key);
+  return roundEnd !== undefined && "unread" in roundEnd ? logEvent(queue, key, at, { kind: "outcome-unread", reason: shortReason(roundEnd.unread) ?? roundEnd.unread }) : queue;
+}
+
+/**
+ * Append each record the round's end made to the outcome log, and say on the board's log each round that made none, because its transcript could not be read. A log that cannot be written is said
+ * there too: the run's end, which the queue already holds, is not undone for it.
+ */
+function appendOutcomes(ctx: PoolContext, ends: ReadonlyMap<string, RoundEnd>): void {
+  for (const [key, roundEnd] of ends) {
+    if ("unread" in roundEnd) log(`${key}: no outcome record was written for this round, because its tokens could not be read: ${roundEnd.unread}`);
+    else appendOutcomeSaying(ctx.settings.stateDir, roundEnd.record);
+  }
+}
+
+/**
  * The files each open pull request changes, by URL, from the reads of them: a list GitHub cut short ends with an empty name, so only the files listed
  * hold (`footprintOf`). The watch and the end of a run both record it this way, so a run holds the same files either way (A11-125).
  */
 export function pullFilesOf(open: readonly { url: string; read: PullFeedback }[]): Readonly<Record<string, readonly string[]>> {
   return Object.fromEntries(open.map(({ url, read }) => [url, read.filesComplete ? read.files : [...read.files, ""]]));
-}
-
-/**
- * What a read says of a head's review for readiness (A11-179), or undefined when the code host did not say: `none` when no review sits at the head, whatever GitHub's decision says, `approved` when the newest verdict on the head approves it
- * and GitHub's review decision is approved or needs none, `changes-requested` when a verdict is there and either asks for changes, and `none` otherwise, which is also a branch whose decision still asks for a review. GitHub's decision
- * follows the pull request and not the commit (A11-340): it stays `changes-requested` after a push to a head nobody has reviewed, so it says nothing of a head without a verdict. PURE.
- */
-export function reviewAtHead(read: PullFeedback): PullHead["review"] {
-  if (read.verdictAtHead === undefined || read.reviewDecision === undefined) return undefined;
-  if (read.verdictAtHead === null) return "none";
-  if (read.reviewDecision === "changes-requested" || read.verdictAtHead === "changes-requested") return "changes-requested";
-  return read.verdictAtHead === "approved" && (read.reviewDecision === "approved" || read.reviewDecision === null) ? "approved" : "none";
 }
 
 /**

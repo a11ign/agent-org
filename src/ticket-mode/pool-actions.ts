@@ -105,7 +105,7 @@ export async function applyEdit(ctx: PoolContext, key: string): Promise<void> {
   if (edit === undefined) throw new Error(`${key} has no proposed edit to apply`);
   if (source.updateTicketText === undefined) throw new Error(`this tracker cannot edit ${key}'s text`);
   const fresh = await source.read(key);
-  if (fresh === null) throw new Error(`Linear has no ticket ${key}`);
+  if (fresh === null) throw new Error(`the tracker has no ticket ${key}`);
   if (edit.base === undefined || fresh.title !== edit.base.title || fresh.description !== edit.base.description) {
     throw new Error(`the ticket changed since the worker proposed this: ${key} is not written, and the proposal stays`);
   }

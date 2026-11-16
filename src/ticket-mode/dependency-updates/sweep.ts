@@ -66,9 +66,9 @@ async function sweepOnce(deps: DependencySweepDeps, memory: SweepContext["memory
   }
 }
 
-/** The requests the board makes of its own accord (the watchdog's defect hours): each key that has no entry yet, or whose failed entry is due again, is asked for. */
+/** The requests the board makes of its own accord (the watchdog's defect hours, the fixes of checks red on main): each key that has no entry yet, or whose failed entry is due again, is asked for. */
 async function askOwnRequests({ deps, state }: SweepContext, ask: (request: TicketRequest) => Promise<void>): Promise<void> {
-  for (const request of deps.requests?.() ?? []) if (due(state.tickets[request.key], deps.now())) await ask(request);
+  for (const request of deps.requests?.(state.tickets) ?? []) if (due(state.tickets[request.key], deps.now())) await ask(request);
 }
 
 /**

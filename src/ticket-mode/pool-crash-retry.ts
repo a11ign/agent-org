@@ -39,6 +39,20 @@ export function endCrashed(ctx: PoolContext, keys: readonly string[], err: unkno
   }
 }
 
+/**
+ * Give each of `keys`, already ended crashed on `err`, the retry a failed start gets, and say so in the board's log. For a running run whose workspace the board itself closed to start it again (`pool-reseat.ts`), whose
+ * start then failed: no pane is left, so a retry cannot open a second workspace beside the first, and a transient failure there must not leave the run for a person (A11-436). A failure that is not transient schedules nothing.
+ */
+export function retryClosedRun(ctx: PoolContext, keys: readonly string[], err: unknown): void {
+  const at = ctx.now();
+  update(ctx, (queue) => keys.reduce((next, key) => {
+    const entry = find(next, key);
+    const retries = entry?.outcome?.kind === "crashed" ? crashRetryAfter(err, entry.crashRetry, at) : undefined;
+    return retries === undefined ? next : replace(next, key, (ended) => ({ ...ended, crashRetry: retries }));
+  }, queue));
+  for (const key of keys) log(`${key}: ${againWords(find(ctx.store.get(), key)?.crashRetry, at)}`);
+}
+
 /** Whether a run ended crashed and has a retry scheduled whose back-off has passed at `now`. PURE. */
 const isCrashRetryDue = ({ phase, outcome, crashRetry }: Entry, now: number): boolean =>
   phase === "finished" && outcome?.kind === "crashed" && crashRetry !== undefined && retryDue(crashRetry, now);

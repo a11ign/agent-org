@@ -14,7 +14,8 @@ export const CALL_FAILURES_WARN_PER_100 = 1;
 /** One thing worth a person's eye: which figure, and a sentence that says what it reads. */
 export type HealthFlag = Readonly<{ figure: "loop" | "calls" | "watchdog"; text: string }>;
 
-const SERVICE_WORDS: Readonly<Record<CallService, string>> = { linear: "Linear", github: "GitHub" };
+/** How each service is named where a person reads its figure: here and in the board's header line. */
+export const SERVICE_WORDS: Readonly<Record<CallService, string>> = { linear: "Linear", github: "GitHub", herdr: "herdr" };
 
 /** A delay as the flags say it: whole ms below a second, seconds with one decimal place from a second up. */
 const delay = (ms: number): string => (ms < 1000 ? `${Math.round(ms)} ms` : `${(ms / 1000).toFixed(1)} s`);

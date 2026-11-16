@@ -1,6 +1,6 @@
 // A leaf of ticket mode, run by no command: the one prompt the board sends a worker's pane when a wait it declared ends or passes its deadline (A11-245). The text is one line, as the board's other prompts are: a new
 // line typed into a pane would submit it early. It says what happened per item, with the reason first on a failure, and tells the worker to act on it and not to declare the same wait again. The prompt goes through herdr's `agent prompt`
-// to the run's pane, as every prompt of the board does (`sendToAgent`, A11-279).
+// to the run's pane, as every prompt of the board does (`sendToAgentAsync`, A11-279).
 import type { Verdict } from "./wait-verdict.ts";
 import type { Woke } from "./wait-types.ts";
 

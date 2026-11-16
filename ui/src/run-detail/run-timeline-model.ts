@@ -88,6 +88,7 @@ function rowOf(event: TimelineEvent, { now, startedAt, newest, going, canceled, 
       tone: FAILED_OUTCOMES.has(event.outcome) ? "red" : "grey",
     };
     case "tracker-write": return { text: TRACKER_WRITE_WORDS[event.step], when: joined(ago, event.error, note), tone: TRACKER_WRITE_TONES[event.step] };
+    case "outcome-unread": return { text: "Its tokens could not be read: no outcome record for this round", when: joined(ago, event.reason, note), tone: "red" };
     case "dismissed": return { text: "Dismissed", when: ago, tone: "grey" };
     case "removed": return { text: "Removed", when: ago, tone: "grey" };
     case "requeued": return { text: "Queued again", when: joined(ago, REQUEUE_WORDS[event.why]), tone: "grey" };

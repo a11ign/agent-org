@@ -9,6 +9,7 @@ the only place the repository runs `tailscale`), and `telegram` (messaging: the 
 | Plugin | Concern | What it is |
 | --- | --- | --- |
 | `linear` | tracker | Linear: where tickets are kept and read |
+| `github-issues` | tracker | GitHub Issues: the issues of one repository as the tickets, through GitHub's REST API with a token; the second tracker (A11-447), and how Linear's states, labels and sub-issues map is in its `README.md` |
 | `github` | code host | GitHub: pull requests, reviews and checks (their logs and reruns), the review claim, the verdict door the reviewers post with (`reviewer/pr-review-verdict.sh` and its installer), and the routing `gh` wrapper of an org host (`wrapper/gh`, its renderer, the App-token minter and the rows and onboard step that check and set them up), and, for row mode, the optional `rows` group (`rows/`: the GitHub adapter of the ticket port and the reads and writes of rows, pull requests, checks, the merge queue and the board, what arming a pull request, guarding its merge and running the merge queue ask of GitHub, and what the work gate reads and writes of rows, pull requests, checks and runs, with the process its executor starts; contract 1.9) |
 | `local` | exposure | serves nothing: the board listens on `127.0.0.1`; refuses `serve` by name |
 | `tailscale` | exposure | `tailscale serve` for the page and the terminal, never Funnel; a path open to the internet for the event receiver (contract 1.1) |
@@ -57,9 +58,11 @@ tracker's `tooling.writer` is what a new-ticket run files with (tracker contract
 priority numbers. It is data and not code because the PreToolUse hook is a process started for every tool call, which must not import a plugin to answer one.
 
 **A setting that names a secret declares the command that sets it.** An entry with `"secret": "path"` or `"secret": "keychain"` must also declare `"setCommand"`, the exact command that sets it, or the registry
-refuses the manifest by name: the Settings page never takes a secret, so it shows this command with a copy button (A11-163). `{value}` is the setting's current value, and `{value|fallback}` takes `fallback` when the
-host file holds none (`security add-generic-password -a "$USER" -s {value|agent-org-linear} -w`). A plugin that needs a secret is installed with `agent-org plugin install` or `agent-org onboard`, so the page offers its
-install command and these, and no Install button.
+refuses the manifest by name: the Plugins page shows this command with a copy button (A11-163). `{value}` is the setting's current value, and `{value|fallback}` takes `fallback` when the
+host file holds none (`security add-generic-password -a "$USER" -s {value|agent-org-linear} -w`). A secret that is one line, such as an API key, may also declare `"enter": "token"`
+(A11-445): once the plugin is installed the page draws it as a write-only field, and the instance stores the value in a mode-600 file or the macOS Keychain where the setting points (else at the
+`{value|fallback}` place, pointing the setting at it), runs the plugin's checks and never shows the value again. A plugin's check must not quote its secret. A plugin with a secret the page cannot take
+(and no alternative of it that it can) is installed with `agent-org plugin install` or `agent-org onboard`, so the page offers its install command and these, and no Install button.
 
 **A messaging plugin's settings are keys of the project's `messaging` object** (`project.json`), not of a block under `tickets.providers`: its manifest keys them `messaging.<name>` with `"file": "project.json"`.
 
