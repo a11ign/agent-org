@@ -1,5 +1,0 @@
----
-"agent-org": minor
----
-
-Ticket mode's reads of a red check (the log of the job behind it, and the rerun of its failed jobs), the reviewer's claim on a head and the verdict door every reviewer posts with are now the GitHub plugin's (`plugins/github`), behind code host contract 1.5: `readCheckLog`, `rerunFailedChecks`, `readReviewClaims`, `writeReviewClaim` and the optional `verdictDoor`. The pool, `ticket:review` and the atomic reviewer no longer hold a `gh`; the claim protocol (`claimHead`) stays core's. `src/reviewer/pr-review-verdict.sh` and `install-reviewer-bin.sh` moved to `plugins/github/reviewer/` unchanged, bar the path its fallback reads the project declaration from (a comment and two lines); the host's install and `host:check` take the door's paths from the code host. Because those lines differ, the door installed at `~/reviewer/bin/pr-review-verdict` reads `DRIFTED` in `host:check` until `agent-org host:install` copies the new one over it (the installer keeps the old beside it). `docs/gh-call-baseline.json` loses `src/reviewer/pr-review-verdict.sh`; nothing rises.
