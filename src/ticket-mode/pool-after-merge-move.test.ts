@@ -7,7 +7,6 @@ import { join } from "node:path";
 import { tmpDir } from "../lib/tmp-fixture.ts";
 import { createFakeCodeHost } from "../plugins/fakes/code-host.ts";
 import { createFakeTracker, fakeTicket } from "../plugins/fakes/tracker.ts";
-// eslint-disable-next-line clean-code/no-duplication -- import list: the rule matches statement shape, and imports are not duplicated logic
 import { batchDir, herdrName, type QueueStore } from "./pool.ts";
 import { fakeHerdr } from "./pool-fixture.ts";
 import { ATTACH_WAITS_MS } from "./attach-retry.ts";

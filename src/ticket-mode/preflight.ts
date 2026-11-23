@@ -31,7 +31,6 @@ export const FAIL_RETRY_MS = 60_000;
 export const REASON_CHARS = 300;
 
 /** What a command's own words are cleaned of before the board shows them: terminal colour codes. */
-// eslint-disable-next-line no-control-regex -- an escape sequence is exactly what this removes
 const ANSI = /\u001b\[[0-9;]*[A-Za-z]/g;
 
 /** The first line a command printed, with no colour and at most {@link REASON_CHARS} characters, or null when it printed nothing. */

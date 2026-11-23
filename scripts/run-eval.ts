@@ -21,12 +21,10 @@ import { defaultSchema } from "../src/plugins/schema.ts";
 import { barMain, compareMain, main, parseArgs, type RunEvalDeps } from "../src/run-eval.ts";
 import { hostLessons } from "../src/run-eval/worker.ts";
 import { type Revision } from "../src/run-eval/store.ts";
-// eslint-disable-next-line clean-code/no-duplication -- import list: the rule matches statement shape, and imports are not duplicated logic
 import { parseKey, withKey, type KeySetting } from "../src/run-eval/key.ts";
 import { codexReview } from "../src/run-eval/codex-reviewer.ts";
 import { reviewerProgram } from "../src/run-eval/local-review.ts";
 import { outcomesPath } from "../src/ticket-mode/outcomes/outcome-record.ts";
-// eslint-disable-next-line clean-code/no-duplication -- import list: the rule matches statement shape, and imports are not duplicated logic
 import { readChoice } from "../src/ticket-mode/read-routes.ts";
 import { hostFilePath, readTicketSettings, type TicketSettings } from "../src/ticket-mode/settings.ts";
 import { sandboxGitEnv } from "../src/lib/git-env.ts";

@@ -14,17 +14,14 @@ import { createCallCounter, countingDeps } from "./call-counter.ts";
 import { readCiRunAsync } from "./ci-run.ts";
 import { conditionalReads } from "./conditional-reads.ts";
 import { createPullSnapshots } from "./pull-snapshot.ts";
-// eslint-disable-next-line clean-code/no-duplication -- import list: the rule matches statement shape, and imports are not duplicated logic
 import { readBranchCi } from "./ci-spend.ts";
 import { readCheckLogAsync, rerunFailedChecksAsync, runsOf } from "./check-runs.ts";
 import { readDefaultBranchRedAsync } from "./default-branch-checks.ts";
 import { asyncGhRunner, ghRunner } from "./gh.ts";
-// eslint-disable-next-line clean-code/no-duplication -- import list: the rule matches statement shape, and imports are not duplicated logic
 import { openPullUrlsOf } from "./open-pulls.ts";
 import { createRepositories } from "./repositories.ts";
 import { pullOf as pullAt, readOwnLoginAsync, readPullFeedback } from "./pull-feedback.ts";
 import { readClosedWorkAsync } from "./closed-work.ts";
-// eslint-disable-next-line clean-code/no-duplication -- import list: the rule matches statement shape, and imports are not duplicated logic
 import { readMergeFlowAsync } from "./merge-flow.ts";
 import { holdPullRequestAsync, readQueueFailureAsync, releasePullRequestAsync } from "./merge-queue.ts";
 import { readMergedFindings } from "./merged-findings.ts";

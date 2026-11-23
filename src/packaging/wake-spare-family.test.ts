@@ -31,7 +31,6 @@ import { laneReason, runnerReason } from "../row-claim/runner-rule.ts";
 import { labelAfterCreate } from "../pr-open.ts";
 import { HOME_CHECKOUT } from "../project-config.ts";
 import { forgetActivation, substituteCodeHost } from "../plugins/active.ts";
-// eslint-disable-next-line clean-code/no-duplication -- import list: the rule matches statement shape, and imports are not duplicated logic
 import { createFakeCodeHost } from "../plugins/fakes/code-host.ts";
 import { fakeRow } from "../plugins/fakes/code-host-rows.ts";
 import { fakePull } from "../plugins/fakes/code-host-pulls.ts";

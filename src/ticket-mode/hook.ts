@@ -76,7 +76,6 @@ import { parseCapDecision } from "./cap-decision.ts";
 import type { TrackerWriting } from "../plugins/contracts/tracker.ts";
 import { defaultCatalog } from "../plugins/registry.ts";
 import { lastAssistantText, liveBackgroundWork } from "./background-work.ts";
-// eslint-disable-next-line clean-code/no-duplication -- import list: the rule matches statement shape, and imports are not duplicated logic
 import { findingsMiss, parseFindingsGiven, retryAsk } from "./blocker-findings-check.ts";
 import { type Order, parseOrder } from "./batch-order.ts";
 import { boardKeyPath } from "./board-key.ts";

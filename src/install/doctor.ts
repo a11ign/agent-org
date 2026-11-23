@@ -31,7 +31,6 @@ import { type LoadResult, loadEnabled } from "../plugins/loader.ts";
 import { messagingChecksOfFile, messagingStateOfFile } from "../plugins/messaging-state.ts";
 import type { Catalog, HostPlaceReading, PluginDeps, ProbeRequest, ReviewerHelpers } from "../plugins/manifest.ts";
 import { defaultCatalog, trackerWritingOf } from "../plugins/registry.ts";
-// eslint-disable-next-line clean-code/no-duplication -- import list: the rule matches statement shape, and imports are not duplicated logic
 import { publishingHelpers } from "../plugins/publishing-helpers.ts";
 import { gateHelpers } from "../plugins/reviewing-gate.ts";
 import { enableReviewerCommand } from "../ticket-mode/concern-states.ts";
@@ -50,7 +49,6 @@ import { describeMoves, planHostFix, writeHostFix } from "./migrate-host.ts";
 import { runPreflights, shellPreflight, type PreflightExec } from "../ticket-mode/preflight.ts";
 import { hostFactsOf, type HostFacts, notProvidedWhy, providesSkill, type SkillRef, skillRefs } from "../ticket-mode/plugin-contract.ts";
 import { pluginProblems, type PluginContract, type PluginProblems } from "../ticket-mode/plugins.ts";
-// eslint-disable-next-line clean-code/no-duplication -- import list: the rule matches statement shape, and imports are not duplicated logic
 import { hostFilePath, readOrNull, TOOL_ROOT, type Env } from "./paths.ts";
 import { existsSync as pathExists } from "node:fs";
 import { ticketFolder } from "../ticket-mode/ticket-paths.ts";
@@ -62,10 +60,8 @@ import { HERDR_INTEGRATIONS, HERDR_PLUGINS, herdrBehind, herdrStatusPath, herdrV
 import { HOUR_MS, readUpdateStatus, updateStatusPath, type StatusFile } from "./update-safety.ts";
 import { hostHerdrPlace, type HerdrPlace } from "./herdr-place.ts";
 import { handInstallCommand, TOOL_HERDR_VERSION } from "./herdr-install.ts";
-// eslint-disable-next-line clean-code/no-duplication -- import list: the rule matches statement shape, and imports are not duplicated logic
 import { drainPath, readDrain, type Drain } from "./update-drain.ts";
 import { judgeShellCommand, readShellCommand, realShellDeps, shellContext, type ShellReading } from "./shell-command.ts";
-// eslint-disable-next-line clean-code/no-duplication -- import list: the rule matches statement shape, and imports are not duplicated logic
 import { runningToolVersion, toolDir, versionNameOf } from "./tool-versions.ts";
 import { buildCandidates, findBuild, UI_BUILD_DIR } from "../ticket-mode/ui-build.ts";
 import { declaresUiBuild, type UiSource } from "./ui-asset.ts";

@@ -14,7 +14,6 @@ import { sandboxGitEnv } from "../lib/git-env.ts";
 import { pnpmCliInvocation } from "../lib/npm-cli-executable.ts";
 import { INSIDE, OUTSIDE, type ReviewTrust } from "../review-trust.ts";
 import { recordRemoval } from "../worktree-removal.ts";
-// eslint-disable-next-line clean-code/no-duplication -- import list: the rule matches statement shape, and imports are not duplicated logic
 import { closedNoteAsync, firstLine, herdrRunAsync, openPaneAsync, programFailure } from "../herdr-agents.ts";
 import { realExecAsync } from "../plugins/real-seams.ts";
 import type { ExecOptions } from "../plugins/manifest.ts";

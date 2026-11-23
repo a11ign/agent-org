@@ -27,7 +27,6 @@ import { activatePlugins, realPluginDeps } from "../plugins/active.ts";
 import { defaultCatalog } from "../plugins/registry.ts";
 import { AnswerNotDelivered, createPool, startsReviewers, type PoolDeps } from "./pool.ts";
 import type { QueuedWritten } from "./pool-context.ts";
-// eslint-disable-next-line clean-code/no-duplication -- import list: the rule matches statement shape, and imports are not duplicated logic
 import { gateReviewJudge, loadReviewerGate } from "./reviewer-port.ts";
 import { reviewingBeforeActivation } from "../plugins/reviewing-helpers.ts";
 import { defaultHerdr } from "./pool-herdr.ts";

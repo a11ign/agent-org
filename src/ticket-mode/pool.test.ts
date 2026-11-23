@@ -31,14 +31,12 @@ import { READ_RETRY_MS } from "./queue/start-reads.ts";
 import { BACKGROUND_GONE_MS, enqueue, liveRunCount, replace, retry, talkRound, writerStatus, type Outcome, type Queue, type WriterForm } from "./queue/queue-entries-and-outcomes.ts";
 import type { PoolDeps, QueuedWritten } from "./pool-context.ts";
 import type { QueueAfter } from "./queue/queue-after-writing.ts";
-// eslint-disable-next-line clean-code/no-duplication -- import list: the rule matches statement shape, and imports are not duplicated logic
 import { emptyQueue, queueWriter, writerOf } from "./queue.ts";
 import { writerDir, writerFolder } from "./ticket-paths.ts";
 import { claimantOf, parseTicketSettings } from "./settings.ts";
 import type { ReviewBrief } from "../plugins/contracts/reviewer.ts";
 import { REVIEWER_LOGIN, loadReviewerGate, readReviewerMemory, reviewerMemoryPath, type RepostAnswer, type ReviewerPort, type ReviewerRef, type ReviewerSettled, writeReviewerMemory } from "./reviewer-port.ts";
 import type { Blocker, PullState, Ticket, TicketSource } from "./source.ts";
-// eslint-disable-next-line clean-code/no-duplication -- import list: the rule matches statement shape, and imports are not duplicated logic
 import { descriptionHash, ticketReadOf } from "./ticket-read.ts";
 import { parseStamp, stampedPlan } from "./plan-stamp.ts";
 import { parsePaths } from "./overlap.ts";
@@ -49,7 +47,6 @@ import { createFakeCodeHost } from "../plugins/fakes/code-host.ts";
 import { createFakePublisher } from "../plugins/fakes/publisher.ts";
 import { createFakeReviewer, reviewerOver } from "../plugins/fakes/reviewer.ts";
 import { corePolicy } from "../plugins/policy.ts";
-// eslint-disable-next-line clean-code/no-duplication -- import list: the rule matches statement shape, and imports are not duplicated logic
 import { createCodeHost as createGithubCodeHost } from "../../plugins/github/code-host.ts";
 import { fakePluginDeps } from "../plugins/fakes/deps.ts";
 import { settledGreenOf, unrequiredRedOf } from "../work-gate/pr-orders.ts";

@@ -21,9 +21,7 @@ import { createFakeCodeHost } from "../plugins/fakes/code-host.ts";
 import { fakeRow } from "../plugins/fakes/code-host-rows.ts";
 import { holdRepository, withRepositoryReads } from "../plugins/fakes/code-host-health.ts";
 import { watchedRows } from "../plugins/fakes/watched-rows.test.support.ts";
-// eslint-disable-next-line clean-code/no-duplication -- import list: the rule matches statement shape, and imports are not duplicated logic
 import { claimStallsNow, claimStallTick, closedClaimsNow } from "../work-gate/claim-stall-tick.ts";
-// eslint-disable-next-line clean-code/no-duplication -- import list: the rule matches statement shape, and imports are not duplicated logic
 import { closedClaimsWhenWorkerListed } from "../work-gate/tick.ts";
 import { readOpenRowFollowUps, stripClosedClaims } from "../work-gate.ts";
 import { GH_READS } from "../work-gate/reads/read-memo-and-exit.ts";
